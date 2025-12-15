@@ -1,18 +1,7 @@
 #!/bin/sh
-
-# Divinus build helper
-# Usage:
-#   ./build.sh <platform> [debug]
-# Platforms:
-#   arm-glibc arm-musl3 arm-musl4 arm9-musl3 arm9-musl4 arm9-uclibc
-#   armhf-glibc armhf-musl armhf-uclibc mips-musl
-#   ak39xx cvitek gm813x hisi-v1 hisi-v2 hisi-v2a hisi-v3 hisi-v3a
-#   hisi-v4 hisi-v4a inge-t31 rv11xx star6 star6e
-
 DL="https://github.com/OpenIPC/firmware/releases/download/toolchain"
 EXT="tgz"
 PRE="linux"
-NPROC=$(command -v nproc >/dev/null 2>&1 && nproc || sysctl -n hw.ncpu || echo 1)
 
 toolchain() {
 	if [ ! -e toolchain/$1 ]; then
@@ -26,7 +15,7 @@ toolchain() {
 		fi
 		rm -f $1.$EXT
 	fi
-	make -j $NPROC -C src CC=$PWD/toolchain/$1/bin/$2-$PRE-gcc OPT="$OPT $3"
+	make -j $(nproc) -C src CC=$PWD/toolchain/$1/bin/$2-$PRE-gcc OPT="$OPT $3"
 }
 
 if [ "$2" = "debug" ]; then
