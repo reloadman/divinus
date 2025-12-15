@@ -11,19 +11,39 @@
  *              DECLARATIONS
  ******************************************************************************/
 
-static inline int __rtcp_send_sr(struct connection_item_t *con);
+static inline int __rtcp_send_sr(struct connection_item_t *con, int track_id);
 
 
 /******************************************************************************
  *              INLINE FUNCTIONS
  ******************************************************************************/
-static inline int __rtcp_send_sr(struct connection_item_t *con)
+static inline int __rtcp_send_sr(struct connection_item_t *con, int track_id)
 {
     struct timeval tv;
     unsigned int ts_h; 
     unsigned int ts_l; 
     int send_bytes;
     struct sockaddr_in to_addr;
+    struct {
+        int server_rtcp_fd;
+        int server_rtp_fd;
+        unsigned int client_port_rtp;
+        unsigned int client_port_rtcp;
+        unsigned int server_port_rtp;
+        unsigned int server_port_rtcp;
+        unsigned int range_start;
+        unsigned int range_end;
+        unsigned int rtcp_octet;
+        unsigned int rtcp_packet_cnt;
+        int rtcp_tick;
+        int rtcp_tick_org;
+        unsigned short rtp_seq;
+        unsigned int rtp_timestamp;
+    } *t;
+
+    /* guard against invalid track index */
+    ASSERT(track_id >= 0 && track_id < (int)(sizeof(con->trans) / sizeof(con->trans[0])), return FAILURE);
+    t = &con->trans[track_id];
 
     ASSERT(gettimeofday(&tv,NULL) == 0, return FAILURE);
 
@@ -34,21 +54,21 @@ static inline int __rtcp_send_sr(struct connection_item_t *con)
         r: { sr: { ssrc: htonl(con->ssrc),
             ntp_sec: htonl(ts_h),
             ntp_frac: htonl(ts_l),
-            rtp_ts: htonl(con->trans[con->track_id].rtp_timestamp),
-            psent: htonl(con->trans[con->track_id].rtcp_packet_cnt),
-            osent: htonl(con->trans[con->track_id].rtcp_octet)}}};
+            rtp_ts: htonl(t->rtp_timestamp),
+            psent: htonl(t->rtcp_packet_cnt),
+            osent: htonl(t->rtcp_octet)}}};
 
     to_addr = con->addr;
-    to_addr.sin_port = con->trans[con->track_id].client_port_rtcp;
+    to_addr.sin_port = t->client_port_rtcp;
 
-    ASSERT((send_bytes = send(con->trans[con->track_id].server_rtcp_fd,
+    ASSERT((send_bytes = send(t->server_rtcp_fd,
         &(rtcp),36,0)) == 36, ({
                 ERR("send:%d:%s¥n",send_bytes,strerror(errno));
                 return FAILURE;}));
 
-    con->trans[con->track_id].rtcp_packet_cnt = 0;
-    con->trans[con->track_id].rtcp_octet = 0;
-    con->trans[con->track_id].rtcp_tick = con->trans[con->track_id].rtcp_tick_org;
+    t->rtcp_packet_cnt = 0;
+    t->rtcp_octet = 0;
+    t->rtcp_tick = t->rtcp_tick_org;
 
     return SUCCESS;
 }
