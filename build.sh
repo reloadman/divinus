@@ -1,83 +1,81 @@
 #!/bin/sh
 
-# Divinus build helper
+# Divinus build helper (offline, fixed toolchain list)
 # Usage:
-#   ./build.sh <platform> [debug]
-# Platforms:
-#   arm-glibc arm-musl3 arm-musl4 arm9-musl3 arm9-musl4 arm9-uclibc
-#   armhf-glibc armhf-musl armhf-uclibc mips-musl
-#   ak39xx cvitek gm813x hisi-v1 hisi-v2 hisi-v2a hisi-v3 hisi-v3a
-#   hisi-v4 hisi-v4a inge-t31 rv11xx star6 star6e
+#   ./build.sh [PLATFORM] [debug]
+# If PLATFORM is omitted, builds all toolchains from TOOLCHAIN_PAIRS.
+# Toolchains are expected to be already unpacked.
 
-DL="https://github.com/OpenIPC/firmware/releases/download/toolchain"
-EXT="tgz"
-PRE="linux"
+set -e
+
+TOOLCHAIN_ROOT="${TOOLCHAIN_ROOT:-$HOME/openipc/toolchain}"
 NPROC=$(command -v nproc >/dev/null 2>&1 && nproc || sysctl -n hw.ncpu || echo 1)
 
-toolchain() {
-	if [ ! -e toolchain/$1 ]; then
-		wget -c -q $DL/$1.$EXT -P $PWD 2>/dev/null || curl -L -s -o $PWD/$1.$EXT $DL/$1.$EXT
-		mkdir -p toolchain/$1
-		if [ "$EXT" = "zip" ]; then
-			unzip $1.$EXT || exit 1
-			chmod -R +x toolchain/$1/bin
-		else
-			tar -xf $1.$EXT -C toolchain/$1 --strip-components=1 || exit 1
-		fi
-		rm -f $1.$EXT
-	fi
-	make -j $NPROC -C src CC=$PWD/toolchain/$1/bin/$2-$PRE-gcc OPT="$OPT $3"
-}
+TOOLCHAIN_PAIRS="
+  sigmastar-infinity6b0:arm-openipc-linux-musleabihf
+  goke-gk7205v200:arm-openipc-linux-musleabi
+  hisilicon-hi3516ev200:arm-openipc-linux-musleabi
+  rockchip-rv1106:arm-openipc-linux-gnueabihf
+  sigmastar-infinity6c:arm-openipc-linux-musleabihf
+  sigmastar-infinity6e:arm-openipc-linux-gnueabihf
+  allwinner-v85x:arm-openipc-linux-musleabihf
+  novatek-nt9856x:arm-openipc-linux-musleabihf
+  fullhan-fh8852v200:arm-openipc-linux-musleabi
+  ingenic-t31:mipsel-openipc-linux-musl
+  ingenic-t40:mipsel-openipc-linux-musl
+"
 
 if [ "$2" = "debug" ]; then
-	OPT="-DDEBUG -gdwarf-3"
+    OPT="-DDEBUG -gdwarf-3"
 else
-	OPT="-Os -s"
+    OPT="-O2 -pipe -s"
 fi
 
-previous=$(cat .previous 2>/dev/null)
-if [ "$1" != "$previous" ]; then
-	echo "$1" > .previous
-	make -C src clean
-fi
+build_one() {
+    tc="$1"
+    comp="$2"
+    plat_name="${tc#*-}"
 
-if [ "$1" = "arm-glibc" ] || [ "$1" = "hisi-v4a" ]; then
-	toolchain toolchain.hisilicon-hi3516cv500 arm -lm
-elif [ "$1" = "arm-musl3" ] || [ "$1" = "hisi-v2a" ] || [ "$1" = "hisi-v3a" ]; then
-    toolchain toolchain.hisilicon-hi3516av100 arm
-elif [ "$1" = "arm-musl4" ] || [ "$1" = "hisi-v4" ]; then
-    toolchain toolchain.hisilicon-hi3516ev200 arm
-elif [ "$1" = "arm9-glibc" ] || [ "$1" = "ak39xx" ]; then
-	DL="https://github.com/Lamobo/Lamobo-D1/raw/master/compiler"
-	EXT="tar.bz2"
-	PRE="none-linux-gnueabi"
-	toolchain arm-2009q3-67-arm-none-linux-gnueabi-i686-pc-linux-gnu arm "-ldl -lm -lpthread -lrt -std=gnu99"
-elif [ "$1" = "arm9-musl3" ] || [ "$1" = "hisi-v1" ]; then
-	toolchain toolchain.hisilicon-hi3516cv100 arm
-elif [ "$1" = "arm9-musl4" ] || [ "$1" = "hisi-v2" ] || [ "$1" = "hisi-v3" ]; then
-	toolchain toolchain.hisilicon-hi3516cv200 arm
-elif [ "$1" = "arm9-uclibc" ] || [ "$1" = "gm813x" ]; then
-	toolchain toolchain.grainmedia-gm8136 arm
-elif [ "$1" = "armhf-glibc" ] || [ "$1" = "star6e" ]; then
-	toolchain toolchain.sigmastar-infinity6e arm -lm
-elif [ "$1" = "armhf-musl" ] || [ "$1" = "star6" ]; then
-	toolchain toolchain.sigmastar-infinity6 arm
-elif [ "$1" = "armhf-uclibc" ] || [ "$1" = "rv11xx" ]; then
-	if [ ! -e toolchain/toolchain.rockchip-rv11xx ]; then
-		git clone https://github.com/deerpi/arm-rockchip830-linux-uclibcgnueabihf toolchain/toolchain.rockchip-rv11xx
-	fi
-	PRE="rockchip830-linux-uclibcgnueabihf"
-	toolchain toolchain.rockchip-rv11xx arm
-elif [ "$1" = "mips-musl" ] || [ "$1" = "inge-t31" ]; then
-	toolchain toolchain.ingenic-t31 mipsel
-elif [ "$1" = "riscv64-musl" ] || [ "$1" = "cvitek" ]; then
-	DL="https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs"
-	EXT="tar.xz"
-	toolchain riscv64-lp64d--musl--stable-2024.05-1 riscv64
-else
-	echo "Usage: $0 [arm-glibc|arm-musl3|arm-musl4|arm9-glibc|arm9-musl3|arm9-musl4|arm9-uclibc|"
-        echo "           armhf-glibc|armhf-musl|armhf-uclibc|mips-musl|riscv64-musl|ak39xx|cvitek|gm813x|"
-        echo "           hisi-v1|hisi-v2|hisi-v2a|hisi-v3|hisi-v3a|hisi-v4|hisi-v4a|inge-t31|rv11xx|"
-        echo "           star6|star6e] (debug)"
-	rm -f .previous
-fi
+    echo "==> Building for ${tc} (${comp})"
+
+    dir="${TOOLCHAIN_ROOT}/${tc}"
+    cc="${dir}/bin/${comp}-gcc"
+    strip_bin="${dir}/bin/${comp}-strip"
+
+    if [ ! -d "$dir" ]; then
+        echo "Toolchain directory not found: $dir" >&2
+        return 1
+    fi
+    if [ ! -x "$cc" ]; then
+        echo "Compiler not found: $cc" >&2
+        return 1
+    fi
+
+    make -C src clean
+    make -j "$NPROC" -C src CC="$cc" OPT="$OPT"
+
+    [ -x "$strip_bin" ] && "$strip_bin" divinus 2>/dev/null || true
+
+    mkdir -p builds
+    cp -f divinus "builds/divinus.${plat_name}"
+    echo "✅ builds/divinus.${plat_name}"
+}
+
+run_platforms() {
+    target="$1"
+    found=0
+    for pair in $TOOLCHAIN_PAIRS; do
+        IFS=':' read -r tc comp <<EOF
+$pair
+EOF
+        if [ -z "$target" ] || [ "$target" = "$tc" ]; then
+            build_one "$tc" "$comp" && found=1 || return 1
+        fi
+    done
+    if [ -n "$target" ] && [ $found -eq 0 ]; then
+        echo "Platform not found: $target" >&2
+        return 1
+    fi
+}
+
+run_platforms "$1"
