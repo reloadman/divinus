@@ -24,6 +24,8 @@ unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
 int32_t *aacStash = NULL;
 unsigned int aacStashLen = 0;
+uint64_t aacTsBaseUs = 0;
+uint64_t aacFramesSent = 0;
 
 static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
@@ -72,7 +74,7 @@ static void *aenc_thread_aac(void) {
     HAL_INFO("media", "AAC encode thread loop start\n");
     while (keepRunning && audioOn) {
         pthread_mutex_lock(&aencMtx);
-        if (aacBuf.offset < sizeof(uint16_t)) {
+        if (aacBuf.offset < sizeof(uint16_t) + sizeof(uint64_t)) {
             pthread_mutex_unlock(&aencMtx);
             usleep(10000);
             continue;
@@ -80,6 +82,8 @@ static void *aenc_thread_aac(void) {
 
         uint16_t frame_len = (uint8_t)aacBuf.buf[0] |
             ((uint8_t)aacBuf.buf[1] << 8);
+        uint64_t ts_us = 0;
+        memcpy(&ts_us, aacBuf.buf + sizeof(uint16_t), sizeof(uint64_t));
 
         if (frame_len == 0 || frame_len > aacMaxOutputBytes) {
             HAL_WARNING("media", "AAC frame_len invalid: %u offset=%u\n",
@@ -89,25 +93,25 @@ static void *aenc_thread_aac(void) {
             continue;
         }
 
-        if (aacBuf.offset < frame_len + sizeof(uint16_t)) {
+        if (aacBuf.offset < frame_len + sizeof(uint16_t) + sizeof(uint64_t)) {
             pthread_mutex_unlock(&aencMtx);
             usleep(5000);
             continue;
         }
 
         unsigned char *payload =
-            (unsigned char *)(aacBuf.buf + sizeof(uint16_t));
+            (unsigned char *)(aacBuf.buf + sizeof(uint16_t) + sizeof(uint64_t));
 
         pthread_mutex_lock(&mp4Mtx);
         mp4_ingest_audio((char *)payload, frame_len);
         pthread_mutex_unlock(&mp4Mtx);
 
         if (app_config.rtsp_enable)
-            smolrtsp_push_aac(payload, frame_len, 0);
+            smolrtsp_push_aac(payload, frame_len, ts_us);
 
-        aacBuf.offset -= frame_len + sizeof(uint16_t);
+        aacBuf.offset -= frame_len + sizeof(uint16_t) + sizeof(uint64_t);
         if (aacBuf.offset)
-            memmove(aacBuf.buf, aacBuf.buf + frame_len + sizeof(uint16_t),
+            memmove(aacBuf.buf, aacBuf.buf + frame_len + sizeof(uint16_t) + sizeof(uint64_t),
                 aacBuf.offset);
         pthread_mutex_unlock(&aencMtx);
     }
@@ -245,14 +249,23 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         if (bytes > UINT16_MAX)
             bytes = UINT16_MAX;
 
+        // Derive RTP timestamp: base + frames*1024/srate
+        uint64_t ts_us = aacTsBaseUs +
+            (aacFramesSent * (uint64_t)1024 * 1000000ULL) / app_config.audio_srate;
+        aacFramesSent++;
+
         pthread_mutex_lock(&aencMtx);
         enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
-        enum BufError e2 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
-        if (e1 != BUF_OK || e2 != BUF_OK) {
-            HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
+        char ts_buf[8];
+        for (int i = 0; i < 8; i++) ts_buf[i] = (ts_us >> (i * 8)) & 0xFF;
+        enum BufError e2 = put(&aacBuf, ts_buf, 8);
+        enum BufError e3 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
+        if (e1 != BUF_OK || e2 != BUF_OK || e3 != BUF_OK) {
+            HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d e3=%d\n", e1, e2, e3);
             aacBuf.offset = 0;
         } else if (log_ok < 3) {
-            HAL_INFO("media", "AAC encoded bytes=%d ts=%u\n", bytes, frame->timestamp);
+            HAL_INFO("media", "AAC encoded bytes=%d ts_calc=%llu\n",
+                bytes, (unsigned long long)ts_us);
             log_ok++;
         }
         pthread_mutex_unlock(&aencMtx);
@@ -577,6 +590,8 @@ void disable_audio(void) {
         aacMaxOutputBytes = 0;
         aacPcmPos = 0;
         aacStashLen = 0;
+        aacTsBaseUs = 0;
+        aacFramesSent = 0;
         aacBuf.offset = 0;
     } else {
         shine_close(mp3Enc);
