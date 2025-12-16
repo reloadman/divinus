@@ -172,6 +172,11 @@ static SmolRTSP_RtpTransport *setup_rtp_transport(
     }
 
     c->channels = pair;
+    fprintf(stderr,
+        "[rtsp] setup track=%s session=%llu ch=%d/%d payload=%u clock=%u\n",
+        (kind == TRACK_VIDEO) ? "video" : "audio",
+        (unsigned long long)c->session_id,
+        pair.rtp_channel, pair.rtcp_channel, payload, clock);
     return rtp;
 }
 
@@ -261,6 +266,7 @@ static void Controller_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request
     pthread_mutex_lock(&g_srv.mtx);
     self->client->playing = 1;
     pthread_mutex_unlock(&g_srv.mtx);
+    fprintf(stderr, "[rtsp] PLAY session=%llu\n", (unsigned long long)self->client->session_id);
     // Nudge encoder to send fresh IDR/SPS/PPS so new client can decode right away.
     request_idr();
     smolrtsp_header(ctx, SMOLRTSP_HEADER_SESSION, "%llu", self->client->session_id);
@@ -470,6 +476,7 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
                                       : SmolRTSP_RtpTimestamp_SysClockUs(0);
 
     pthread_mutex_lock(&g_srv.mtx);
+    int sent = 0;
     for (int i = 0; i < MAX_CLIENTS; i++) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->video_nal || !c->playing)
@@ -479,8 +486,17 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
             // Best-effort send; skip on error.
             continue;
         }
+        sent++;
     }
     pthread_mutex_unlock(&g_srv.mtx);
+    if (sent == 0) {
+        static uint64_t last_log = 0;
+        uint64_t now = monotonic_us();
+        if (now - last_log > 2 * 1000000ULL) { // log once per 2s to avoid spam
+            fprintf(stderr, "[rtsp] video drop: no active clients\n");
+            last_log = now;
+        }
+    }
     return 0;
 }
 
@@ -498,6 +514,7 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     pthread_mutex_lock(&g_srv.mtx);
+    int sent = 0;
     for (int i = 0; i < MAX_CLIENTS; i++) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
@@ -507,7 +524,16 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         if (ret < 0) {
             continue;
         }
+        sent++;
     }
     pthread_mutex_unlock(&g_srv.mtx);
+    if (sent == 0) {
+        static uint64_t last_log = 0;
+        uint64_t now = monotonic_us();
+        if (now - last_log > 2 * 1000000ULL) {
+            fprintf(stderr, "[rtsp] audio drop: no active clients\n");
+            last_log = now;
+        }
+    }
     return 0;
 }
