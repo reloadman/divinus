@@ -6,6 +6,7 @@
 
 #include <smolrtsp.h>
 #include <smolrtsp-libevent.h>
+#include <datatype99.h>
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -21,7 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_CLIENTS RTSP_MAXIMUM_CONNECTIONS
+#define MAX_CLIENTS 16
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
 #define MP3_PAYLOAD_TYPE 14
@@ -116,22 +117,24 @@ declImpl(SmolRTSP_Droppable, Controller);
 static SmolRTSP_RtpTransport *setup_rtp_transport(
     SmolRtspClient *c, SmolRTSP_Context *ctx, SmolRTSP_TransportConfig cfg,
     track_kind kind) {
-    uint8_t rtp_ch = DEFAULT_TCP_CHANNEL_RTP;
-    uint8_t rtcp_ch = DEFAULT_TCP_CHANNEL_RTCP;
+    SmolRTSP_ChannelPair pair = {.rtp_channel = DEFAULT_TCP_CHANNEL_RTP,
+        .rtcp_channel = DEFAULT_TCP_CHANNEL_RTCP};
 
-    if (SmolRTSP_ChannelPairOption_is_present(&cfg.interleaved)) {
-        SmolRTSP_ChannelPair pair =
-            SmolRTSP_ChannelPairOption_unwrap(cfg.interleaved);
-        rtp_ch = pair.rtp_channel;
-        rtcp_ch = pair.rtcp_channel;
-    } else if (kind == TRACK_AUDIO) {
-        rtp_ch = 2;
-        rtcp_ch = 3;
+    match(cfg.interleaved) {
+        of(SmolRTSP_ChannelPair_Some, v) {
+            pair = *v;
+        }
+        otherwise {
+            if (kind == TRACK_AUDIO) {
+                pair.rtp_channel = 2;
+                pair.rtcp_channel = 3;
+            }
+        }
     }
 
     SmolRTSP_Writer writer = SmolRTSP_Context_get_writer(ctx);
     SmolRTSP_Transport t =
-        smolrtsp_transport_tcp(writer, rtp_ch, 256 * 1024 /* max buffer */);
+        smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
 
     uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
     uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : MP3_CLOCK;
@@ -145,7 +148,7 @@ static SmolRTSP_RtpTransport *setup_rtp_transport(
         c->audio_rtp = rtp;
     }
 
-    c->channels = (SmolRTSP_ChannelPair){rtp_ch, rtcp_ch};
+    c->channels = pair;
     return rtp;
 }
 
@@ -195,15 +198,14 @@ static void Controller_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Reques
     VSELF(Controller);
     SmolRtspClient *client = self->client;
 
-    SmolRTSP_Header *transport_header =
-        SmolRTSP_HeaderMap_get(&req->header_map, SMOLRTSP_HEADER_TRANSPORT);
-    if (!transport_header) {
+    CharSlice99 transport_value;
+    if (!SmolRTSP_HeaderMap_find(&req->header_map, SMOLRTSP_HEADER_TRANSPORT, &transport_value)) {
         smolrtsp_respond(ctx, SMOLRTSP_STATUS_BAD_REQUEST, "Transport required");
         return;
     }
 
     SmolRTSP_TransportConfig cfg = {0};
-    if (smolrtsp_parse_transport(&cfg, transport_header->value) < 0 ||
+    if (smolrtsp_parse_transport(&cfg, transport_value) < 0 ||
         cfg.lower != SmolRTSP_LowerTransport_TCP) {
         smolrtsp_respond(ctx, SMOLRTSP_STATUS_UNSUPPORTED_TRANSPORT, "TCP interleaved only");
         return;
@@ -387,13 +389,20 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
 
     SmolRTSP_NalUnit nalu;
     if (is_h265) {
-        SmolRTSP_H265NalHeader hdr = SmolRTSP_H265NalHeader_parse(buf[offset]);
+        if (len - offset < 2) {
+            return -1;
+        }
+        uint8_t hdr_bytes[2] = {buf[offset], buf[offset + 1]};
+        SmolRTSP_H265NalHeader hdr = SmolRTSP_H265NalHeader_parse(hdr_bytes);
         nalu.header = SmolRTSP_NalHeader_H265(hdr);
+        nalu.payload = U8Slice99_from_ptrdiff(
+            (uint8_t *)(buf + offset + 2), (uint8_t *)(buf + len));
     } else {
         SmolRTSP_H264NalHeader hdr = SmolRTSP_H264NalHeader_parse(buf[offset]);
         nalu.header = SmolRTSP_NalHeader_H264(hdr);
+        nalu.payload = U8Slice99_from_ptrdiff(
+            (uint8_t *)(buf + offset + 1), (uint8_t *)(buf + len));
     }
-    nalu.payload = U8Slice99_from_ptrdiff(buf + offset + 1, len - offset - 1);
 
     SmolRTSP_RtpTimestamp ts = ts_us ? SmolRTSP_RtpTimestamp_SysClockUs(ts_us)
                                       : SmolRTSP_RtpTimestamp_SysClockUs(0);
@@ -403,7 +412,7 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->video_nal || !c->playing)
             continue;
-        SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
+        (void)SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
     }
     pthread_mutex_unlock(&g_srv.mtx);
     return 0;
@@ -414,13 +423,13 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         return -1;
     SmolRTSP_RtpTimestamp ts = ts_us ? SmolRTSP_RtpTimestamp_SysClockUs(ts_us)
                                       : SmolRTSP_RtpTimestamp_SysClockUs(0);
-    U8Slice99 payload = U8Slice99_from_ptrdiff(buf, len);
+    U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     pthread_mutex_lock(&g_srv.mtx);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
-        SmolRTSP_RtpTransport_send_packet(
+        (void)SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, U8Slice99_empty(), payload);
     }
     pthread_mutex_unlock(&g_srv.mtx);
