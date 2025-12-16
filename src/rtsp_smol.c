@@ -15,6 +15,7 @@
 #include <event2/thread.h>
 
 #include <arpa/inet.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -63,6 +64,8 @@ static uint32_t g_audio_ts_raw = 0;
 typedef struct SmolRtspClient {
     uint64_t session_id;
     struct bufferevent *bev;
+    struct sockaddr_storage peer_addr;
+    socklen_t peer_addr_len;
     Controller controller_state;
     SmolRTSP_Controller controller_iface;
     void *dispatch_ctx;
@@ -147,47 +150,138 @@ static void Controller_drop(VSelf) {
 declImpl(SmolRTSP_Controller, Controller);
 declImpl(SmolRTSP_Droppable, Controller);
 
-static SmolRTSP_RtpTransport *setup_rtp_transport(
+static int setup_rtp_transport(
     SmolRtspClient *c, SmolRTSP_Context *ctx, SmolRTSP_TransportConfig cfg,
     track_kind kind) {
-    SmolRTSP_ChannelPair pair = {.rtp_channel = DEFAULT_TCP_CHANNEL_RTP,
-        .rtcp_channel = DEFAULT_TCP_CHANNEL_RTCP};
-
-    match(cfg.interleaved) {
-        of(SmolRTSP_ChannelPair_Some, v) {
-            pair = *v;
+    // Drop previous transport for this track (best-effort).
+    if (kind == TRACK_VIDEO) {
+        if (c->video_nal) {
+            VTABLE(SmolRTSP_NalTransport, SmolRTSP_Droppable).drop(c->video_nal);
+            c->video_nal = NULL;
         }
-        otherwise {
-            if (kind == TRACK_AUDIO) {
-                pair.rtp_channel = 2;
-                pair.rtcp_channel = 3;
-            }
+        if (c->video_rtp) {
+            VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(c->video_rtp);
+            c->video_rtp = NULL;
+        }
+    } else {
+        if (c->audio_rtp) {
+            VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(c->audio_rtp);
+            c->audio_rtp = NULL;
         }
     }
-
-    SmolRTSP_Writer writer = SmolRTSP_Context_get_writer(ctx);
-    SmolRTSP_Transport t =
-        smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
 
     uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : audio_payload_type();
     uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : audio_clock_hz();
 
-    SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
+    if (cfg.lower == SmolRTSP_LowerTransport_TCP) {
+        SmolRTSP_ChannelPair pair = {.rtp_channel = DEFAULT_TCP_CHANNEL_RTP,
+            .rtcp_channel = DEFAULT_TCP_CHANNEL_RTCP};
 
-    if (kind == TRACK_VIDEO) {
-        c->video_rtp = rtp;
-        c->video_nal = SmolRTSP_NalTransport_new(rtp);
-    } else {
-        c->audio_rtp = rtp;
+        match(cfg.interleaved) {
+            of(SmolRTSP_ChannelPair_Some, v) {
+                pair = *v;
+            }
+            otherwise {
+                if (kind == TRACK_AUDIO) {
+                    pair.rtp_channel = 2;
+                    pair.rtcp_channel = 3;
+                }
+            }
+        }
+
+        SmolRTSP_Writer writer = SmolRTSP_Context_get_writer(ctx);
+        SmolRTSP_Transport t =
+            smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
+
+        SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
+
+        if (kind == TRACK_VIDEO) {
+            c->video_rtp = rtp;
+            c->video_nal = SmolRTSP_NalTransport_new(rtp);
+        } else {
+            c->audio_rtp = rtp;
+        }
+
+        c->channels = pair;
+        smolrtsp_header(
+            ctx, SMOLRTSP_HEADER_TRANSPORT, "RTP/AVP/TCP;unicast;interleaved=%d-%d",
+            pair.rtp_channel, pair.rtcp_channel);
+
+        fprintf(stderr,
+            "[rtsp] setup track=%s session=%llu tcp ch=%d/%d payload=%u clock=%u\n",
+            (kind == TRACK_VIDEO) ? "video" : "audio",
+            (unsigned long long)c->session_id,
+            pair.rtp_channel, pair.rtcp_channel, payload, clock);
+        return 0;
     }
 
-    c->channels = pair;
-    fprintf(stderr,
-        "[rtsp] setup track=%s session=%llu ch=%d/%d payload=%u clock=%u\n",
-        (kind == TRACK_VIDEO) ? "video" : "audio",
-        (unsigned long long)c->session_id,
-        pair.rtp_channel, pair.rtcp_channel, payload, clock);
-    return rtp;
+    // Default RTSP transport is UDP; support it for ffmpeg/ffplay defaults.
+    if (cfg.lower == SmolRTSP_LowerTransport_UDP) {
+        ifLet(cfg.client_port, SmolRTSP_PortPair_Some, client_port) {
+            const struct sockaddr *addr = (const struct sockaddr *)&c->peer_addr;
+            const int af = addr->sa_family;
+            const void *ip = smolrtsp_sockaddr_ip(addr);
+
+            int rtp_fd = smolrtsp_dgram_socket(af, ip, client_port->rtp_port);
+            if (rtp_fd == -1) {
+                smolrtsp_respond_internal_error(ctx);
+                return -1;
+            }
+
+            // Best-effort RTCP socket (we don't send RTCP, but some clients expect a pair).
+            int rtcp_fd = smolrtsp_dgram_socket(af, ip, client_port->rtcp_port);
+            if (rtcp_fd != -1) {
+                close(rtcp_fd);
+            }
+
+            SmolRTSP_Transport t = smolrtsp_transport_udp(rtp_fd);
+            SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
+
+            if (kind == TRACK_VIDEO) {
+                c->video_rtp = rtp;
+                c->video_nal = SmolRTSP_NalTransport_new(rtp);
+            } else {
+                c->audio_rtp = rtp;
+            }
+
+            // Include server_port using the ephemeral local port chosen for this socket.
+            struct sockaddr_storage local;
+            socklen_t local_len = sizeof local;
+            uint16_t server_rtp_port = 0;
+            if (getsockname(rtp_fd, (struct sockaddr *)&local, &local_len) == 0) {
+                if (local.ss_family == AF_INET)
+                    server_rtp_port = ntohs(((struct sockaddr_in *)&local)->sin_port);
+                else if (local.ss_family == AF_INET6)
+                    server_rtp_port = ntohs(((struct sockaddr_in6 *)&local)->sin6_port);
+            }
+
+            if (server_rtp_port) {
+                smolrtsp_header(
+                    ctx, SMOLRTSP_HEADER_TRANSPORT,
+                    "RTP/AVP/UDP;unicast;client_port=%" PRIu16 "-%" PRIu16 ";server_port=%" PRIu16 "-%" PRIu16,
+                    client_port->rtp_port, client_port->rtcp_port,
+                    server_rtp_port, (uint16_t)(server_rtp_port + 1));
+            } else {
+                smolrtsp_header(
+                    ctx, SMOLRTSP_HEADER_TRANSPORT,
+                    "RTP/AVP/UDP;unicast;client_port=%" PRIu16 "-%" PRIu16,
+                    client_port->rtp_port, client_port->rtcp_port);
+            }
+
+            fprintf(stderr,
+                "[rtsp] setup track=%s session=%llu udp dst=%" PRIu16 "/%" PRIu16 " payload=%u clock=%u\n",
+                (kind == TRACK_VIDEO) ? "video" : "audio",
+                (unsigned long long)c->session_id,
+                client_port->rtp_port, client_port->rtcp_port, payload, clock);
+            return 0;
+        }
+
+        smolrtsp_respond(ctx, SMOLRTSP_STATUS_BAD_REQUEST, "`client_port' required for UDP");
+        return -1;
+    }
+
+    smolrtsp_respond(ctx, SMOLRTSP_STATUS_UNSUPPORTED_TRANSPORT, "Unsupported transport");
+    return -1;
 }
 
 static void Controller_options(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
@@ -239,9 +333,8 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
                 ret, w,
                 (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
                 (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // Be explicit for ffmpeg: use "MP3" encoding name (non-standard but
-                // widely accepted) so it selects the MP3 decoder.
-                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MP3/%d/%d",
+                // RFC 3555: use MPA + fmtp layer=3 (MP3). RTP clock is typically 90 kHz.
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d/%d",
                     MP3_PAYLOAD_TYPE,
                     audio_clock_hz(),
                     app_config.audio_channels ? app_config.audio_channels : 1),
@@ -268,9 +361,8 @@ static void Controller_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Reques
     }
 
     SmolRTSP_TransportConfig cfg = {0};
-    if (smolrtsp_parse_transport(&cfg, transport_value) < 0 ||
-        cfg.lower != SmolRTSP_LowerTransport_TCP) {
-        smolrtsp_respond(ctx, SMOLRTSP_STATUS_UNSUPPORTED_TRANSPORT, "TCP interleaved only");
+    if (smolrtsp_parse_transport(&cfg, transport_value) < 0) {
+        smolrtsp_respond(ctx, SMOLRTSP_STATUS_BAD_REQUEST, "Malformed Transport");
         return;
     }
 
@@ -281,14 +373,12 @@ static void Controller_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Reques
     pthread_mutex_lock(&g_srv.mtx);
     if (!client->session_id)
         client->session_id = gen_session_id();
-    setup_rtp_transport(client, ctx, cfg, kind);
+    if (setup_rtp_transport(client, ctx, cfg, kind) < 0) {
+        pthread_mutex_unlock(&g_srv.mtx);
+        return;
+    }
     pthread_mutex_unlock(&g_srv.mtx);
 
-    uint8_t rtp_ch = client->channels.rtp_channel;
-    uint8_t rtcp_ch = client->channels.rtcp_channel;
-    smolrtsp_header(
-        ctx, SMOLRTSP_HEADER_TRANSPORT, "RTP/AVP/TCP;unicast;interleaved=%d-%d",
-        rtp_ch, rtcp_ch);
     smolrtsp_header(ctx, SMOLRTSP_HEADER_SESSION, "%llu;timeout=30", client->session_id);
     smolrtsp_respond_ok(ctx);
 }
@@ -339,11 +429,13 @@ impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
 static inline uint32_t audio_clock_hz(void) {
-    // Use the actual sample rate for both AAC and MP3 to keep RTP clock,
-    // SDP rtpmap, and decoder expectations aligned (ffmpeg/ffplay otherwise
-    // treat 90 kHz as the media sample rate and fail to decode).
     uint32_t srate = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
-    return srate ? srate : 48000;
+    if (!srate) srate = 48000;
+    // AAC (RFC 3640) uses RTP clock equal to sampling rate.
+    if (audio_uses_aac())
+        return srate;
+    // MPEG audio (RFC 3555) commonly uses 90 kHz RTP clock.
+    return 90000;
 }
 
 static inline int audio_uses_aac(void) {
@@ -453,8 +545,6 @@ static void listener_cb(
     struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *sa,
     int socklen, void *arg) {
     (void)listener;
-    (void)sa;
-    (void)socklen;
     struct event_base *base = arg;
 
     struct bufferevent *bev =
@@ -473,6 +563,16 @@ static void listener_cb(
     }
 
     slot->bev = bev;
+    // Save peer address for UDP RTP setup.
+    memset(&slot->peer_addr, 0, sizeof slot->peer_addr);
+    slot->peer_addr_len = 0;
+    if (sa && socklen > 0) {
+        size_t n = (size_t)socklen;
+        if (n > sizeof slot->peer_addr)
+            n = sizeof slot->peer_addr;
+        memcpy(&slot->peer_addr, sa, n);
+        slot->peer_addr_len = (socklen_t)n;
+    }
     slot->controller_state.client = slot;
     slot->controller_iface =
         DYN(Controller, SmolRTSP_Controller, &slot->controller_state);
