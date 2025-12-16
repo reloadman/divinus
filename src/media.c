@@ -21,6 +21,7 @@ unsigned long aacMaxOutputBytes = 0;
 int32_t *aacPcm = NULL;
 unsigned char *aacOut = NULL;
 unsigned int aacPcmPos = 0;
+unsigned int aacChannels = 1;
 
 static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
@@ -183,24 +184,66 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         return EXIT_FAILURE;
     }
 
-    // HAL PCM is 16-bit mono; treat buffer as shorts regardless of alignment
-    unsigned int samples = frame->length[0] / 2;
+    unsigned int channels = frame->channelCnt ? (unsigned int)frame->channelCnt : aacChannels;
+    if (channels == 0) channels = 1;
+
+    // If HAL reports different channel count, re-init AAC encoder once.
+    static int aac_reconfig_done = 0;
+    if (!aac_reconfig_done && channels != aacChannels) {
+        HAL_WARNING("media", "AAC reinit: hal channels=%u codec=%u, reopening faac\n",
+            channels, aacChannels);
+        faacEncClose(aacEnc);
+        free(aacPcm);
+        free(aacOut);
+        aacEnc = faacEncOpen(app_config.audio_srate, channels,
+            &aacInputSamples, &aacMaxOutputBytes);
+        if (!aacEnc) {
+            HAL_ERROR("media", "AAC reinit failed!\n");
+            return EXIT_FAILURE;
+        }
+        faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
+        cfg->aacObjectType = LOW;
+        cfg->mpegVersion = MPEG4;
+        cfg->useTns = 0;
+        cfg->allowMidside = channels > 1;
+        cfg->outputFormat = 0;
+        cfg->bitRate = app_config.audio_bitrate * 1000 / channels;
+        cfg->inputFormat = FAAC_INPUT_16BIT;
+        if (!faacEncSetConfiguration(aacEnc, cfg)) {
+            HAL_ERROR("media", "AAC reinit set config failed!\n");
+            return EXIT_FAILURE;
+        }
+        aacPcm = calloc(aacInputSamples * channels, sizeof(int32_t));
+        aacOut = malloc(aacMaxOutputBytes);
+        if (!aacPcm || !aacOut) {
+            HAL_ERROR("media", "AAC reinit buffer alloc failed!\n");
+            return EXIT_FAILURE;
+        }
+        aacChannels = channels;
+        aacPcmPos = 0;
+        aac_reconfig_done = 1;
+    }
+
+    // HAL PCM is 16-bit interleaved
+    unsigned int samples_per_ch = frame->length[0] / (2 * channels);
     short *pcm16 = (short *)frame->data[0];
     unsigned int consumed = 0;
     static uint32_t last_ts = 0;
     static int log_cnt = 0;
     uint32_t delta_ts = frame->timestamp - last_ts;
         if (log_cnt < 3) {
-        HAL_INFO("media", "AAC in frame len=%u samples=%u ts=%u dt=%u\n",
-            frame->length[0], samples, frame->timestamp, delta_ts);
+        HAL_INFO("media", "AAC in frame len=%u samples/ch=%u ch=%u ts=%u dt=%u\n",
+            frame->length[0], samples_per_ch, channels, frame->timestamp, delta_ts);
             log_cnt++;
         }
     last_ts = frame->timestamp;
 
-    while (consumed < samples) {
-        unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples - consumed);
+    while (consumed < samples_per_ch) {
+        unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples_per_ch - consumed);
         for (unsigned int i = 0; i < chunk; i++)
-            aacPcm[aacPcmPos + i] = (int32_t)pcm16[consumed + i];
+            for (unsigned int ch = 0; ch < channels; ch++)
+                aacPcm[(aacPcmPos + i) * channels + ch] =
+                    (int32_t)pcm16[(consumed + i) * channels + ch];
         aacPcmPos += chunk;
         consumed += chunk;
 
