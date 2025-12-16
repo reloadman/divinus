@@ -75,6 +75,10 @@ typedef struct SmolRtspClient {
     SmolRTSP_ChannelPair channels;
     int playing;
     int alive;
+    // Slot is reserved for cleanup; avoid reuse until resources are freed.
+    int closing;
+    // Prevent scheduling multiple deferred drops for same client.
+    int drop_scheduled;
 } SmolRtspClient;
 
 typedef struct {
@@ -96,7 +100,7 @@ static uint64_t gen_session_id(void) {
 
 static SmolRtspClient *alloc_client(void) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!g_srv.clients[i].alive) {
+        if (!g_srv.clients[i].alive && !g_srv.clients[i].closing) {
             memset(&g_srv.clients[i], 0, sizeof(SmolRtspClient));
             g_srv.clients[i].alive = 1;
             g_client_count++;
@@ -116,6 +120,7 @@ static SmolRtspClient *find_client(uint64_t session_id) {
 
 static void drop_client(SmolRtspClient *c) {
     if (!c) return;
+    const int was_alive = c->alive;
     fprintf(stderr, "[rtsp] drop_client session=%llu alive=%d bev=%p\n",
             (unsigned long long)c->session_id, c->alive, (void *)c->bev);
     if (c->video_nal) {
@@ -131,16 +136,65 @@ static void drop_client(SmolRtspClient *c) {
         c->audio_rtp = NULL;
     }
     if (c->bev) {
+        // Make sure no callbacks will fire anymore.
+        bufferevent_disable(c->bev, EV_READ | EV_WRITE);
+        bufferevent_setcb(c->bev, NULL, NULL, NULL, NULL);
         bufferevent_free(c->bev);
         c->bev = NULL;
     }
-    // Keep dispatch_ctx allocated to avoid use-after-free in libevent callbacks.
+    // Safe to free dispatch_ctx only when we are outside any bufferevent callbacks.
+    if (c->dispatch_ctx) {
+        smolrtsp_libevent_ctx_free(c->dispatch_ctx);
+        c->dispatch_ctx = NULL;
+    }
     c->playing = 0;
     c->alive = 0;
-    if (g_client_count > 0)
-        g_client_count--;
-    if (g_client_count == 0)
-        reset_audio_ts();
+    c->closing = 0;
+    c->drop_scheduled = 0;
+    if (was_alive) {
+        if (g_client_count > 0)
+            g_client_count--;
+        if (g_client_count == 0)
+            reset_audio_ts();
+    }
+}
+
+static void drop_client_deferred(evutil_socket_t fd, short what, void *arg) {
+    (void)fd;
+    (void)what;
+    SmolRtspClient *c = arg;
+    pthread_mutex_lock(&g_srv.mtx);
+    drop_client(c);
+    pthread_mutex_unlock(&g_srv.mtx);
+}
+
+static void on_write_close_cb(struct bufferevent *bev, void *ctx) {
+    (void)ctx;
+    if (!bev)
+        return;
+    // When output buffer is drained, we can safely drop the client.
+    struct evbuffer *out = bufferevent_get_output(bev);
+    if (!out || evbuffer_get_length(out) != 0)
+        return;
+
+    SmolRtspClient *target = NULL;
+    pthread_mutex_lock(&g_srv.mtx);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        SmolRtspClient *c = &g_srv.clients[i];
+        if (c->bev == bev) {
+            if (c->closing && !c->drop_scheduled)
+                target = c;
+            break;
+        }
+    }
+    if (target)
+        target->drop_scheduled = 1;
+    pthread_mutex_unlock(&g_srv.mtx);
+
+    if (target) {
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
+        event_base_once(g_srv.base, -1, EV_TIMEOUT, drop_client_deferred, target, &tv);
+    }
 }
 
 static void Controller_drop(VSelf) {
@@ -399,10 +453,29 @@ static void Controller_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request
 static void Controller_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)req;
     VSELF(Controller);
-    pthread_mutex_lock(&g_srv.mtx);
-    drop_client(self->client);
-    pthread_mutex_unlock(&g_srv.mtx);
+    // IMPORTANT: do not free the bufferevent inside the read callback
+    // (smolrtsp_libevent_cb), because it will access the evbuffer after dispatch.
     smolrtsp_respond_ok(ctx);
+
+    pthread_mutex_lock(&g_srv.mtx);
+    if (self->client) {
+        SmolRtspClient *c = self->client;
+        c->playing = 0;
+        if (c->alive) {
+            c->alive = 0;
+            if (g_client_count > 0)
+                g_client_count--;
+            if (g_client_count == 0)
+                reset_audio_ts();
+        }
+        c->closing = 1;
+        if (c->bev) {
+            // Stop parsing new requests; keep writes enabled to flush response.
+            bufferevent_disable(c->bev, EV_READ);
+            bufferevent_setcb(c->bev, NULL, on_write_close_cb, on_event_cb, c->dispatch_ctx);
+        }
+    }
+    pthread_mutex_unlock(&g_srv.mtx);
 }
 
 static void Controller_unknown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
@@ -515,10 +588,13 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
             (events & BEV_EVENT_ERROR)   ? "ERROR" :
             (events & BEV_EVENT_TIMEOUT) ? "TIMEOUT" : "EOF";
         fprintf(stderr, "[rtsp] client event %s bev=%p\n", ev, (void *)bev);
+        SmolRtspClient *target = NULL;
         pthread_mutex_lock(&g_srv.mtx);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             SmolRtspClient *c = &g_srv.clients[i];
-            if (!c->alive || c->bev != bev)
+            if (!c->bev || c->bev != bev)
+                continue;
+            if (!c->alive && !c->closing)
                 continue;
             fprintf(stderr, "[rtsp] marking client dead (event=%s) session=%llu\n",
                     ev, (unsigned long long)c->session_id);
@@ -527,14 +603,26 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
             bufferevent_setcb(bev, NULL, NULL, NULL, NULL);
             // Do NOT free transports here; just mark the slot dead.
             c->playing = 0;
+            const int was_alive = c->alive;
             c->alive = 0;
-            if (g_client_count > 0)
-                g_client_count--;
-            if (g_client_count == 0)
-                reset_audio_ts();
+            c->closing = 1;
+            if (was_alive) {
+                if (g_client_count > 0)
+                    g_client_count--;
+                if (g_client_count == 0)
+                    reset_audio_ts();
+            }
+            if (!c->drop_scheduled)
+                target = c;
             break;
         }
+        if (target)
+            target->drop_scheduled = 1;
         pthread_mutex_unlock(&g_srv.mtx);
+        if (target) {
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
+            event_base_once(g_srv.base, -1, EV_TIMEOUT, drop_client_deferred, target, &tv);
+        }
         // Do not propagate further; just return.
         return;
     }
