@@ -8,6 +8,7 @@
 #include "server.h"
 #include "watchdog.h"
 
+#include <errno.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
@@ -17,16 +18,41 @@
 
 char graceful = 0, keepRunning = 1;
 
+static const char *signal_name(int signo) {
+    switch (signo) {
+    case SIGABRT: return "SIGABRT";
+    case SIGBUS:  return "SIGBUS";
+    case SIGFPE:  return "SIGFPE";
+    case SIGILL:  return "SIGILL";
+    case SIGSEGV: return "SIGSEGV";
+    case SIGINT:  return "SIGINT";
+    case SIGQUIT: return "SIGQUIT";
+    case SIGTERM: return "SIGTERM";
+    case SIGPIPE: return "SIGPIPE";
+    default:      return "SIGUNKNOWN";
+    }
+}
+
 void handle_error(int signo) {
-    char msg[64];
-    sprintf(msg, "Error occured (%d)! Quitting...\n", signo);
-    write(STDERR_FILENO, msg, strlen(msg));
+    char msg[128];
+    int len = snprintf(
+        msg, sizeof(msg),
+        "Error occured (%d:%s) errno=%d (%s) ! Quitting...\n",
+        signo, signal_name(signo), errno, strerror(errno));
+    if (len > 0)
+        write(STDERR_FILENO, msg, (size_t)len);
     keepRunning = 0;
     exit(EXIT_FAILURE);
 }
 
 void handle_exit(int signo) {
-    write(STDERR_FILENO, "Graceful shutdown...\n", 21);
+    char msg[128];
+    int len = snprintf(
+        msg, sizeof(msg),
+        "Graceful shutdown... (%d:%s)\n",
+        signo, signal_name(signo));
+    if (len > 0)
+        write(STDERR_FILENO, msg, (size_t)len);
     keepRunning = 0;
     graceful = 1;
 }

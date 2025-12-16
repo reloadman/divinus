@@ -101,6 +101,8 @@ static SmolRtspClient *find_client(uint64_t session_id) {
 
 static void drop_client(SmolRtspClient *c) {
     if (!c) return;
+    fprintf(stderr, "[rtsp] drop_client session=%llu alive=%d bev=%p\n",
+            (unsigned long long)c->session_id, c->alive, (void *)c->bev);
     if (c->dispatch_ctx) {
         smolrtsp_libevent_ctx_free(c->dispatch_ctx);
         c->dispatch_ctx = NULL;
@@ -319,11 +321,15 @@ static inline void reset_audio_ts(void) { g_audio_ts_us = 0; }
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        fprintf(stderr, "[rtsp] client event %s bev=%p\n",
+                (events & BEV_EVENT_ERROR) ? "ERROR" : "EOF", (void *)bev);
         pthread_mutex_lock(&g_srv.mtx);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             SmolRtspClient *c = &g_srv.clients[i];
             if (!c->alive || c->bev != bev)
                 continue;
+            fprintf(stderr, "[rtsp] dropping client session=%llu\n",
+                    (unsigned long long)c->session_id);
             drop_client(c);
             c->alive = 0;
             break;
