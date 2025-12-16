@@ -169,8 +169,16 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int samples = frame->length[0] / 2;
     short *pcm = (short *)frame->data[0];
     unsigned int consumed = 0;
-    HAL_INFO("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u\n",
-        frame->length[0], samples, aacPcmPos, aacBuf.offset);
+    static uint32_t last_ts = 0;
+    static int log_cnt = 0;
+    uint32_t delta_ts = frame->timestamp - last_ts;
+    if (log_cnt < 5) {
+        HAL_INFO("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u ts=%u dt=%u\n",
+            frame->length[0], samples, aacPcmPos, aacBuf.offset,
+            frame->timestamp, delta_ts);
+        log_cnt++;
+    }
+    last_ts = frame->timestamp;
 
     while (consumed < samples) {
         unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples - consumed);
@@ -561,6 +569,11 @@ int enable_audio(void) {
     if (audioOn) return ret;
 
     active_audio_codec = app_config.audio_codec ? app_config.audio_codec : HAL_AUDCODEC_MP3;
+    if (active_audio_codec == HAL_AUDCODEC_AAC && app_config.audio_srate > 32000) {
+        HAL_WARNING("media", "AAC: clamping samplerate from %u to 32000 to match HAL cadence\n",
+            app_config.audio_srate);
+        app_config.audio_srate = 32000;
+    }
     HAL_INFO("media", "Audio init: codec=%s srate=%u bitrate=%u channels=%u gain=%d\n",
         active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" :
         (active_audio_codec == HAL_AUDCODEC_MP3 ? "MP3" : "UNSPEC"),
