@@ -103,10 +103,6 @@ static void drop_client(SmolRtspClient *c) {
     if (!c) return;
     fprintf(stderr, "[rtsp] drop_client session=%llu alive=%d bev=%p\n",
             (unsigned long long)c->session_id, c->alive, (void *)c->bev);
-    if (c->dispatch_ctx) {
-        smolrtsp_libevent_ctx_free(c->dispatch_ctx);
-        c->dispatch_ctx = NULL;
-    }
     if (c->video_nal) {
         VTABLE(SmolRTSP_NalTransport, SmolRTSP_Droppable).drop(c->video_nal);
         c->video_nal = NULL;
@@ -123,7 +119,9 @@ static void drop_client(SmolRtspClient *c) {
         bufferevent_free(c->bev);
         c->bev = NULL;
     }
-    memset(c, 0, sizeof(*c));
+    // Keep dispatch_ctx allocated to avoid use-after-free in libevent callbacks.
+    c->playing = 0;
+    c->alive = 0;
     if (g_client_count > 0)
         g_client_count--;
     if (g_client_count == 0)
