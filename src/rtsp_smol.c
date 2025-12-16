@@ -299,6 +299,12 @@ static inline uint64_t audio_frame_duration_us(void) {
     return (uint64_t)1152 * 1000000ULL / sr;
 }
 
+static inline uint64_t monotonic_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
@@ -466,7 +472,7 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!ts_us) {
         uint64_t frame_us = audio_frame_duration_us();
         if (!audio_ts_us)
-            audio_ts_us = smolrtsp_sysclock_us();
+            audio_ts_us = monotonic_us();
         else
             audio_ts_us += frame_us ? frame_us : 0;
         ts_us = audio_ts_us;
