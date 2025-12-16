@@ -1,4 +1,5 @@
 #include "app_config.h"
+#include <ctype.h>
 
 const char *appconf_paths[] = {"./divinus.yaml", "/etc/divinus.yaml"};
 
@@ -487,18 +488,39 @@ enum ConfigError parse_app_config(void) {
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);
     if (app_config.mp4_enable) {
         {
-            const char *possible_values[] = {"H.264", "H.265", "H264", "H265", "AVC", "HEVC",
-                "H.264+", "H264+", "AVC+"};
-            const int count = sizeof(possible_values) / sizeof(const char *);
-            int val = 0;
-            parse_enum(&ini, "mp4", "codec", (void *)&val,
-                possible_values, count, 0);
-            // Even indices are H.264 family, odd are H.265 family.
-            if (val % 2)
-                app_config.mp4_codecH265 = true;
-            else
+            // Accept: H.264/H264/AVC, H.265/H265/HEVC, and "+" variants: H.264+/H264+/AVC+.
+            // Do NOT rely on enum index parity (e.g. "H264+" used to map to H.265 by accident).
+            char codec_raw[32] = {0};
+            if (parse_param_value(&ini, "mp4", "codec", codec_raw) == CONFIG_OK) {
+                char norm[32] = {0};
+                int j = 0;
+                for (int i = 0; codec_raw[i] && j < (int)sizeof(norm) - 1; i++) {
+                    unsigned char c = (unsigned char)codec_raw[i];
+                    if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '.')
+                        continue;
+                    norm[j++] = (char)toupper(c);
+                }
+                norm[j] = '\0';
+
+                const bool plus = (strchr(norm, '+') != NULL);
+                const bool is_h265 = (CONTAINS(norm, "H265") || CONTAINS(norm, "HEVC") || CONTAINS(norm, "265"));
+                const bool is_h264 = (CONTAINS(norm, "H264") || CONTAINS(norm, "AVC") || CONTAINS(norm, "264"));
+
+                if (is_h265) {
+                    app_config.mp4_codecH265 = true;
+                } else if (is_h264) {
+                    app_config.mp4_codecH265 = false;
+                } else {
+                    // Default: H.264 (backwards compatible).
+                    app_config.mp4_codecH265 = false;
+                }
+
+                // "H.264+" is only meaningful for H.264 streams.
+                app_config.mp4_h264_plus = (plus && !app_config.mp4_codecH265);
+            } else {
                 app_config.mp4_codecH265 = false;
-            app_config.mp4_h264_plus = (!app_config.mp4_codecH265 && val >= 6);
+                app_config.mp4_h264_plus = false;
+            }
         }
         {
             const char *possible_values[] = {"CBR", "VBR", "QP", "ABR", "AVBR"};
