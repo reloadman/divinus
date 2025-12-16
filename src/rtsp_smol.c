@@ -330,8 +330,10 @@ impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
 static inline uint32_t audio_clock_hz(void) {
-    // Use actual sample rate when known; fall back to 90 kHz if unset.
-    return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 90000;
+    // RFC 2250: MPEG audio PT14 uses 90 kHz clock; AAC uses sample rate.
+    if (app_config.audio_codec == HAL_AUDCODEC_AAC)
+        return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
+    return 90000;
 }
 
 static inline int audio_uses_aac(void) {
@@ -590,20 +592,16 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         return -1;
     SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint64_t frame_us = audio_frame_duration_us();
-        if (!g_audio_ts_us)
-            g_audio_ts_us = monotonic_us();
-        else
-            g_audio_ts_us += frame_us ? frame_us : 0;
-        ts_us = g_audio_ts_us;
-        ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+        uint32_t raw = g_audio_ts_raw;
+        g_audio_ts_raw += audio_ts_step();
+        ts = SmolRTSP_RtpTimestamp_Raw(raw);
     } else {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     }
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     // RFC 2250: prepend a 4-byte MPEG audio header (no fragmentation).
-    // Length MUST include this header + MPEG audio payload.
-    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | ((len + 4) & 0x3FFF));
+    // Length MUST include only MPEG payload (not the 4-byte header).
+    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | (len & 0x3FFF));
     uint8_t rtp_hdr[4] = {
         (uint8_t)(hdr_first >> 8),
         (uint8_t)(hdr_first & 0xFF),
