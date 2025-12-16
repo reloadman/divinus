@@ -26,7 +26,9 @@
 #define MAX_CLIENTS 16
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
-#define MP3_PAYLOAD_TYPE 14
+// Use a dynamic payload type for MP3 to avoid clients (ffmpeg/ffplay) treating
+// static PT=14 "MPA" as MP2 and failing to detect MP3 frame parameters.
+#define MP3_PAYLOAD_TYPE 98
 #define AAC_PAYLOAD_TYPE 97
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
@@ -237,8 +239,12 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
                 ret, w,
                 (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
                 (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // Payload type 14 is static MPA (MP1/MP2/MP3); RTP clock = sample rate.
-                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
+                // Use dynamic PT + fmtp layer=3 so clients (ffmpeg/ffplay) pick MP3,
+                // instead of mapping static PT=14 ("MPA") to MP2.
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d/%d",
+                    MP3_PAYLOAD_TYPE,
+                    audio_clock_hz(),
+                    app_config.audio_channels ? app_config.audio_channels : 1),
                 (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
         }
     }
