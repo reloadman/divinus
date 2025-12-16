@@ -24,8 +24,7 @@ unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
 int32_t *aacStash = NULL;
 unsigned int aacStashLen = 0;
-uint64_t aacTsBaseUs = 0;
-uint64_t aacFramesSent = 0;
+uint64_t aacStashTsUs = 0;
 
 static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
@@ -249,10 +248,11 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         if (bytes > UINT16_MAX)
             bytes = UINT16_MAX;
 
-        // Derive RTP timestamp: base + frames*1024/srate
-        uint64_t ts_us = aacTsBaseUs +
-            (aacFramesSent * (uint64_t)1024 * 1000000ULL) / app_config.audio_srate;
-        aacFramesSent++;
+        // RTP timestamp from stash base
+        uint64_t ts_us = aacStashTsUs ? aacStashTsUs :
+            (uint64_t)frame->timestamp;
+        if (aacStashTsUs)
+            aacStashTsUs += ((uint64_t)aacInputSamples * 1000000ULL) / app_config.audio_srate;
 
         pthread_mutex_lock(&aencMtx);
         enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
@@ -590,8 +590,7 @@ void disable_audio(void) {
         aacMaxOutputBytes = 0;
         aacPcmPos = 0;
         aacStashLen = 0;
-        aacTsBaseUs = 0;
-        aacFramesSent = 0;
+        aacStashTsUs = 0;
         aacBuf.offset = 0;
     } else {
         shine_close(mp3Enc);
