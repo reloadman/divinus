@@ -646,7 +646,7 @@ int enable_audio(void) {
         pthread_attr_init(&thread_attr);
         size_t stacksize;
         pthread_attr_getstacksize(&thread_attr, &stacksize);
-        size_t new_stacksize = 16384;
+        size_t new_stacksize = 64 * 1024;
         if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", new_stacksize);
         if (!aud_thread) {
@@ -668,7 +668,7 @@ int enable_audio(void) {
         pthread_attr_init(&thread_attr);
         size_t stacksize;
         pthread_attr_getstacksize(&thread_attr, &stacksize);
-        size_t new_stacksize = 16384;
+        size_t new_stacksize = 64 * 1024;
         if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", new_stacksize);
         if (pthread_create(
