@@ -15,7 +15,7 @@ $(OBJ): $(SRC:%.c=%.o) $(SMOL_SRC:%.c=%.o) $(FAAC_SRC:%.c=%.o)
 	$(CC) $^ -rdynamic $(OPT) $(LDLIBS) -o $@
 
 %.o: %.c Makefile
-	$(CC) -c $< $(OPT) $(INCLUDES) -o $@
+	$(CC) -c $< $(OPT) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
 
 clean:
 	rm -rf $(SRC:%.c=%.o) $(SMOL_SRC:%.c=%.o) $(OBJ)
