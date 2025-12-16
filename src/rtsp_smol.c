@@ -40,6 +40,11 @@ typedef enum {
 static inline uint32_t audio_clock_hz(void);
 static inline uint64_t audio_frame_duration_us(void);
 static inline void reset_audio_ts(void);
+static inline int audio_uses_aac(void);
+static inline uint8_t audio_payload_type(void);
+static inline uint8_t aac_samplerate_index(uint32_t srate);
+static inline uint16_t aac_audio_specific_config(void);
+static inline void aac_config_hex(char *dst, size_t dst_sz);
 
 typedef struct SmolRtspClient SmolRtspClient;
 
