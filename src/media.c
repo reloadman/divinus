@@ -84,6 +84,26 @@ static void *aenc_thread_mp3(void) {
 
         char *payload = mp3Buf.buf + sizeof(uint16_t);
 
+        // Basic MPEG audio sync check to avoid sending garbage.
+        uint16_t hdr = (uint8_t)payload[0] << 8 | (uint8_t)payload[1];
+        if ((hdr & 0xFFE0) != 0xFFE0) {
+            HAL_WARNING("media", "MP3 desync: hdr=%04x offset=%u len=%u\n",
+                hdr, mp3Buf.offset, frame_len);
+            // Drop one byte to try to resync.
+            memmove(mp3Buf.buf, mp3Buf.buf + 1, mp3Buf.offset - 1);
+            mp3Buf.offset -= 1;
+            pthread_mutex_unlock(&aencMtx);
+            continue;
+        }
+
+        static int log_mp3_send = 0;
+        if (log_mp3_send < 3) {
+            HAL_INFO("media", "MP3 send frame_len=%u hdr=%02x %02x buf_off=%u\n",
+                frame_len, (uint8_t)payload[0], (uint8_t)payload[1],
+                mp3Buf.offset);
+            log_mp3_send++;
+        }
+
         send_mp3_to_client(payload, frame_len);
 
         pthread_mutex_lock(&mp4Mtx);
@@ -187,6 +207,13 @@ static int save_audio_stream_mp3(hal_audframe *frame) {
         put_u16_le(&mp3Buf, (uint16_t)ret);
         put(&mp3Buf, mp3Ptr, ret);
         pthread_mutex_unlock(&aencMtx);
+
+        static int log_mp3_enc = 0;
+        if (log_mp3_enc < 3) {
+            HAL_INFO("media", "MP3 enc frame bytes=%d pcmPos reset\n", ret);
+            log_mp3_enc++;
+        }
+
         pcmLen -= (pcmSamp - pcmPos);
         pcmPos = 0;
     }
