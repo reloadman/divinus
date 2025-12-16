@@ -187,8 +187,14 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
                 aacOut, aacMaxOutputBytes);
             aacPcmPos = 0;
+            static int log_fail = 0;
+            static int log_ok = 0;
             if (bytes <= 0) {
-                HAL_ERROR("media", "faacEncEncode returned %d\n", bytes);
+                if (log_fail < 5) {
+                    HAL_WARNING("media", "faacEncEncode returned %d (ts=%u)\n",
+                        bytes, frame->timestamp);
+                    log_fail++;
+                }
                 continue;
             }
             if ((unsigned int)bytes > aacMaxOutputBytes) {
@@ -205,6 +211,9 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             if (e1 != BUF_OK || e2 != BUF_OK) {
                 HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
                 aacBuf.offset = 0;
+            } else if (log_ok < 3) {
+                HAL_INFO("media", "AAC encoded bytes=%d ts=%u\n", bytes, frame->timestamp);
+                log_ok++;
             }
             pthread_mutex_unlock(&aencMtx);
         }
