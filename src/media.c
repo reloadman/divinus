@@ -95,6 +95,9 @@ static void *aenc_thread_aac(void) {
         unsigned char *payload =
             (unsigned char *)(aacBuf.buf + sizeof(uint16_t));
 
+        HAL_INFO("media", "AAC send frame_len=%u offset_before=%u\n",
+            frame_len, aacBuf.offset);
+
         pthread_mutex_lock(&mp4Mtx);
         mp4_ingest_audio((char *)payload, frame_len);
         pthread_mutex_unlock(&mp4Mtx);
@@ -198,6 +201,9 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             if (e1 != BUF_OK || e2 != BUF_OK) {
                 HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
                 aacBuf.offset = 0;
+            } else {
+                HAL_INFO("media", "AAC encoded bytes=%d queued_offset=%u\n",
+                    bytes, aacBuf.offset);
             }
             pthread_mutex_unlock(&aencMtx);
         }
