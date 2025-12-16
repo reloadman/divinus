@@ -431,11 +431,10 @@ impl(SmolRTSP_Droppable, Controller);
 static inline uint32_t audio_clock_hz(void) {
     uint32_t srate = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
     if (!srate) srate = 48000;
-    // AAC (RFC 3640) uses RTP clock equal to sampling rate.
-    if (audio_uses_aac())
-        return srate;
-    // MPEG audio (RFC 3555) commonly uses 90 kHz RTP clock.
-    return 90000;
+    // Use RTP clock equal to the sampling rate for both AAC and MPEG audio.
+    // This matches ffmpeg/ffplay behavior for RTSP sessions and avoids oddities
+    // like treating the RTP clock (e.g. 90 kHz) as the decoded sample rate.
+    return srate;
 }
 
 static inline int audio_uses_aac(void) {
@@ -677,8 +676,11 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
             (uint8_t *)(buf + offset + 1), (uint8_t *)(buf + len));
     }
 
-    SmolRTSP_RtpTimestamp ts = ts_us ? SmolRTSP_RtpTimestamp_SysClockUs(ts_us)
-                                      : SmolRTSP_RtpTimestamp_SysClockUs(0);
+    // If upstream timestamp is missing/zero, use monotonic time (us) so RTP
+    // timestamps advance and clients don't report excessive reordering/drops.
+    if (!ts_us)
+        ts_us = monotonic_us();
+    SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
 
     pthread_mutex_lock(&g_srv.mtx);
     int sent = 0;
@@ -700,6 +702,7 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
 int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!g_srv.running || !buf || !len)
         return -1;
+    static int log_mp3_rtp = 0;
     SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
         uint32_t raw = g_audio_ts_raw;
@@ -709,12 +712,18 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     }
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
-    // RFC 2250: prepend a 4-byte MPEG audio header.
-    // For unfragmented frames both the reserved (MBZ) and fragment offset
-    // fields must be zero so the receiver treats this packet as the start
-    // of a complete frame.
-    uint8_t rtp_hdr[4] = {0, 0, 0, 0};
-    U8Slice99 payload_hdr = U8Slice99_new(rtp_hdr, sizeof rtp_hdr);
+    // NOTE: Some ffmpeg/ffplay builds treat the RFC2250 MPEG-audio 4-byte payload
+    // header as part of the elementary stream in RTSP, breaking sync detection
+    // ("unspecified frame size"). Send raw MPEG audio frame bytes.
+    uint8_t dummy = 0;
+    U8Slice99 payload_hdr = U8Slice99_new(&dummy, 0);
+    if (log_mp3_rtp < 5 && len >= 2) {
+        uint16_t hdr = ((uint16_t)buf[0] << 8) | buf[1];
+        fprintf(stderr,
+            "[rtsp] mp3 rtp payload len=%zu hdr=%02x %02x sync=%d\n",
+            len, buf[0], buf[1], ((hdr & 0xFFE0) == 0xFFE0));
+        log_mp3_rtp++;
+    }
     pthread_mutex_lock(&g_srv.mtx);
     int sent = 0;
     for (int i = 0; i < MAX_CLIENTS; i++) {
