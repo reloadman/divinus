@@ -212,6 +212,8 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int total_samples = samples_per_ch * channels;
     unsigned int max_stash = aacInputSamples * channels * 4;
     if (aacStash && aacStashLen + total_samples <= max_stash) {
+        if (aacStashLen == 0 && aacStashTsUs == 0)
+            aacStashTsUs = (uint64_t)frame->timestamp;
         for (unsigned int i = 0; i < total_samples; i++)
             aacStash[aacStashLen + i] = (int32_t)pcm16[i];
         aacStashLen += total_samples;
@@ -249,10 +251,10 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             bytes = UINT16_MAX;
 
         // RTP timestamp from stash base
-        uint64_t ts_us = aacStashTsUs ? aacStashTsUs :
-            (uint64_t)frame->timestamp;
-        if (aacStashTsUs)
-            aacStashTsUs += ((uint64_t)aacInputSamples * 1000000ULL) / app_config.audio_srate;
+        if (aacStashTsUs == 0)
+            aacStashTsUs = (uint64_t)frame->timestamp;
+        uint64_t ts_us = aacStashTsUs;
+        aacStashTsUs += ((uint64_t)aacInputSamples * 1000000ULL) / app_config.audio_srate;
 
         pthread_mutex_lock(&aencMtx);
         enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
