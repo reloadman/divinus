@@ -12,3 +12,5 @@ void smolrtsp_server_stop(void);
 int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts_us);
 // MP3 elementary stream; timestamp in microseconds (if unavailable pass 0).
 int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us);
+// AAC-LC elementary stream; timestamp in microseconds (if unavailable pass 0).
+int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us);

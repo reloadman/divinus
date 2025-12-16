@@ -29,6 +29,7 @@ typedef struct __rtsp_obj_t *rtsp_handle;
 void rtp_disable_audio(rtsp_handle h);
 int rtp_send_h26x(rtsp_handle h, unsigned char *buf, size_t len, char isH265);
 int rtp_send_mp3(rtsp_handle h, unsigned char *buf, size_t len);
+int rtp_send_aac(rtsp_handle h, unsigned char *buf, size_t len);
 
 extern void rtsp_finish(rtsp_handle h);
 

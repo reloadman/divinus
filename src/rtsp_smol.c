@@ -27,6 +27,7 @@
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
 #define MP3_PAYLOAD_TYPE 14
+#define AAC_PAYLOAD_TYPE 97
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
 
@@ -158,7 +159,7 @@ static SmolRTSP_RtpTransport *setup_rtp_transport(
     SmolRTSP_Transport t =
         smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
 
-    uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
+    uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : audio_payload_type();
     uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : audio_clock_hz();
 
     SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
@@ -209,13 +210,29 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
         (SMOLRTSP_SDP_ATTR, "fmtp:%d packetization-mode=1", VIDEO_PAYLOAD_TYPE));
 
     if (app_config.audio_enable && app_config.audio_bitrate) {
-        SMOLRTSP_SDP_DESCRIBE(
-            ret, w,
-            (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
-            (SMOLRTSP_SDP_ATTR, "control:audio"),
-            // Payload type 14 is static MPA (MP1/MP2/MP3); use actual sample rate
-            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
-            (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
+        const uint8_t pt = audio_payload_type();
+        if (audio_uses_aac()) {
+            char config_hex[8] = {0};
+            aac_config_hex(config_hex, sizeof(config_hex));
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, w,
+                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", pt),
+                (SMOLRTSP_SDP_ATTR, "control:audio"),
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPEG4-GENERIC/%d/%d", pt,
+                    audio_clock_hz(), app_config.audio_channels ? app_config.audio_channels : 1),
+                (SMOLRTSP_SDP_ATTR,
+                    "fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
+                    "sizelength=13;indexlength=3;indexdeltalength=3;config=%s",
+                    pt, config_hex));
+        } else {
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, w,
+                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
+                (SMOLRTSP_SDP_ATTR, "control:audio"),
+                // Payload type 14 is static MPA (MP1/MP2/MP3); use actual sample rate
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
+                (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
+        }
     }
 
     smolrtsp_header(ctx, SMOLRTSP_HEADER_CONTENT_TYPE, "application/sdp");
@@ -308,11 +325,53 @@ static inline uint32_t audio_clock_hz(void) {
     return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 90000;
 }
 
+static inline int audio_uses_aac(void) {
+    return app_config.audio_codec == HAL_AUDCODEC_AAC;
+}
+
+static inline uint8_t audio_payload_type(void) {
+    return audio_uses_aac() ? AAC_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
+}
+
+static inline uint8_t aac_samplerate_index(uint32_t srate) {
+    switch (srate) {
+        case 96000: return 0;
+        case 88200: return 1;
+        case 64000: return 2;
+        case 48000: return 3;
+        case 44100: return 4;
+        case 32000: return 5;
+        case 24000: return 6;
+        case 22050: return 7;
+        case 16000: return 8;
+        case 12000: return 9;
+        case 11025: return 10;
+        case 8000:  return 11;
+        case 7350:  return 12;
+        default:    return 3; // fallback to 48 kHz index
+    }
+}
+
+static inline uint16_t aac_audio_specific_config(void) {
+    const uint8_t obj_type = 2; // AAC-LC
+    uint8_t freq_idx = aac_samplerate_index(audio_clock_hz());
+    uint8_t channels = app_config.audio_channels ? app_config.audio_channels : 1;
+    if (channels > 2) channels = 2;
+    return (uint16_t)((obj_type & 0x1F) << 11) |
+           (uint16_t)((freq_idx & 0x0F) << 7) |
+           (uint16_t)((channels & 0x0F) << 3);
+}
+
+static inline void aac_config_hex(char *dst, size_t dst_sz) {
+    uint16_t cfg = aac_audio_specific_config();
+    snprintf(dst, dst_sz, "%02X%02X", (cfg >> 8) & 0xFF, cfg & 0xFF);
+}
+
 static inline uint64_t audio_frame_duration_us(void) {
     const uint32_t sr = audio_clock_hz();
     if (!sr) return 0;
-    // MP3 (MPEG-1 Layer III) frame holds 1152 samples at 32/44.1/48 kHz.
-    return (uint64_t)1152 * 1000000ULL / sr;
+    const uint32_t samples = (app_config.audio_codec == HAL_AUDCODEC_AAC) ? 1024 : 1152;
+    return (uint64_t)samples * 1000000ULL / sr;
 }
 
 static inline uint64_t monotonic_us(void) {
@@ -556,5 +615,57 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
             last_log = now;
         }
     }
+    return 0;
+}
+
+int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
+    if (!g_srv.running || !buf || !len)
+        return -1;
+    if (!ts_us) {
+        uint64_t frame_us = audio_frame_duration_us();
+        if (!g_audio_ts_us)
+            g_audio_ts_us = monotonic_us();
+        else
+            g_audio_ts_us += frame_us ? frame_us : 0;
+        ts_us = g_audio_ts_us;
+    }
+    SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+
+    // RFC 3640 AU headers: 16-bit AU-headers-length, then one AU header (size/offset).
+    uint8_t au_header_section[4] = {0};
+    // AU-headers-length in bits = 16 (one AU header of 2 bytes)
+    au_header_section[0] = 0x00;
+    au_header_section[1] = 0x10;
+    // AU-size 13 bits, AU-Index 3 bits (set to 0)
+    uint16_t au = (uint16_t)((len & 0x1FFF) << 3);
+    au_header_section[2] = (uint8_t)((au >> 8) & 0xFF);
+    au_header_section[3] = (uint8_t)(au & 0xFF);
+
+    U8Slice99 hdr = U8Slice99_new(au_header_section, sizeof au_header_section);
+    U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
+
+    pthread_mutex_lock(&g_srv.mtx);
+    int sent = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        SmolRtspClient *c = &g_srv.clients[i];
+        if (!c->alive || !c->audio_rtp || !c->playing)
+            continue;
+        int ret = SmolRTSP_RtpTransport_send_packet(
+            c->audio_rtp, ts, true, hdr, payload);
+        if (ret < 0)
+            continue;
+        sent++;
+    }
+    pthread_mutex_unlock(&g_srv.mtx);
+
+    if (sent == 0) {
+        static uint64_t last_log = 0;
+        uint64_t now = monotonic_us();
+        if (now - last_log > 2 * 1000000ULL) {
+            fprintf(stderr, "[rtsp] audio drop (AAC): no active clients\n");
+            last_log = now;
+        }
+    }
+
     return 0;
 }

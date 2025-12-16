@@ -27,6 +27,7 @@ static inline int __rtp_send_eachconnection(struct list_t *e, void *v);
 static inline int __rtp_setup_transfer(struct list_t *e, void *v);
 static inline int __transfer_nal_h26x(struct list_head_t *trans_list, unsigned char *nalptr, size_t nalsize, char isH265);
 static inline int __transfer_nal_mpga(struct list_head_t *trans_list, unsigned char *ptr, size_t size);
+static inline int __transfer_nal_aac(struct list_head_t *trans_list, unsigned char *ptr, size_t size);
 static inline int __retrieve_sprop(rtsp_handle h, unsigned char *buf, size_t len);
 
 struct __transfer_set_t {
@@ -141,6 +142,41 @@ static inline int __transfer_nal_mpga(struct list_head_t *trans_list, unsigned c
     p_header->m = 1;
 
     payload[0] = payload[1] = payload[2] = payload[3] = 0;
+    memcpy(payload + 4, ptr, size);
+    size += 4;
+
+    rtp.rtpsize = size + sizeof(rtp_hdr_t);
+
+    ASSERT(__rtp_send(&rtp, trans_list) == SUCCESS, return FAILURE);
+
+    return SUCCESS;
+}
+
+static inline int __transfer_nal_aac(struct list_head_t *trans_list, unsigned char *ptr, size_t size)
+{
+    struct nal_rtp_t rtp;
+
+    if (size + 4 > __RTP_MAXPAYLOADSIZE)
+        size = __RTP_MAXPAYLOADSIZE - 4;
+
+    rtp_hdr_t *p_header = &(rtp.packet.header);
+    unsigned char *payload = rtp.packet.payload;
+
+    p_header->version = 2;
+    p_header->p = 0;
+    p_header->x = 0;
+    p_header->cc = 0;
+    p_header->pt = 97; // dynamic PT for AAC
+    p_header->m = 1;
+
+    // AU-headers-length = 16 bits (0x0010)
+    payload[0] = 0x00;
+    payload[1] = 0x10;
+    // AU-size (13 bits) + AU-Index (3 bits=0)
+    uint16_t au = (uint16_t)((size & 0x1FFF) << 3);
+    payload[2] = (au >> 8) & 0xFF;
+    payload[3] = au & 0xFF;
+
     memcpy(payload + 4, ptr, size);
     size += 4;
 
@@ -438,6 +474,40 @@ int rtp_send_mp3(rtsp_handle h, unsigned char *buf, size_t len)
         ASSERT(__transfer_nal_mpga(&(trans.list_head), buf, len) == SUCCESS, goto error);
         ASSERT(list_map_inline(&(trans.list_head), (__rtcp_poll), &track_id) == SUCCESS, goto error);
     } 
+
+    ret = SUCCESS;
+
+error:
+    list_destroy(&(trans.list_head));
+
+    return ret;
+}
+
+int rtp_send_aac(rtsp_handle h, unsigned char *buf, size_t len)
+{
+    int ret = FAILURE;
+    int track_id = 1;
+    struct __transfer_set_t trans = {};
+
+    DASSERT(h, return FAILURE);
+
+    if (gbl_get_quit(h->pool->sharedp->gbl)) {
+#ifdef DEBUG_RTSP
+        ERR("server threads have gone already. call rtsp_finish()\n");
+#endif
+        return FAILURE;
+    }
+
+    h->audioPt = 97;
+
+    trans.h = h;
+
+    ASSERT(list_map_inline(&h->con_list, (__rtp_setup_transfer), &trans) == SUCCESS, goto error);
+
+    if (trans.list_head.list) {
+        ASSERT(__transfer_nal_aac(&(trans.list_head), buf, len) == SUCCESS, goto error);
+        ASSERT(list_map_inline(&(trans.list_head), (__rtcp_poll), &track_id) == SUCCESS, goto error);
+    }
 
     ret = SUCCESS;
 

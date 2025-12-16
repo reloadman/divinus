@@ -652,7 +652,8 @@ enum BufError write_TagAudioSpecificConfig(
 
     unsigned long long bitstream = 0;
     int used_bits = 0;
-    if (moov_info->audio_codec == ACODEC_ID_AAC) {
+    if (moov_info->audio_codec == ACODEC_ID_AAC ||
+        moov_info->audio_codec == ACODEC_ID_AAC_LC) {
         bitstream = 2;
         used_bits += 5;
     } else if (moov_info->audio_codec == ACODEC_ID_MP3) {

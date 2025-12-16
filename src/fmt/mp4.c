@@ -1,4 +1,5 @@
 #include "mp4.h"
+#include "../hal/types.h"
 
 uint32_t default_sample_size = 40000;
 
@@ -67,10 +68,14 @@ void mp4_set_config(short width, short height, char framerate, char acodec,
     aud_channels = channels;
     aud_samplerate = srate;
     if (aud_samplerate > 0) {
-        aud_framesize = 
-            (aud_samplerate >= 32000 ? 144 : 72) *
-            (aud_bitrate * 1000) / 
-            aud_samplerate;
+        if (aud_codec == HAL_AUDCODEC_AAC) {
+            aud_framesize = (aud_bitrate * 1000 / 8) * 1024 / aud_samplerate;
+        } else {
+            aud_framesize =
+                (aud_samplerate >= 32000 ? 144 : 72) *
+                (aud_bitrate * 1000) /
+                aud_samplerate;
+        }
     } else aud_framesize = 384;
 
 }
@@ -103,8 +108,13 @@ enum BufError mp4_set_slice(const char *nal_data, const uint32_t nal_len,
     samples_info[0].duration = default_sample_size;
     samples_info[0].flags = is_iframe ? 0 : 65536;
     samples_info[1].size = buf_aud.offset;
-    samples_info[1].duration = default_sample_size * 
-        buf_aud.offset / (aud_bitrate * 25 / 6);
+    if (aud_bitrate > 0) {
+        uint64_t timescale = (uint64_t)default_sample_size * vid_framerate;
+        samples_info[1].duration = (uint32_t)((uint64_t)buf_aud.offset * 8 *
+            timescale / (aud_bitrate * 1000));
+    } else {
+        samples_info[1].duration = default_sample_size;
+    }
 
     buf_moof.offset = 0;
     err = write_moof(
