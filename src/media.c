@@ -22,6 +22,8 @@ int32_t *aacPcm = NULL;
 unsigned char *aacOut = NULL;
 unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
+int32_t *aacStash = NULL;
+unsigned int aacStashLen = 0;
 
 static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
@@ -215,19 +217,20 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         }
         aacPcm = calloc(aacInputSamples * channels, sizeof(int32_t));
         aacOut = malloc(aacMaxOutputBytes);
-        if (!aacPcm || !aacOut) {
+        aacStash = calloc(aacInputSamples * channels * 4, sizeof(int32_t));
+        if (!aacPcm || !aacOut || !aacStash) {
             HAL_ERROR("media", "AAC reinit buffer alloc failed!\n");
             return EXIT_FAILURE;
         }
         aacChannels = channels;
         aacPcmPos = 0;
+        aacStashLen = 0;
         aac_reconfig_done = 1;
     }
 
     // HAL PCM is 16-bit interleaved
     unsigned int samples_per_ch = frame->length[0] / (2 * channels);
     short *pcm16 = (short *)frame->data[0];
-    unsigned int consumed = 0;
     static uint32_t last_ts = 0;
     static int log_cnt = 0;
     uint32_t delta_ts = frame->timestamp - last_ts;
@@ -238,49 +241,57 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         }
     last_ts = frame->timestamp;
 
-    while (consumed < samples_per_ch) {
-        unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples_per_ch - consumed);
-        for (unsigned int i = 0; i < chunk; i++)
-            for (unsigned int ch = 0; ch < channels; ch++)
-                aacPcm[(aacPcmPos + i) * channels + ch] =
-                    (int32_t)pcm16[(consumed + i) * channels + ch];
-        aacPcmPos += chunk;
-        consumed += chunk;
+    // Append to stash
+    unsigned int total_samples = samples_per_ch * channels;
+    unsigned int max_stash = aacInputSamples * channels * 4;
+    if (aacStash && aacStashLen + total_samples <= max_stash) {
+        for (unsigned int i = 0; i < total_samples; i++)
+            aacStash[aacStashLen + i] = (int32_t)pcm16[i];
+        aacStashLen += total_samples;
+    }
 
-        if (aacPcmPos == aacInputSamples) {
-            int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
-                aacOut, aacMaxOutputBytes);
-            aacPcmPos = 0;
-            static int log_fail = 0;
-            static int log_ok = 0;
-            if (bytes <= 0) {
-                if (log_fail < 5) {
-                    HAL_WARNING("media", "faacEncEncode returned %d (ts=%u)\n",
-                        bytes, frame->timestamp);
-                    log_fail++;
-                }
-                continue;
-            }
-            if ((unsigned int)bytes > aacMaxOutputBytes) {
-                HAL_ERROR("media", "AAC frame %d exceeds buffer %lu\n",
-                    bytes, aacMaxOutputBytes);
-                bytes = (int)aacMaxOutputBytes;
-            }
-            if (bytes > UINT16_MAX)
-                bytes = UINT16_MAX;
+    // Consume stash in blocks of aacInputSamples * channels
+    while (aacStash && aacStashLen >= aacInputSamples * channels) {
+        for (unsigned int i = 0; i < aacInputSamples * channels; i++)
+            aacPcm[i] = aacStash[i];
 
-            pthread_mutex_lock(&aencMtx);
-            enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
-            enum BufError e2 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
-            if (e1 != BUF_OK || e2 != BUF_OK) {
-                HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
-                aacBuf.offset = 0;
-            } else if (log_ok < 3) {
-                HAL_INFO("media", "AAC encoded bytes=%d ts=%u\n", bytes, frame->timestamp);
-                log_ok++;
+        unsigned int remain = aacStashLen - aacInputSamples * channels;
+        if (remain)
+            memmove(aacStash, aacStash + aacInputSamples * channels,
+                remain * sizeof(int32_t));
+        aacStashLen = remain;
+
+        int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
+            aacOut, aacMaxOutputBytes);
+        static int log_fail = 0;
+        static int log_ok = 0;
+        if (bytes <= 0) {
+            if (log_fail < 5) {
+                HAL_WARNING("media", "faacEncEncode returned %d (ts=%u)\n",
+                    bytes, frame->timestamp);
+                log_fail++;
             }
-            pthread_mutex_unlock(&aencMtx);
+            continue;
         }
+        if ((unsigned int)bytes > aacMaxOutputBytes) {
+            HAL_ERROR("media", "AAC frame %d exceeds buffer %lu\n",
+                bytes, aacMaxOutputBytes);
+            bytes = (int)aacMaxOutputBytes;
+        }
+        if (bytes > UINT16_MAX)
+            bytes = UINT16_MAX;
+
+        pthread_mutex_lock(&aencMtx);
+        enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
+        enum BufError e2 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
+        if (e1 != BUF_OK || e2 != BUF_OK) {
+            HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
+            aacBuf.offset = 0;
+        } else if (log_ok < 3) {
+            HAL_INFO("media", "AAC encoded bytes=%d ts=%u\n", bytes, frame->timestamp);
+            log_ok++;
+        }
+        pthread_mutex_unlock(&aencMtx);
     }
 
     return EXIT_SUCCESS;
@@ -593,12 +604,15 @@ void disable_audio(void) {
             faacEncClose(aacEnc);
         free(aacPcm);
         free(aacOut);
+        free(aacStash);
         aacEnc = NULL;
         aacPcm = NULL;
         aacOut = NULL;
+        aacStash = NULL;
         aacInputSamples = 0;
         aacMaxOutputBytes = 0;
         aacPcmPos = 0;
+        aacStashLen = 0;
         aacBuf.offset = 0;
     } else {
         shine_close(mp3Enc);
@@ -690,12 +704,14 @@ int enable_audio(void) {
             return EXIT_FAILURE;
         }
 
-        aacPcm = calloc(aacInputSamples, sizeof(int32_t));
+        aacPcm = calloc(aacInputSamples * app_config.audio_channels, sizeof(int32_t));
         aacOut = malloc(aacMaxOutputBytes);
-        if (!aacPcm || !aacOut) {
+        aacStash = calloc(aacInputSamples * app_config.audio_channels * 4, sizeof(int32_t));
+        if (!aacPcm || !aacOut || !aacStash) {
             HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
             return EXIT_FAILURE;
         }
+        aacStashLen = 0;
         HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
     } else {
         mp3Buf.offset = 0;
