@@ -66,6 +66,7 @@ static void *aenc_thread_mp3(void) {
 }
 
 static void *aenc_thread_aac(void) {
+    HAL_INFO("media", "AAC encode thread loop start\n");
     while (keepRunning && audioOn) {
         pthread_mutex_lock(&aencMtx);
         if (aacBuf.offset < sizeof(uint16_t)) {
@@ -157,6 +158,8 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int samples = frame->length[0] / 2;
     short *pcm = (short *)frame->data[0];
     unsigned int consumed = 0;
+    HAL_DEBUG("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u\n",
+        frame->length[0], samples, aacPcmPos, aacBuf.offset);
 
     while (consumed < samples) {
         unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples - consumed);
@@ -619,9 +622,15 @@ int enable_audio(void) {
         size_t new_stacksize = 16384;
         if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", new_stacksize);
-        if (pthread_create(
-                        &audPid, &thread_attr, (void *(*)(void *))aud_thread, NULL))
+        if (!aud_thread) {
+            HAL_ERROR("media", "Audio capture thread pointer is NULL!\n");
+        } else if (pthread_create(
+                        &audPid, &thread_attr, (void *(*)(void *))aud_thread, NULL)) {
             HAL_ERROR("media", "Starting the audio capture thread failed!\n");
+        } else {
+            HAL_INFO("media", "Audio capture thread started (aud_thread=%p)\n",
+                aud_thread);
+        }
         if (pthread_attr_setstacksize(&thread_attr, stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", stacksize);
         pthread_attr_destroy(&thread_attr);
@@ -638,6 +647,9 @@ int enable_audio(void) {
         if (pthread_create(
                         &aencPid, &thread_attr, (void *(*)(void *))aenc_thread, NULL))
             HAL_ERROR("media", "Starting the audio encoding thread failed!\n");
+        else
+            HAL_INFO("media", "Audio encoding thread started (codec=%s)\n",
+                active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" : "MP3");
         if (pthread_attr_setstacksize(&thread_attr, stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", stacksize);
         pthread_attr_destroy(&thread_attr);
