@@ -158,7 +158,7 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int samples = frame->length[0] / 2;
     short *pcm = (short *)frame->data[0];
     unsigned int consumed = 0;
-    HAL_DEBUG("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u\n",
+    HAL_INFO("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u\n",
         frame->length[0], samples, aacPcmPos, aacBuf.offset);
 
     while (consumed < samples) {
