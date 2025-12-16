@@ -599,15 +599,11 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     }
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
-    // RFC 2250: prepend a 4-byte MPEG audio header (no fragmentation).
-    // Length MUST include only MPEG payload (not the 4-byte header).
-    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | (len & 0x3FFF));
-    uint8_t rtp_hdr[4] = {
-        (uint8_t)(hdr_first >> 8),
-        (uint8_t)(hdr_first & 0xFF),
-        0x00, // offset MSB (no fragmentation)
-        0x00  // offset LSB
-    };
+    // RFC 2250: prepend a 4-byte MPEG audio header.
+    // For unfragmented frames both the reserved (MBZ) and fragment offset
+    // fields must be zero so the receiver treats this packet as the start
+    // of a complete frame.
+    uint8_t rtp_hdr[4] = {0, 0, 0, 0};
     U8Slice99 payload_hdr = U8Slice99_new(rtp_hdr, sizeof rtp_hdr);
     pthread_mutex_lock(&g_srv.mtx);
     int sent = 0;
