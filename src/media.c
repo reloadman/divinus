@@ -124,6 +124,26 @@ int save_audio_stream(hal_audframe *frame) {
     printf("        ts:%d\n", frame->timestamp);
 #endif
 
+    // Debug PCM dump: first 50 frames to /tmp/divinus_pcm.raw
+    static FILE *pcm_dump = NULL;
+    static int pcm_dump_left = 50;
+    if (pcm_dump_left > 0) {
+        if (!pcm_dump) {
+            pcm_dump = fopen("/tmp/divinus_pcm.raw", "wb");
+            if (!pcm_dump)
+                HAL_WARNING("media", "Cannot open /tmp/divinus_pcm.raw for dump\n");
+        }
+        if (pcm_dump) {
+            fwrite(frame->data[0], 1, frame->length[0], pcm_dump);
+            pcm_dump_left--;
+            if (pcm_dump_left == 0) {
+                fclose(pcm_dump);
+                pcm_dump = NULL;
+                HAL_INFO("media", "PCM dump finished: /tmp/divinus_pcm.raw\n");
+            }
+        }
+    }
+
     send_pcm_to_client(frame);
 
     if (active_audio_codec == HAL_AUDCODEC_AAC)
