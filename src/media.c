@@ -189,44 +189,8 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int channels = frame->channelCnt ? (unsigned int)frame->channelCnt : aacChannels;
     if (channels == 0) channels = 1;
 
-    // If HAL reports different channel count, re-init AAC encoder once.
-    static int aac_reconfig_done = 0;
-    if (!aac_reconfig_done && channels != aacChannels) {
-        HAL_WARNING("media", "AAC reinit: hal channels=%u codec=%u, reopening faac\n",
-            channels, aacChannels);
-        faacEncClose(aacEnc);
-        free(aacPcm);
-        free(aacOut);
-        aacEnc = faacEncOpen(app_config.audio_srate, channels,
-            &aacInputSamples, &aacMaxOutputBytes);
-        if (!aacEnc) {
-            HAL_ERROR("media", "AAC reinit failed!\n");
-            return EXIT_FAILURE;
-        }
-        faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
-        cfg->aacObjectType = LOW;
-        cfg->mpegVersion = MPEG4;
-        cfg->useTns = 0;
-        cfg->allowMidside = channels > 1;
-        cfg->outputFormat = 0;
-        cfg->bitRate = app_config.audio_bitrate * 1000 / channels;
-        cfg->inputFormat = FAAC_INPUT_16BIT;
-        if (!faacEncSetConfiguration(aacEnc, cfg)) {
-            HAL_ERROR("media", "AAC reinit set config failed!\n");
-            return EXIT_FAILURE;
-        }
-        aacPcm = calloc(aacInputSamples * channels, sizeof(int32_t));
-        aacOut = malloc(aacMaxOutputBytes);
-        aacStash = calloc(aacInputSamples * channels * 4, sizeof(int32_t));
-        if (!aacPcm || !aacOut || !aacStash) {
-            HAL_ERROR("media", "AAC reinit buffer alloc failed!\n");
-            return EXIT_FAILURE;
-        }
-        aacChannels = channels;
-        aacPcmPos = 0;
-        aacStashLen = 0;
-        aac_reconfig_done = 1;
-    }
+    // Ignore HAL channel changes; force configured channel count (mono) to keep timing correct.
+    channels = aacChannels;
 
     // HAL PCM is 16-bit interleaved
     unsigned int samples_per_ch = frame->length[0] / (2 * channels);
