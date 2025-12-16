@@ -67,6 +67,8 @@ void handle_exit(int signo) {
         write(STDERR_FILENO, msg, (size_t)len);
     keepRunning = 0;
     graceful = 1;
+    // Wake main loop quickly if sleeping.
+    alarm(1);
 }
 
 int main(int argc, char *argv[]) {
