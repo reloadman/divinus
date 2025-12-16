@@ -37,12 +37,16 @@ typedef enum {
 // Forward declarations for helpers used before their definitions.
 static inline uint32_t audio_clock_hz(void);
 static inline uint64_t audio_frame_duration_us(void);
+static inline void reset_audio_ts(void);
 
 typedef struct SmolRtspClient SmolRtspClient;
 
 typedef struct Controller {
     SmolRtspClient *client;
 } Controller;
+
+static int g_client_count = 0;
+static uint64_t g_audio_ts_us = 0;
 
 typedef struct SmolRtspClient {
     uint64_t session_id;
@@ -80,6 +84,7 @@ static SmolRtspClient *alloc_client(void) {
         if (!g_srv.clients[i].alive) {
             memset(&g_srv.clients[i], 0, sizeof(SmolRtspClient));
             g_srv.clients[i].alive = 1;
+            g_client_count++;
             return &g_srv.clients[i];
         }
     }
@@ -117,6 +122,10 @@ static void drop_client(SmolRtspClient *c) {
         c->bev = NULL;
     }
     memset(c, 0, sizeof(*c));
+    if (g_client_count > 0)
+        g_client_count--;
+    if (g_client_count == 0)
+        reset_audio_ts();
 }
 
 static void Controller_drop(VSelf) {
@@ -305,6 +314,8 @@ static inline uint64_t monotonic_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+static inline void reset_audio_ts(void) { g_audio_ts_us = 0; }
+
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
@@ -468,14 +479,13 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
 int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!g_srv.running || !buf || !len)
         return -1;
-    static uint64_t audio_ts_us = 0;
     if (!ts_us) {
         uint64_t frame_us = audio_frame_duration_us();
-        if (!audio_ts_us)
-            audio_ts_us = monotonic_us();
+        if (!g_audio_ts_us)
+            g_audio_ts_us = monotonic_us();
         else
-            audio_ts_us += frame_us ? frame_us : 0;
-        ts_us = audio_ts_us;
+            g_audio_ts_us += frame_us ? frame_us : 0;
+        ts_us = g_audio_ts_us;
     }
     SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
