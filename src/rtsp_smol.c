@@ -35,8 +35,11 @@ typedef enum {
     TRACK_AUDIO
 } track_kind;
 
-// Forward declaration so we can embed pointers before the full definition.
-typedef struct Controller Controller;
+typedef struct SmolRtspClient SmolRtspClient;
+
+typedef struct Controller {
+    SmolRtspClient *client;
+} Controller;
 
 typedef struct {
     uint64_t session_id;
@@ -112,10 +115,6 @@ static void drop_client(SmolRtspClient *c) {
     }
     memset(c, 0, sizeof(*c));
 }
-
-typedef struct Controller {
-    SmolRtspClient *client;
-} Controller;
 
 static void Controller_drop(VSelf) {
     (void)iface99_self;
