@@ -525,7 +525,8 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     // RFC 2250: prepend a 4-byte MPEG audio header (no fragmentation).
-    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | ((len + 4) & 0x3FFF));
+    // Length is payload bytes (MPA frame), NOT including this 4-byte header.
+    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | (len & 0x3FFF));
     uint8_t rtp_hdr[4] = {
         (uint8_t)(hdr_first >> 8),
         (uint8_t)(hdr_first & 0xFF),
