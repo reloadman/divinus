@@ -56,6 +56,7 @@ static inline uint16_t aac_audio_specific_config(void);
 static inline void aac_config_hex(char *dst, size_t dst_sz);
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx);
 static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_len);
+static size_t bev_output_len(struct bufferevent *bev);
 
 typedef struct SmolRtspClient SmolRtspClient;
 
@@ -551,6 +552,16 @@ static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_le
     return drained_any ? 0 : -1;
 }
 
+static size_t bev_output_len(struct bufferevent *bev) {
+    if (!bev)
+        return 0;
+    bufferevent_lock(bev);
+    struct evbuffer *out = bufferevent_get_output(bev);
+    size_t len = out ? evbuffer_get_length(out) : 0;
+    bufferevent_unlock(bev);
+    return len;
+}
+
 impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
@@ -829,10 +840,12 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->video_nal || !c->playing)
             continue;
-        if (SmolRTSP_NalTransport_is_full(c->video_nal)) {
-            // Prefer freshest: drop oldest queued interleaved frames, then send new.
-            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
-                continue; // can't trim safely -> drop newest
+        // IMPORTANT: In RTSP/TCP interleaved mode, audio/video share one output buffer.
+        // Under poor TCP conditions video can starve audio. Prefer keeping audio alive:
+        // if output is congested, drop VIDEO packets (do not enqueue them).
+        if (SmolRTSP_NalTransport_is_full(c->video_nal) ||
+            bev_output_len(c->bev) > RTSP_TCP_TRIM_TARGET) {
+            continue;
         }
         int ret = SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
         if (ret < 0) {
