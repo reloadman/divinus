@@ -148,8 +148,11 @@ static int save_audio_stream_mp3(hal_audframe *frame) {
 }
 
 static int save_audio_stream_aac(hal_audframe *frame) {
-    if (!aacEnc || !aacPcm || !aacOut)
+    if (!aacEnc || !aacPcm || !aacOut) {
+        HAL_ERROR("media", "AAC path not initialized (enc=%p pcm=%p out=%p)\n",
+            (void*)aacEnc, (void*)aacPcm, (void*)aacOut);
         return EXIT_FAILURE;
+    }
 
     unsigned int samples = frame->length[0] / 2;
     short *pcm = (short *)frame->data[0];
@@ -528,6 +531,12 @@ int enable_audio(void) {
     if (audioOn) return ret;
 
     active_audio_codec = app_config.audio_codec ? app_config.audio_codec : HAL_AUDCODEC_MP3;
+    HAL_INFO("media", "Audio init: codec=%s srate=%u bitrate=%u channels=%u gain=%d\n",
+        active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" :
+        (active_audio_codec == HAL_AUDCODEC_MP3 ? "MP3" : "UNSPEC"),
+        app_config.audio_srate, app_config.audio_bitrate,
+        app_config.audio_channels ? app_config.audio_channels : 1,
+        app_config.audio_gain);
 
     switch (plat) {
 #if defined(__ARM_PCS_VFP)
@@ -563,6 +572,8 @@ int enable_audio(void) {
             HAL_ERROR("media", "AAC encoder initialization failed!\n");
             return EXIT_FAILURE;
         }
+        HAL_INFO("media", "faacEncOpen ok: inputSamples=%lu maxOut=%lu\n",
+            aacInputSamples, aacMaxOutputBytes);
 
         faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
         cfg->aacObjectType = LOW;
@@ -583,6 +594,7 @@ int enable_audio(void) {
             HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
             return EXIT_FAILURE;
         }
+        HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
     } else {
         mp3Buf.offset = 0;
         mp3Cnf.mpeg.mode = MONO;
