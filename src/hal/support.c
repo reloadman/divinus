@@ -1,4 +1,5 @@
 #include "support.h"
+#include "../app_config.h"
 
 void *aud_thread = NULL;
 void *isp_thread = NULL;
@@ -15,6 +16,13 @@ int series = 0;
 
 unsigned long long lastMillisTemp = 0;
 float lastReadTemp = 0.0 / 0.0;
+
+bool hal_osd_is_allowed_for_channel(const hal_chnstate *st) {
+    if (!st) return false;
+    if (st->payload == HAL_VIDCODEC_MJPG && !app_config.mjpeg_osd_enable)
+        return false;
+    return true;
+}
 
 void hal_identify(void) {
     unsigned int val = 0;

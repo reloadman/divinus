@@ -341,7 +341,7 @@ int i3_region_create(char handle, hal_rect rect, short opacity)
 
     if (i3_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("i3_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.point.x != rect.x || attribCurr.point.x != rect.y ||
+    else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
         attribCurr.osd.bgFgAlpha[1] != opacity) {
         HAL_INFO("i3_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
@@ -364,6 +364,10 @@ int i3_region_create(char handle, hal_rect rect, short opacity)
     for (char i = 0; i < I3_VENC_CHN_NUM; i++) {
         if (!i3_state[i].enable) continue;
         dest.port = i;
+        if (!hal_osd_is_allowed_for_channel(&i3_state[i])) {
+            i3_rgn.fnDetachChannel(handle, &dest);
+            continue;
+        }
         i3_rgn.fnAttachChannel(handle, &dest, &attrib);
     }
 
@@ -375,10 +379,11 @@ void i3_region_destroy(char handle)
     i3_sys_bind dest = { .module = 0,
         .device = _i3_vpe_dev, .channel = _i3_vpe_chn };
     
-    dest.port = 1;
-    i3_rgn.fnDetachChannel(handle, &dest);
-    dest.port = 0;
-    i3_rgn.fnDetachChannel(handle, &dest);
+    for (char i = 0; i < I3_VENC_CHN_NUM; i++) {
+        if (!i3_state[i].enable) continue;
+        dest.port = i;
+        i3_rgn.fnDetachChannel(handle, &dest);
+    }
     i3_rgn.fnDestroyRegion(handle);
 }
 

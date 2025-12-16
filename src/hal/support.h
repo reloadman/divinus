@@ -52,5 +52,9 @@ extern hal_platform plat;
 extern char sensor[16];
 extern int series;
 
+// Returns false when OSD must not be attached to the given channel
+// (e.g. MJPEG per-stream OSD disable).
+bool hal_osd_is_allowed_for_channel(const hal_chnstate *st);
+
 void hal_identify(void);
 float hal_temperature_read(void);

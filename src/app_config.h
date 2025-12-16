@@ -101,6 +101,7 @@ struct AppConfig {
 
     // [mjpeg]
     bool mjpeg_enable;
+    bool mjpeg_osd_enable;
     unsigned int mjpeg_mode;
     unsigned int mjpeg_fps;
     unsigned int mjpeg_width;

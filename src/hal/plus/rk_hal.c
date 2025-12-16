@@ -360,7 +360,11 @@ int rk_region_create(char handle, hal_rect rect, short opacity)
         regionCurr.overlay.size.width != region.overlay.size.width) {
         HAL_INFO("rk_rgn", "Parameters are different, recreating "
             "region %d...\n", handle);
-        rk_rgn.fnDetachChannel(handle, &channel);
+        for (char i = 0; i < RK_VENC_CHN_NUM; i++) {
+            if (!rk_state[i].enable) continue;
+            channel.channel = i;
+            rk_rgn.fnDetachChannel(handle, &channel);
+        }
         rk_rgn.fnDestroyRegion(handle);
         if (ret = rk_rgn.fnCreateRegion(handle, &region))
             return ret;
@@ -368,10 +372,14 @@ int rk_region_create(char handle, hal_rect rect, short opacity)
 
     if (rk_rgn.fnGetChannelConfig(handle, &channel, &attribCurr))
         HAL_INFO("rk_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.x != rect.y) {
+    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.y != rect.y) {
         HAL_INFO("rk_rgn", "Position has changed, reattaching "
             "region %d...\n", handle);
-        rk_rgn.fnDetachChannel(handle, &channel);
+        for (char i = 0; i < RK_VENC_CHN_NUM; i++) {
+            if (!rk_state[i].enable) continue;
+            channel.channel = i;
+            rk_rgn.fnDetachChannel(handle, &channel);
+        }
     }
 
     memset(&attrib, 0, sizeof(attrib));
@@ -383,7 +391,15 @@ int rk_region_create(char handle, hal_rect rect, short opacity)
     attrib.overlay.point.y = rect.y;
     attrib.overlay.layer = 7;
 
-    rk_rgn.fnAttachChannel(handle, &channel, &attrib);
+    for (char i = 0; i < RK_VENC_CHN_NUM; i++) {
+        if (!rk_state[i].enable) continue;
+        channel.channel = i;
+        if (!hal_osd_is_allowed_for_channel(&rk_state[i])) {
+            rk_rgn.fnDetachChannel(handle, &channel);
+            continue;
+        }
+        rk_rgn.fnAttachChannel(handle, &channel, &attrib);
+    }
 
     return EXIT_SUCCESS;
 }
@@ -393,7 +409,11 @@ void rk_region_destroy(char handle)
     rk_sys_bind channel = { .module = RK_SYS_MOD_VENC,
         .device = _rk_venc_dev, .channel = 0 };
     
-    rk_rgn.fnDetachChannel(handle, &channel);
+    for (char i = 0; i < RK_VENC_CHN_NUM; i++) {
+        if (!rk_state[i].enable) continue;
+        channel.channel = i;
+        rk_rgn.fnDetachChannel(handle, &channel);
+    }
     rk_rgn.fnDestroyRegion(handle);
 }
 

@@ -194,6 +194,7 @@ int save_app_config(void) {
 
     fprintf(file, "mjpeg:\n");
     fprintf(file, "  enable: %s\n", app_config.mjpeg_enable ? "true" : "false");
+    fprintf(file, "  osd_enable: %s\n", app_config.mjpeg_osd_enable ? "true" : "false");
     fprintf(file, "  mode: %d\n", app_config.mjpeg_mode);
     fprintf(file, "  width: %d\n", app_config.mjpeg_width);
     fprintf(file, "  height: %d\n", app_config.mjpeg_height);
@@ -265,6 +266,7 @@ enum ConfigError parse_app_config(void) {
     app_config.mp4_enable = false;
 
     app_config.mjpeg_enable = false;
+    app_config.mjpeg_osd_enable = true;
     app_config.mjpeg_fps = 15;
     app_config.mjpeg_width = 640;
     app_config.mjpeg_height = 480;
@@ -556,6 +558,8 @@ enum ConfigError parse_app_config(void) {
     err = parse_bool(&ini, "mjpeg", "enable", &app_config.mjpeg_enable);
     if (err != CONFIG_OK)
         goto RET_ERR;
+    // Per-stream OSD control for MJPEG (default: true).
+    parse_bool(&ini, "mjpeg", "osd_enable", &app_config.mjpeg_osd_enable);
     if (app_config.mjpeg_enable) {
         {
             const char *possible_values[] = {"CBR", "VBR", "QP"};

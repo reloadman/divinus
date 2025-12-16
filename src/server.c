@@ -944,6 +944,7 @@ void respond_request(http_request_t *req) {
     if (EQUALS(req->uri, "/api/mjpeg")) {
         if (!EMPTY(req->query)) {
             char *remain;
+            bool osd_mjpeg_changed = false;
             while (req->query) {
                 char *value = split(&req->query, "&");
                 if (!value || !*value) continue;
@@ -955,6 +956,14 @@ void respond_request(http_request_t *req) {
                         app_config.mjpeg_enable = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
                         app_config.mjpeg_enable = 0;
+                } else if (EQUALS(key, "osd_enable")) {
+                    bool prev = app_config.mjpeg_osd_enable;
+                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
+                        app_config.mjpeg_osd_enable = 1;
+                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
+                        app_config.mjpeg_osd_enable = 0;
+                    if (prev != app_config.mjpeg_osd_enable)
+                        osd_mjpeg_changed = true;
                 } else if (EQUALS(key, "width")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -979,6 +988,10 @@ void respond_request(http_request_t *req) {
 
             disable_mjpeg();
             if (app_config.mjpeg_enable) enable_mjpeg();
+            if (osd_mjpeg_changed && app_config.osd_enable) {
+                for (char i = 0; i < MAX_OSD; i++)
+                    osds[i].updt = 1;
+            }
         }
 
         char mode[5] = "\0";
@@ -992,8 +1005,9 @@ void respond_request(http_request_t *req) {
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "{\"enable\":%s,\"width\":%d,\"height\":%d,\"fps\":%d,\"mode\":\"%s\",\"bitrate\":%d}",
+            "{\"enable\":%s,\"osd_enable\":%s,\"width\":%d,\"height\":%d,\"fps\":%d,\"mode\":\"%s\",\"bitrate\":%d}",
             app_config.mjpeg_enable ? "true" : "false",
+            app_config.mjpeg_osd_enable ? "true" : "false",
             app_config.mjpeg_width, app_config.mjpeg_height, app_config.mjpeg_fps, mode,
             app_config.mjpeg_bitrate);
         send_and_close(req->clntFd, response, respLen);

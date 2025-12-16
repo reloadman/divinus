@@ -415,7 +415,7 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
 
     if (i6_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("i6_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.point.x != rect.x || attribCurr.point.x != rect.y ||
+    else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
         attribCurr.osd.bgFgAlpha[1] != opacity) {
         HAL_INFO("i6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
@@ -438,6 +438,10 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
         dest.port = i;
+        if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
+            i6_rgn.fnDetachChannel(handle, &dest);
+            continue;
+        }
         i6_rgn.fnAttachChannel(handle, &dest, &attrib);
     }
 
