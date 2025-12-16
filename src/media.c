@@ -232,7 +232,7 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     unsigned int max_stash = aacInputSamples * channels * 4;
     if (aacStash && aacStashLen + total_samples <= max_stash) {
         for (unsigned int i = 0; i < total_samples; i++)
-            aacStash[aacStashLen + i] = ((int32_t)pcm16[i]) << 16;
+            aacStash[aacStashLen + i] = (int32_t)pcm16[i];
         aacStashLen += total_samples;
     }
 
@@ -729,7 +729,7 @@ int enable_audio(void) {
         cfg->allowMidside = aacChannels > 1;
         cfg->outputFormat = 0; // raw AAC-LC frames
         cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
-        cfg->inputFormat = FAAC_INPUT_32BIT;
+        cfg->inputFormat = FAAC_INPUT_16BIT;
         if (!faacEncSetConfiguration(aacEnc, cfg)) {
             HAL_ERROR("media", "AAC encoder configuration failed!\n");
             return EXIT_FAILURE;
