@@ -524,6 +524,15 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     }
     SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
+    // RFC 2250: prepend a 4-byte MPEG audio header (no fragmentation).
+    const uint16_t hdr_first = (uint16_t)((0 /* MBZ */ << 15) | (0 /* frag */ << 14) | ((len + 4) & 0x3FFF));
+    uint8_t rtp_hdr[4] = {
+        (uint8_t)(hdr_first >> 8),
+        (uint8_t)(hdr_first & 0xFF),
+        0x00, // offset MSB (no fragmentation)
+        0x00  // offset LSB
+    };
+    U8Slice99 payload_hdr = U8Slice99_new(rtp_hdr, sizeof rtp_hdr);
     pthread_mutex_lock(&g_srv.mtx);
     int sent = 0;
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -531,7 +540,7 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
         int ret = SmolRTSP_RtpTransport_send_packet(
-            c->audio_rtp, ts, true, U8Slice99_empty(), payload);
+            c->audio_rtp, ts, true, payload_hdr, payload);
         if (ret < 0) {
             continue;
         }
