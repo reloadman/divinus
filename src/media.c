@@ -7,6 +7,10 @@ pthread_t aencPid = 0, audPid = 0, ispPid = 0, vidPid = 0;
 
 static hal_audcodec active_audio_codec;
 
+// Prevent unbounded growth if downstream (network/client) stalls.
+// When exceeded, we drop queued audio to keep capture threads healthy.
+#define AUDIO_ENC_BUF_MAX (512 * 1024)
+
 struct BitBuf mp3Buf;
 shine_config_t mp3Cnf;
 shine_t mp3Enc;
@@ -25,6 +29,12 @@ unsigned int aacChannels = 1;
 int16_t *aacStash = NULL;    // stash of incoming PCM (16-bit LE)
 unsigned int aacStashLen = 0;
 uint64_t aacStashTsUs = 0;
+
+// Temporary buffers to send an extracted encoded frame without holding aencMtx.
+static unsigned char *mp3_send_buf = NULL;
+static size_t mp3_send_cap = 0;
+static unsigned char *aac_send_buf = NULL;
+static size_t aac_send_cap = 0;
 
 static inline uint8_t aac_samplerate_index(uint32_t srate) {
     switch (srate) {
@@ -58,6 +68,9 @@ void *aenc_thread(void) {
 
 static void *aenc_thread_mp3(void) {
     while (keepRunning && audioOn) {
+        uint16_t frame_len = 0;
+
+        // Extract one frame quickly under the mutex.
         pthread_mutex_lock(&aencMtx);
         if (mp3Buf.offset < sizeof(uint16_t)) {
             pthread_mutex_unlock(&aencMtx);
@@ -65,8 +78,7 @@ static void *aenc_thread_mp3(void) {
             continue;
         }
 
-        uint16_t frame_len = (uint8_t)mp3Buf.buf[0] |
-            ((uint8_t)mp3Buf.buf[1] << 8);
+        frame_len = (uint8_t)mp3Buf.buf[0] | ((uint8_t)mp3Buf.buf[1] << 8);
         if (!frame_len || frame_len > mp3Buf.size) {
             // Corrupted length; drop buffer to resync.
             HAL_WARNING("media", "MP3 frame_len invalid: %u offset=%u\n",
@@ -76,7 +88,7 @@ static void *aenc_thread_mp3(void) {
             continue;
         }
 
-        if (mp3Buf.offset < frame_len + sizeof(uint16_t)) {
+        if (mp3Buf.offset < (uint32_t)frame_len + sizeof(uint16_t)) {
             pthread_mutex_unlock(&aencMtx);
             usleep(5000);
             continue;
@@ -85,39 +97,46 @@ static void *aenc_thread_mp3(void) {
         char *payload = mp3Buf.buf + sizeof(uint16_t);
 
         // Basic MPEG audio sync check to avoid sending garbage.
-        uint16_t hdr = (uint8_t)payload[0] << 8 | (uint8_t)payload[1];
-        if ((hdr & 0xFFE0) != 0xFFE0) {
-            HAL_WARNING("media", "MP3 desync: hdr=%04x offset=%u len=%u\n",
-                hdr, mp3Buf.offset, frame_len);
-            // Drop one byte to try to resync.
-            memmove(mp3Buf.buf, mp3Buf.buf + 1, mp3Buf.offset - 1);
-            mp3Buf.offset -= 1;
-            pthread_mutex_unlock(&aencMtx);
-            continue;
+        if (frame_len >= 2) {
+            uint16_t hdr = (uint8_t)payload[0] << 8 | (uint8_t)payload[1];
+            if ((hdr & 0xFFE0) != 0xFFE0) {
+                HAL_WARNING("media", "MP3 desync: hdr=%04x offset=%u len=%u\n",
+                    hdr, mp3Buf.offset, frame_len);
+                // Drop one byte to try to resync.
+                memmove(mp3Buf.buf, mp3Buf.buf + 1, mp3Buf.offset - 1);
+                mp3Buf.offset -= 1;
+                pthread_mutex_unlock(&aencMtx);
+                continue;
+            }
         }
 
-        static int log_mp3_send = 0;
-        if (log_mp3_send < 3) {
-            HAL_INFO("media", "MP3 send frame_len=%u hdr=%02x %02x buf_off=%u\n",
-                frame_len, (uint8_t)payload[0], (uint8_t)payload[1],
-                mp3Buf.offset);
-            log_mp3_send++;
+        if (frame_len > mp3_send_cap) {
+            unsigned char *nb = realloc(mp3_send_buf, frame_len);
+            if (!nb) {
+                // Out of memory: drop queued audio and continue.
+                HAL_ERROR("media", "MP3 send buffer realloc failed (%u)\n", frame_len);
+                mp3Buf.offset = 0;
+                pthread_mutex_unlock(&aencMtx);
+                continue;
+            }
+            mp3_send_buf = nb;
+            mp3_send_cap = frame_len;
         }
+        memcpy(mp3_send_buf, payload, frame_len);
 
-        send_mp3_to_client(payload, frame_len);
-
-        pthread_mutex_lock(&mp4Mtx);
-        mp4_ingest_audio(payload, frame_len);
-        pthread_mutex_unlock(&mp4Mtx);
-
-        if (app_config.rtsp_enable)
-            smolrtsp_push_mp3((uint8_t *)payload, frame_len, 0);
-
-        mp3Buf.offset -= frame_len + sizeof(uint16_t);
+        // Remove extracted frame from queue.
+        mp3Buf.offset -= (uint32_t)frame_len + sizeof(uint16_t);
         if (mp3Buf.offset)
-            memmove(mp3Buf.buf, mp3Buf.buf + frame_len + sizeof(uint16_t),
-                mp3Buf.offset);
+            memmove(mp3Buf.buf, mp3Buf.buf + frame_len + sizeof(uint16_t), mp3Buf.offset);
         pthread_mutex_unlock(&aencMtx);
+
+        // Send/ingest WITHOUT holding aencMtx (avoid stalling MI_AI fetch thread).
+        send_mp3_to_client((char *)mp3_send_buf, frame_len);
+        pthread_mutex_lock(&mp4Mtx);
+        mp4_ingest_audio((char *)mp3_send_buf, frame_len);
+        pthread_mutex_unlock(&mp4Mtx);
+        if (app_config.rtsp_enable)
+            smolrtsp_push_mp3((uint8_t *)mp3_send_buf, frame_len, 0);
     }
     HAL_INFO("media", "Shutting down audio encoding thread...\n");
     return NULL;
@@ -126,6 +145,9 @@ static void *aenc_thread_mp3(void) {
 static void *aenc_thread_aac(void) {
     HAL_INFO("media", "AAC encode thread loop start\n");
     while (keepRunning && audioOn) {
+        uint16_t frame_len = 0;
+        uint64_t ts_us = 0;
+
         pthread_mutex_lock(&aencMtx);
         if (aacBuf.offset < sizeof(uint16_t) + sizeof(uint64_t)) {
             pthread_mutex_unlock(&aencMtx);
@@ -133,9 +155,8 @@ static void *aenc_thread_aac(void) {
             continue;
         }
 
-        uint16_t frame_len = (uint8_t)aacBuf.buf[0] |
+        frame_len = (uint8_t)aacBuf.buf[0] |
             ((uint8_t)aacBuf.buf[1] << 8);
-        uint64_t ts_us = 0;
         memcpy(&ts_us, aacBuf.buf + sizeof(uint16_t), sizeof(uint64_t));
 
         if (frame_len == 0 || frame_len > aacMaxOutputBytes) {
@@ -155,18 +176,32 @@ static void *aenc_thread_aac(void) {
         unsigned char *payload =
             (unsigned char *)(aacBuf.buf + sizeof(uint16_t) + sizeof(uint64_t));
 
-        pthread_mutex_lock(&mp4Mtx);
-        mp4_ingest_audio((char *)payload, frame_len);
-        pthread_mutex_unlock(&mp4Mtx);
-
-        if (app_config.rtsp_enable)
-            smolrtsp_push_aac(payload, frame_len, ts_us);
+        if (frame_len > aac_send_cap) {
+            unsigned char *nb = realloc(aac_send_buf, frame_len);
+            if (!nb) {
+                HAL_ERROR("media", "AAC send buffer realloc failed (%u)\n", frame_len);
+                aacBuf.offset = 0;
+                pthread_mutex_unlock(&aencMtx);
+                continue;
+            }
+            aac_send_buf = nb;
+            aac_send_cap = frame_len;
+        }
+        memcpy(aac_send_buf, payload, frame_len);
 
         aacBuf.offset -= frame_len + sizeof(uint16_t) + sizeof(uint64_t);
         if (aacBuf.offset)
-            memmove(aacBuf.buf, aacBuf.buf + frame_len + sizeof(uint16_t) + sizeof(uint64_t),
+            memmove(aacBuf.buf,
+                aacBuf.buf + frame_len + sizeof(uint16_t) + sizeof(uint64_t),
                 aacBuf.offset);
         pthread_mutex_unlock(&aencMtx);
+
+        pthread_mutex_lock(&mp4Mtx);
+        mp4_ingest_audio((char *)aac_send_buf, frame_len);
+        pthread_mutex_unlock(&mp4Mtx);
+
+        if (app_config.rtsp_enable)
+            smolrtsp_push_aac(aac_send_buf, frame_len, ts_us);
     }
     HAL_INFO("media", "Shutting down AAC encoding thread...\n");
     return NULL;
@@ -204,8 +239,25 @@ static int save_audio_stream_mp3(hal_audframe *frame) {
         unsigned char *mp3Ptr =
             shine_encode_buffer_interleaved(mp3Enc, pcmSrc, &ret);
         pthread_mutex_lock(&aencMtx);
-        put_u16_le(&mp3Buf, (uint16_t)ret);
-        put(&mp3Buf, mp3Ptr, ret);
+        if (ret > 0) {
+            const uint32_t need = (uint32_t)ret + sizeof(uint16_t);
+            if (!mp3Buf.buf && mp3Buf.size == 0) {
+                mp3Buf.buf = malloc(AUDIO_ENC_BUF_MAX);
+                mp3Buf.size = mp3Buf.buf ? AUDIO_ENC_BUF_MAX : 0;
+                mp3Buf.offset = 0;
+            }
+            // Drop queued audio when buffer is full; keep capture thread real-time.
+            if (mp3Buf.size && (mp3Buf.offset + need > mp3Buf.size))
+                mp3Buf.offset = 0;
+            if (mp3Buf.size && need <= mp3Buf.size) {
+                enum BufError e1 = put_u16_le(&mp3Buf, (uint16_t)ret);
+                enum BufError e2 = put(&mp3Buf, (char *)mp3Ptr, (uint32_t)ret);
+                if (e1 != BUF_OK || e2 != BUF_OK) {
+                    HAL_WARNING("media", "MP3 buffer put failed e1=%d e2=%d (drop)\n", e1, e2);
+                    mp3Buf.offset = 0;
+                }
+            }
+        }
         pthread_mutex_unlock(&aencMtx);
 
         static int log_mp3_enc = 0;
@@ -295,6 +347,16 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         uint64_t ts_us = 0;
 
         pthread_mutex_lock(&aencMtx);
+        if (!aacBuf.buf || aacBuf.size != AUDIO_ENC_BUF_MAX) {
+            free(aacBuf.buf);
+            aacBuf.buf = malloc(AUDIO_ENC_BUF_MAX);
+            aacBuf.size = aacBuf.buf ? AUDIO_ENC_BUF_MAX : 0;
+            aacBuf.offset = 0;
+        }
+        // Drop queued audio if buffer would overflow. Keep capture thread real-time.
+        const uint32_t need = (uint32_t)bytes + sizeof(uint16_t) + sizeof(uint64_t);
+        if (aacBuf.size && (aacBuf.offset + need > aacBuf.size))
+            aacBuf.offset = 0;
         enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
         char ts_buf[8];
         for (int i = 0; i < 8; i++) ts_buf[i] = (ts_us >> (i * 8)) & 0xFF;
@@ -622,6 +684,12 @@ void disable_audio(void) {
         free(aacPcm);
         free(aacOut);
         free(aacStash);
+        free(aacBuf.buf);
+        aacBuf.buf = NULL;
+        aacBuf.size = 0;
+        free(aac_send_buf);
+        aac_send_buf = NULL;
+        aac_send_cap = 0;
         aacEnc = NULL;
         aacPcm = NULL;
         aacOut = NULL;
@@ -634,6 +702,12 @@ void disable_audio(void) {
         aacBuf.offset = 0;
     } else {
         shine_close(mp3Enc);
+        free(mp3Buf.buf);
+        mp3Buf.buf = NULL;
+        mp3Buf.size = 0;
+        free(mp3_send_buf);
+        mp3_send_buf = NULL;
+        mp3_send_cap = 0;
         mp3Buf.offset = 0;
         pcmPos = 0;
     }
@@ -702,6 +776,12 @@ int enable_audio(void) {
 
     if (active_audio_codec == HAL_AUDCODEC_AAC) {
         aacBuf.offset = 0;
+        if (!aacBuf.buf || aacBuf.size != AUDIO_ENC_BUF_MAX) {
+            free(aacBuf.buf);
+            aacBuf.buf = malloc(AUDIO_ENC_BUF_MAX);
+            aacBuf.size = aacBuf.buf ? AUDIO_ENC_BUF_MAX : 0;
+            aacBuf.offset = 0;
+        }
         aacEnc = faacEncOpen(app_config.audio_srate, app_config.audio_channels,
             &aacInputSamples, &aacMaxOutputBytes);
         if (!aacEnc) {
@@ -735,6 +815,12 @@ int enable_audio(void) {
         HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
     } else {
         mp3Buf.offset = 0;
+        if (!mp3Buf.buf || mp3Buf.size != AUDIO_ENC_BUF_MAX) {
+            free(mp3Buf.buf);
+            mp3Buf.buf = malloc(AUDIO_ENC_BUF_MAX);
+            mp3Buf.size = mp3Buf.buf ? AUDIO_ENC_BUF_MAX : 0;
+            mp3Buf.offset = 0;
+        }
         mp3Cnf.mpeg.mode = MONO;
         mp3Cnf.mpeg.bitr = app_config.audio_bitrate;
         mp3Cnf.mpeg.emph = NONE;

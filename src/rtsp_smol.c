@@ -33,6 +33,10 @@
 #define AAC_PAYLOAD_TYPE 97
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
+// Must match max_buffer passed to smolrtsp_transport_tcp(...) in setup_rtp_transport().
+#define RTSP_TCP_MAX_BUFFER (256 * 1024)
+// When TCP buffer is full, drain oldest interleaved frames down to this size.
+#define RTSP_TCP_TRIM_TARGET (RTSP_TCP_MAX_BUFFER / 2)
 
 typedef enum {
     TRACK_VIDEO,
@@ -51,6 +55,7 @@ static inline uint8_t aac_samplerate_index(uint32_t srate);
 static inline uint16_t aac_audio_specific_config(void);
 static inline void aac_config_hex(char *dst, size_t dst_sz);
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx);
+static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_len);
 
 typedef struct SmolRtspClient SmolRtspClient;
 
@@ -496,6 +501,56 @@ static void Controller_after(
         fprintf(stderr, "RTSP respond failed: %zd\n", ret);
 }
 
+// Drain oldest TCP interleaved ($ <ch> <len>) frames from the start of the
+// bufferevent output buffer until it shrinks to <= target_len.
+// Returns 0 if buffer is <= target_len or trimming succeeded; -1 if we cannot
+// safely trim (e.g. buffer doesn't begin with interleaved framing).
+static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_len) {
+    if (!bev)
+        return -1;
+
+    bufferevent_lock(bev);
+    struct evbuffer *out = bufferevent_get_output(bev);
+    if (!out) {
+        bufferevent_unlock(bev);
+        return -1;
+    }
+
+    size_t len = evbuffer_get_length(out);
+    if (len <= target_len) {
+        bufferevent_unlock(bev);
+        return 0;
+    }
+
+    unsigned char hdr[4];
+    if (evbuffer_copyout(out, hdr, sizeof hdr) != (ssize_t)sizeof hdr || hdr[0] != '$') {
+        bufferevent_unlock(bev);
+        return -1;
+    }
+
+    int drained_any = 0;
+    while (len > target_len) {
+        if (len < 4)
+            break;
+        if (evbuffer_copyout(out, hdr, sizeof hdr) != (ssize_t)sizeof hdr)
+            break;
+        if (hdr[0] != '$')
+            break;
+        const uint16_t payload_len = (uint16_t)(((uint16_t)hdr[2] << 8) | (uint16_t)hdr[3]);
+        const size_t frame_len = 4u + (size_t)payload_len;
+        if (frame_len <= 4 || frame_len > len) {
+            // Corrupt/partial framing: stop trimming to avoid desync.
+            break;
+        }
+        evbuffer_drain(out, frame_len);
+        drained_any = 1;
+        len = evbuffer_get_length(out);
+    }
+
+    bufferevent_unlock(bev);
+    return drained_any ? 0 : -1;
+}
+
 impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
@@ -774,6 +829,11 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->video_nal || !c->playing)
             continue;
+        if (SmolRTSP_NalTransport_is_full(c->video_nal)) {
+            // Prefer freshest: drop oldest queued interleaved frames, then send new.
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
+                continue; // can't trim safely -> drop newest
+        }
         int ret = SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
         if (ret < 0) {
             // Best-effort send; skip on error.
@@ -816,6 +876,11 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
+        if (SmolRTSP_RtpTransport_is_full(c->audio_rtp)) {
+            // Prefer freshest: drop oldest queued interleaved frames, then send new.
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
+                continue; // can't trim safely -> drop newest
+        }
         int ret = SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, payload_hdr, payload);
         if (ret < 0) {
@@ -858,6 +923,11 @@ int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
+        if (SmolRTSP_RtpTransport_is_full(c->audio_rtp)) {
+            // Prefer freshest: drop oldest queued interleaved frames, then send new.
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
+                continue; // can't trim safely -> drop newest
+        }
         int ret = SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, hdr, payload);
         if (ret < 0)
