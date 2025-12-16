@@ -18,11 +18,11 @@ struct BitBuf aacBuf;
 faacEncHandle aacEnc = NULL;
 unsigned long aacInputSamples = 0;
 unsigned long aacMaxOutputBytes = 0;
-int32_t *aacPcm = NULL;
+int16_t *aacPcm = NULL;      // encoder input buffer (16-bit LE)
 unsigned char *aacOut = NULL;
 unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
-int32_t *aacStash = NULL;
+int16_t *aacStash = NULL;    // stash of incoming PCM (16-bit LE)
 unsigned int aacStashLen = 0;
 uint64_t aacStashTsUs = 0;
 
