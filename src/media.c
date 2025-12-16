@@ -149,26 +149,6 @@ int save_audio_stream(hal_audframe *frame) {
     printf("        ts:%d\n", frame->timestamp);
 #endif
 
-    // Debug PCM dump: first 50 frames to /tmp/divinus_pcm.raw
-    static FILE *pcm_dump = NULL;
-    static int pcm_dump_left = 50;
-    if (pcm_dump_left > 0) {
-        if (!pcm_dump) {
-            pcm_dump = fopen("/tmp/divinus_pcm.raw", "wb");
-            if (!pcm_dump)
-                HAL_WARNING("media", "Cannot open /tmp/divinus_pcm.raw for dump\n");
-        }
-        if (pcm_dump) {
-            fwrite(frame->data[0], 1, frame->length[0], pcm_dump);
-            pcm_dump_left--;
-            if (pcm_dump_left == 0) {
-                fclose(pcm_dump);
-                pcm_dump = NULL;
-                HAL_INFO("media", "PCM dump finished: /tmp/divinus_pcm.raw\n");
-            }
-        }
-    }
-
     send_pcm_to_client(frame);
 
     if (active_audio_codec == HAL_AUDCODEC_AAC)
@@ -266,40 +246,6 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         }
         if (bytes > UINT16_MAX)
             bytes = UINT16_MAX;
-
-        // Debug AAC dump: first 200 encoded frames with ADTS headers.
-        static FILE *aac_dump = NULL;
-        static int aac_dump_left = 200;
-        if (aac_dump_left > 0) {
-            if (!aac_dump) {
-                aac_dump = fopen("/tmp/divinus_aac.adts", "wb");
-                if (!aac_dump)
-                    HAL_WARNING("media", "Cannot open /tmp/divinus_aac.adts for dump\n");
-            }
-            if (aac_dump) {
-                uint8_t hdr[7];
-                unsigned int chan_cfg = app_config.audio_channels ? app_config.audio_channels : 1;
-                if (chan_cfg > 2) chan_cfg = 2;
-                uint8_t freq_idx = aac_samplerate_index(app_config.audio_srate);
-                unsigned int frame_len = (unsigned int)bytes + 7;
-                hdr[0] = 0xFF;
-                hdr[1] = 0xF1; // MPEG-4, no CRC
-                hdr[2] = (1 << 6) | ((freq_idx & 0x0F) << 2) | ((chan_cfg >> 2) & 0x1);
-                hdr[3] = ((chan_cfg & 0x3) << 6) | ((frame_len >> 11) & 0x3);
-                hdr[4] = (frame_len >> 3) & 0xFF;
-                hdr[5] = ((frame_len & 0x7) << 5) | 0x1F; // adts_buffer_fullness high bits (0x7FF)
-                hdr[6] = 0xFC; // adts_buffer_fullness low bits (0x3F << 2) | blocks(0)
-                fwrite(hdr, 1, sizeof(hdr), aac_dump);
-                fwrite(aacOut, 1, (size_t)bytes, aac_dump);
-                fflush(aac_dump);
-                aac_dump_left--;
-                if (aac_dump_left == 0) {
-                    fclose(aac_dump);
-                    aac_dump = NULL;
-                    HAL_INFO("media", "AAC dump finished: /tmp/divinus_aac.adts\n");
-                }
-            }
-        }
 
         // RTP timestamp from stash base
         // Let RTSP layer derive timestamps from monotonic clock to avoid drift.
