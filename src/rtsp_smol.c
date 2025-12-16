@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define MAX_CLIENTS 16
@@ -254,7 +255,7 @@ static void Controller_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Reques
     smolrtsp_header(
         ctx, SMOLRTSP_HEADER_TRANSPORT, "RTP/AVP/TCP;unicast;interleaved=%d-%d",
         rtp_ch, rtcp_ch);
-    smolrtsp_header(ctx, SMOLRTSP_HEADER_SESSION, "%llu;timeout=60", client->session_id);
+    smolrtsp_header(ctx, SMOLRTSP_HEADER_SESSION, "%llu;timeout=30", client->session_id);
     smolrtsp_respond_ok(ctx);
 }
 
@@ -324,26 +325,19 @@ static inline void reset_audio_ts(void) { g_audio_ts_us = 0; }
 
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
-    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        fprintf(stderr, "[rtsp] client event %s bev=%p\n",
-                (events & BEV_EVENT_ERROR) ? "ERROR" : "EOF", (void *)bev);
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
+        const char *ev =
+            (events & BEV_EVENT_ERROR)   ? "ERROR" :
+            (events & BEV_EVENT_TIMEOUT) ? "TIMEOUT" : "EOF";
+        fprintf(stderr, "[rtsp] client event %s bev=%p\n", ev, (void *)bev);
         pthread_mutex_lock(&g_srv.mtx);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             SmolRtspClient *c = &g_srv.clients[i];
             if (!c->alive || c->bev != bev)
                 continue;
-            fprintf(stderr, "[rtsp] marking client dead session=%llu\n",
-                    (unsigned long long)c->session_id);
-            if (c->bev) {
-                bufferevent_free(c->bev);
-                c->bev = NULL;
-            }
-            c->playing = 0;
-            c->alive = 0;
-            if (g_client_count > 0)
-                g_client_count--;
-            if (g_client_count == 0)
-                reset_audio_ts();
+            fprintf(stderr, "[rtsp] dropping client (event=%s) session=%llu\n",
+                    ev, (unsigned long long)c->session_id);
+            drop_client(c);
             break;
         }
         pthread_mutex_unlock(&g_srv.mtx);
@@ -381,6 +375,8 @@ static void listener_cb(
         DYN(Controller, SmolRTSP_Controller, &slot->controller_state);
     slot->dispatch_ctx = smolrtsp_libevent_ctx(slot->controller_iface);
 
+    struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
+    bufferevent_set_timeouts(bev, &tv, &tv);
     bufferevent_setcb(bev, smolrtsp_libevent_cb, NULL, on_event_cb, slot->dispatch_ctx);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
