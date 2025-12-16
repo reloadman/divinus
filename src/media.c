@@ -749,6 +749,10 @@ int enable_audio(void) {
         pcmPos = 0;
     }
 
+    // IMPORTANT: audio capture/encode threads spin on `while (keepRunning && audioOn)`.
+    // Set audioOn BEFORE starting threads, otherwise they may exit immediately.
+    audioOn = 1;
+
     {
         pthread_attr_t thread_attr;
         pthread_attr_init(&thread_attr);
@@ -789,8 +793,6 @@ int enable_audio(void) {
             HAL_DANGER("media", "Can't set stack size %zu\n", stacksize);
         pthread_attr_destroy(&thread_attr);
     }
-
-    audioOn = 1;
 
     return ret;
 }
