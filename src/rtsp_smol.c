@@ -34,6 +34,10 @@ typedef enum {
     TRACK_AUDIO
 } track_kind;
 
+// Forward declarations for helpers used before their definitions.
+static inline uint32_t audio_clock_hz(void);
+static inline uint64_t audio_frame_duration_us(void);
+
 typedef struct SmolRtspClient SmolRtspClient;
 
 typedef struct Controller {
