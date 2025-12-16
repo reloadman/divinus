@@ -364,12 +364,19 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
         (SMOLRTSP_SDP_TIME, "0 0"),
         (SMOLRTSP_SDP_ATTR, "tool:smolrtsp"));
 
+    const char *video_codec = app_config.mp4_codecH265 ? "H265" : "H264";
     SMOLRTSP_SDP_DESCRIBE(
         ret, w,
         (SMOLRTSP_SDP_MEDIA, "video 0 RTP/AVP %d", VIDEO_PAYLOAD_TYPE),
         (SMOLRTSP_SDP_ATTR, "control:video"),
-        (SMOLRTSP_SDP_ATTR, "rtpmap:%d H264/%d", VIDEO_PAYLOAD_TYPE, VIDEO_CLOCK),
-        (SMOLRTSP_SDP_ATTR, "fmtp:%d packetization-mode=1", VIDEO_PAYLOAD_TYPE));
+        (SMOLRTSP_SDP_ATTR, "rtpmap:%d %s/%d", VIDEO_PAYLOAD_TYPE, video_codec, VIDEO_CLOCK));
+    // H.264 uses RFC6184 packetization-mode. For H.265 (RFC7798) this parameter
+    // is not defined; omitting fmtp keeps clients happy.
+    if (!app_config.mp4_codecH265) {
+        SMOLRTSP_SDP_DESCRIBE(
+            ret, w,
+            (SMOLRTSP_SDP_ATTR, "fmtp:%d packetization-mode=1", VIDEO_PAYLOAD_TYPE));
+    }
 
     if (app_config.audio_enable && app_config.audio_bitrate) {
         const uint8_t pt = audio_payload_type();
