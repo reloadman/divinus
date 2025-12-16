@@ -57,31 +57,46 @@ void *aenc_thread(void) {
 }
 
 static void *aenc_thread_mp3(void) {
-    const uint32_t mp3FrmSize =
-        (app_config.audio_srate >= 32000 ? 144 : 72) *
-        (app_config.audio_bitrate * 1000) /
-        app_config.audio_srate;
-
     while (keepRunning && audioOn) {
         pthread_mutex_lock(&aencMtx);
-        if (mp3Buf.offset < mp3FrmSize) {
+        if (mp3Buf.offset < sizeof(uint16_t)) {
             pthread_mutex_unlock(&aencMtx);
             usleep(10000);
             continue;
         }
 
-        send_mp3_to_client(mp3Buf.buf, mp3FrmSize);
+        uint16_t frame_len = (uint8_t)mp3Buf.buf[0] |
+            ((uint8_t)mp3Buf.buf[1] << 8);
+        if (!frame_len || frame_len > mp3Buf.size) {
+            // Corrupted length; drop buffer to resync.
+            HAL_WARNING("media", "MP3 frame_len invalid: %u offset=%u\n",
+                frame_len, mp3Buf.offset);
+            mp3Buf.offset = 0;
+            pthread_mutex_unlock(&aencMtx);
+            continue;
+        }
+
+        if (mp3Buf.offset < frame_len + sizeof(uint16_t)) {
+            pthread_mutex_unlock(&aencMtx);
+            usleep(5000);
+            continue;
+        }
+
+        char *payload = mp3Buf.buf + sizeof(uint16_t);
+
+        send_mp3_to_client(payload, frame_len);
 
         pthread_mutex_lock(&mp4Mtx);
-        mp4_ingest_audio(mp3Buf.buf, mp3FrmSize);
+        mp4_ingest_audio(payload, frame_len);
         pthread_mutex_unlock(&mp4Mtx);
 
         if (app_config.rtsp_enable)
-            smolrtsp_push_mp3((uint8_t *)mp3Buf.buf, mp3FrmSize, 0);
+            smolrtsp_push_mp3((uint8_t *)payload, frame_len, 0);
 
-        mp3Buf.offset -= mp3FrmSize;
+        mp3Buf.offset -= frame_len + sizeof(uint16_t);
         if (mp3Buf.offset)
-            memcpy(mp3Buf.buf, mp3Buf.buf + mp3FrmSize, mp3Buf.offset);
+            memmove(mp3Buf.buf, mp3Buf.buf + frame_len + sizeof(uint16_t),
+                mp3Buf.offset);
         pthread_mutex_unlock(&aencMtx);
     }
     HAL_INFO("media", "Shutting down audio encoding thread...\n");
@@ -169,6 +184,7 @@ static int save_audio_stream_mp3(hal_audframe *frame) {
         unsigned char *mp3Ptr =
             shine_encode_buffer_interleaved(mp3Enc, pcmSrc, &ret);
         pthread_mutex_lock(&aencMtx);
+        put_u16_le(&mp3Buf, (uint16_t)ret);
         put(&mp3Buf, mp3Ptr, ret);
         pthread_mutex_unlock(&aencMtx);
         pcmLen -= (pcmSamp - pcmPos);
