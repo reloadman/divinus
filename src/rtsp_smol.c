@@ -38,6 +38,9 @@ typedef enum {
 typedef struct {
     uint64_t session_id;
     struct bufferevent *bev;
+    Controller controller_state;
+    SmolRTSP_Controller controller_iface;
+    void *dispatch_ctx;
     SmolRTSP_RtpTransport *video_rtp;
     SmolRTSP_NalTransport *video_nal;
     SmolRTSP_RtpTransport *audio_rtp;
@@ -84,6 +87,10 @@ static SmolRtspClient *find_client(uint64_t session_id) {
 
 static void drop_client(SmolRtspClient *c) {
     if (!c) return;
+    if (c->dispatch_ctx) {
+        smolrtsp_libevent_ctx_free(c->dispatch_ctx);
+        c->dispatch_ctx = NULL;
+    }
     if (c->video_nal) {
         VTABLE(SmolRTSP_NalTransport, SmolRTSP_Droppable).drop(c->video_nal);
         c->video_nal = NULL;
@@ -186,8 +193,9 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
             ret, w,
             (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
             (SMOLRTSP_SDP_ATTR, "control:audio"),
-            // Payload type 14 is static MPA (MP1/MP2/MP3) at 90 kHz
-            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, MP3_CLOCK));
+            // Payload type 14 is static MPA (MP1/MP2/MP3) at 90 kHz; layer=3 narrows it to MP3
+            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, MP3_CLOCK),
+            (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
     }
 
     smolrtsp_header(ctx, SMOLRTSP_HEADER_CONTENT_TYPE, "application/sdp");
@@ -276,7 +284,16 @@ impl(SmolRTSP_Droppable, Controller);
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        bufferevent_free(bev);
+        pthread_mutex_lock(&g_srv.mtx);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            SmolRtspClient *c = &g_srv.clients[i];
+            if (!c->alive || c->bev != bev)
+                continue;
+            drop_client(c);
+            c->alive = 0;
+            break;
+        }
+        pthread_mutex_unlock(&g_srv.mtx);
     }
 }
 
@@ -304,11 +321,12 @@ static void listener_cb(
     }
 
     slot->bev = bev;
-    Controller controller_state = {.client = slot};
-    SmolRTSP_Controller controller = DYN(Controller, SmolRTSP_Controller, &controller_state);
-    void *dispatch_ctx = smolrtsp_libevent_ctx(controller);
+    slot->controller_state.client = slot;
+    slot->controller_iface =
+        DYN(Controller, SmolRTSP_Controller, &slot->controller_state);
+    slot->dispatch_ctx = smolrtsp_libevent_ctx(slot->controller_iface);
 
-    bufferevent_setcb(bev, smolrtsp_libevent_cb, NULL, on_event_cb, dispatch_ctx);
+    bufferevent_setcb(bev, smolrtsp_libevent_cb, NULL, on_event_cb, slot->dispatch_ctx);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
 
