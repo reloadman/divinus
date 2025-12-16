@@ -36,8 +36,11 @@ static const char *signal_name(int signo) {
 void handle_error(int signo) {
     char msg[128];
 
-    // Treat common network/client disconnect conditions as non-fatal.
-    if (signo == SIGPIPE || signo == SIGILL || errno == ECONNRESET || errno == EPIPE) {
+    // SIGPIPE is expected when a client disconnects while we're writing.
+    // Never "ignore" crash signals like SIGSEGV/SIGILL based on errno: errno may
+    // refer to an unrelated previous syscall, and returning from SIGSEGV will
+    // just re-trigger the fault and spam logs in an infinite loop.
+    if (signo == SIGPIPE) {
         int len = snprintf(
             msg, sizeof(msg),
             "Non-fatal network signal (%d:%s) errno=%d (%s); ignore\n",
@@ -75,8 +78,8 @@ int main(int argc, char *argv[]) {
     {
         char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGSEGV};
         char signal_exit[] = {SIGINT, SIGQUIT, SIGTERM};
-        // SIGPIPE and SIGILL can occur on client disconnect/teardown; ignore them.
-        char signal_null[] = {SIGPIPE, SIGILL};
+        // SIGPIPE can occur on client disconnect/teardown; ignore it.
+        char signal_null[] = {SIGPIPE};
 
         for (char *s = signal_error; s < (&signal_error)[1]; s++)
             signal(*s, handle_error);
