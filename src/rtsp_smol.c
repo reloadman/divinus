@@ -41,7 +41,7 @@ typedef struct Controller {
     SmolRtspClient *client;
 } Controller;
 
-typedef struct {
+typedef struct SmolRtspClient {
     uint64_t session_id;
     struct bufferevent *bev;
     Controller controller_state;
