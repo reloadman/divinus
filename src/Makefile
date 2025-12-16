@@ -4,6 +4,9 @@ OBJ = ../divinus
 INCLUDES = -I../3dparty -I../3dparty/metalang99/include -I../3dparty/smolrtsp/include -I../3dparty/smolrtsp-libevent/include
 LDLIBS = -levent_core -levent_extra -levent_pthreads -lpthread
 
+# Default to a debug-friendly build unless OPT is provided by the caller.
+OPT ?= -O0 -g -DDEBUG
+
 .PHONY: clean divinus
 divinus: $(OBJ)
 
