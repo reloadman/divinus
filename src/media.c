@@ -730,8 +730,6 @@ int enable_audio(void) {
         cfg->outputFormat = 0; // raw AAC-LC frames
         cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
         cfg->inputFormat = FAAC_INPUT_16BIT;
-        cfg->inputChannels = aacChannels;
-        cfg->outputChannels = aacChannels;
         if (!faacEncSetConfiguration(aacEnc, cfg)) {
             HAL_ERROR("media", "AAC encoder configuration failed!\n");
             return EXIT_FAILURE;
