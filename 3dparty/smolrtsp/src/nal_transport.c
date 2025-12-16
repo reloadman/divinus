@@ -73,7 +73,11 @@ int SmolRTSP_NalTransport_send_packet(
                  nalu_size =
                      SmolRTSP_NalHeader_size(nalu.header) + nalu.payload.len;
 
-    if (nalu_size < max_packet_size) {
+    // IMPORTANT:
+    // Use <= so a NALU that exactly fits the configured max size is sent as a
+    // single NAL unit, not as a single-fragment FU (S=1,E=1), which some
+    // clients (ffmpeg) consider invalid for RTP/HEVC.
+    if (nalu_size <= max_packet_size) {
         const bool marker =
             SmolRTSP_NalHeader_is_coded_slice_idr(nalu.header) ||
             SmolRTSP_NalHeader_is_coded_slice_non_idr(nalu.header);
@@ -96,8 +100,17 @@ int SmolRTSP_NalTransport_send_packet(
 static int send_fragmentized_nal_data(
     SmolRTSP_RtpTransport *t, SmolRTSP_RtpTimestamp ts, size_t max_packet_size,
     SmolRTSP_NalUnit nalu) {
-    const size_t rem = nalu.payload.len % max_packet_size,
-                 packets_count = (nalu.payload.len - rem) / max_packet_size;
+    const size_t fu_header_size = SmolRTSP_NalHeader_fu_size(nalu.header);
+    if (max_packet_size <= fu_header_size) {
+        // Misconfiguration: no room for FU header.
+        return -1;
+    }
+    // `max_packet_size` is the configured max RTP payload size for this codec.
+    // For FU packets, part of that budget is consumed by the FU header itself.
+    const size_t max_fragment_payload = max_packet_size - fu_header_size;
+
+    const size_t rem = nalu.payload.len % max_fragment_payload,
+                 packets_count = (nalu.payload.len - rem) / max_fragment_payload;
 
     for (size_t packet_idx = 0; packet_idx < packets_count; packet_idx++) {
         const bool is_first_fragment = 0 == packet_idx,
@@ -105,9 +118,9 @@ static int send_fragmentized_nal_data(
                        0 == rem && (packets_count - 1 == packet_idx);
 
         const U8Slice99 fu_data = U8Slice99_sub(
-            nalu.payload, packet_idx * max_packet_size,
+            nalu.payload, packet_idx * max_fragment_payload,
             is_last_fragment ? nalu.payload.len
-                             : (packet_idx + 1) * max_packet_size);
+                             : (packet_idx + 1) * max_fragment_payload);
         const SmolRTSP_NalUnit fu = {nalu.header, fu_data};
 
         if (send_fu(t, ts, fu, is_first_fragment, is_last_fragment) == -1) {
@@ -117,7 +130,7 @@ static int send_fragmentized_nal_data(
 
     if (rem != 0) {
         const U8Slice99 fu_data =
-            U8Slice99_advance(nalu.payload, packets_count * max_packet_size);
+            U8Slice99_advance(nalu.payload, packets_count * max_fragment_payload);
         const SmolRTSP_NalUnit fu = {nalu.header, fu_data};
         const bool is_first_fragment = 0 == packets_count,
                    is_last_fragment = true;
