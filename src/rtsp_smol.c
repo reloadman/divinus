@@ -237,7 +237,7 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
                 ret, w,
                 (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
                 (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // Payload type 14 is static MPA (MP1/MP2/MP3); RTP clock 90 kHz.
+                // Payload type 14 is static MPA (MP1/MP2/MP3); RTP clock = sample rate.
                 (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
                 (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
         }
@@ -330,10 +330,8 @@ impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
 static inline uint32_t audio_clock_hz(void) {
-    // RFC 2250: MPEG audio (PT 14) uses 90 kHz RTP clock; AAC uses sample rate.
-    if (app_config.audio_codec == HAL_AUDCODEC_AAC)
-        return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 44100;
-    return 90000;
+    // Use actual sample rate when known; fall back to 90 kHz if unset.
+    return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 90000;
 }
 
 static inline int audio_uses_aac(void) {
