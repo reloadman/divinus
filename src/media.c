@@ -676,11 +676,13 @@ int enable_audio(void) {
     if (audioOn) return ret;
 
     active_audio_codec = app_config.audio_codec ? app_config.audio_codec : HAL_AUDCODEC_MP3;
+    aacChannels = app_config.audio_channels ? app_config.audio_channels : 1;
+    if (aacChannels > 2) aacChannels = 2;
     HAL_INFO("media", "Audio init: codec=%s srate=%u bitrate=%u channels=%u gain=%d\n",
         active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" :
         (active_audio_codec == HAL_AUDCODEC_MP3 ? "MP3" : "UNSPEC"),
         app_config.audio_srate, app_config.audio_bitrate,
-        app_config.audio_channels ? app_config.audio_channels : 1,
+        aacChannels,
         app_config.audio_gain);
 
     switch (plat) {
@@ -724,10 +726,12 @@ int enable_audio(void) {
         cfg->aacObjectType = LOW;
         cfg->mpegVersion = MPEG4;
         cfg->useTns = 0;
-        cfg->allowMidside = app_config.audio_channels > 1;
+        cfg->allowMidside = aacChannels > 1;
         cfg->outputFormat = 0; // raw AAC-LC frames
-        cfg->bitRate = app_config.audio_bitrate * 1000 / (app_config.audio_channels ? app_config.audio_channels : 1);
+        cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
         cfg->inputFormat = FAAC_INPUT_16BIT;
+        cfg->inputChannels = aacChannels;
+        cfg->outputChannels = aacChannels;
         if (!faacEncSetConfiguration(aacEnc, cfg)) {
             HAL_ERROR("media", "AAC encoder configuration failed!\n");
             return EXIT_FAILURE;
