@@ -538,7 +538,9 @@ int cvi_video_create(char index, hal_vidconfig *config)
     int ret;
     cvi_venc_chn channel;
     memset(&channel, 0, sizeof(channel));
-    channel.gop.mode = CVI_VENC_GOPMODE_NORMALP;
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
+    channel.gop.mode = h264_plus ? CVI_VENC_GOPMODE_ADVSMARTP : CVI_VENC_GOPMODE_NORMALP;
     if (config->codec == HAL_VIDCODEC_JPG || config->codec == HAL_VIDCODEC_MJPG) {
         channel.attrib.codec = CVI_VENC_CODEC_MJPG;
         switch (config->mode) {
@@ -587,8 +589,17 @@ int cvi_video_create(char index, hal_vidconfig *config)
         }
     } else if (config->codec == HAL_VIDCODEC_H264) {
         channel.attrib.codec = CVI_VENC_CODEC_H264;
-        channel.gop.normalP.ipQualDelta = config->gop / config->framerate;
-        switch (config->mode) {
+        if (h264_plus) {
+            channel.gop.advSmartP.bgInterv = config->gop;
+            channel.gop.advSmartP.bgQualDelta = 6;
+            channel.gop.advSmartP.viQualDelta = 3;
+        } else {
+            channel.gop.normalP.ipQualDelta = config->gop / config->framerate;
+        }
+        hal_vidmode mode = config->mode;
+        if (h264_plus && mode != HAL_VIDMODE_QP)
+            mode = HAL_VIDMODE_AVBR;
+        switch (mode) {
             case HAL_VIDMODE_CBR:
                 channel.rate.mode = CVI_VENC_RATEMODE_H264CBR;
                 channel.rate.h264Cbr = (cvi_venc_rate_h26xbr){ .gop = config->gop,

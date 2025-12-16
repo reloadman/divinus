@@ -1,6 +1,7 @@
 #pragma once
 
 #include "macros.h"
+#include <stdint.h>
 
 #ifndef ALIGN_BACK
 #define ALIGN_BACK(x, a) (((x) / (a)) * (a))
@@ -113,7 +114,14 @@ typedef struct {
     hal_vidprofile profile;
     unsigned char gop, framerate, minQual, maxQual;
     unsigned short bitrate, maxBitrate;
+    uint32_t flags;
 } hal_vidconfig;
+
+typedef enum {
+    HAL_VIDOPT_NONE = 0,
+    // Request "H.264+" style optimizations where supported (smart GOP, AVBR/EVBR, adaptive QP windows, etc.)
+    HAL_VIDOPT_H264_PLUS = 1u << 0,
+} hal_vidopt;
 
 typedef struct {
     unsigned int length;

@@ -17,6 +17,16 @@ void* _gm_cap_grp;
 void* _gm_venc_dev[GM_VENC_CHN_NUM];
 int   _gm_venc_sz[GM_VENC_CHN_NUM] = {0};
 
+// Enable capture motion metadata when H.264+ is requested.
+static char _gm_motion_on = 0;
+
+static inline int gm_clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
 void gm_hal_deinit(void)
 {
     gm_lib_unload(&gm_lib);
@@ -181,6 +191,7 @@ int gm_pipeline_create(char mirror, char flip)
         GM_DECLARE(gm_lib, config, gm_cap_cnf, "gm_cap_attr_t");
         config.channel = 0;
         config.output = GM_CAP_OUT_SCALER1;
+        config.motionDataOn = _gm_motion_on ? 1 : 0;
 
         gm_lib.fnSetDeviceConfig(_gm_cap_dev, &config);
     }
@@ -251,11 +262,28 @@ int gm_video_create(char index, hal_vidconfig *config)
     _gm_venc_dev[index] = gm_lib.fnCreateDevice(GM_LIB_DEV_VIDENC);
 
     gm_venc_ratemode ratemode;
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
 
     switch (config->mode) {
         case HAL_VIDMODE_CBR: ratemode = GM_VENC_RATEMODE_CBR; break;
         case HAL_VIDMODE_VBR: ratemode = GM_VENC_RATEMODE_VBR; break;
+        case HAL_VIDMODE_ABR: ratemode = GM_VENC_RATEMODE_ECBR; break;
+        case HAL_VIDMODE_AVBR: ratemode = GM_VENC_RATEMODE_EVBR; break;
+        // No dedicated QP mode in public GM headers; approximate with VBR + fixed window.
+        case HAL_VIDMODE_QP: ratemode = GM_VENC_RATEMODE_VBR; break;
         default: HAL_ERROR("gm_venc", "Video encoder does not support this mode!");
+    }
+
+    if (h264_plus && !_gm_motion_on) {
+        // Try to enable capture motion metadata at runtime.
+        _gm_motion_on = 1;
+        GM_DECLARE(gm_lib, cap, gm_cap_cnf, "gm_cap_attr_t");
+        cap.channel = 0;
+        cap.output = GM_CAP_OUT_SCALER1;
+        cap.motionDataOn = 1;
+        gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap);
+        gm_lib.fnRefreshGroup(_gm_cap_grp);
     }
 
     switch (config->codec) {
@@ -276,26 +304,50 @@ int gm_video_create(char index, hal_vidconfig *config)
             h264chn.dest.width = config->width;
             h264chn.dest.height = config->height;
             h264chn.framerate = config->framerate;
-            h264chn.rate.mode = ratemode;
+            // For H.264+ prefer adaptive VBR modes when available.
+            if (h264_plus && config->mode != HAL_VIDMODE_CBR)
+                h264chn.rate.mode = GM_VENC_RATEMODE_EVBR;
+            else
+                h264chn.rate.mode = ratemode;
             h264chn.rate.gop = config->gop;
             if (config->mode != HAL_VIDMODE_CBR) {
-                h264chn.rate.minQual = config->minQual;
-                h264chn.rate.maxQual = config->maxQual;
+                int minQ = config->minQual ? config->minQual : 34;
+                int maxQ = config->maxQual ? config->maxQual : 48;
+                if (h264_plus) {
+                    // Allow a wider QP window on static scenes (hardware RC will adapt).
+                    minQ = gm_clamp_int(minQ, 20, 60);
+                    maxQ = gm_clamp_int(maxQ, 28, 70);
+                }
+                h264chn.rate.minQual = gm_clamp_int(minQ, 1, 99);
+                h264chn.rate.maxQual = gm_clamp_int(MAX(minQ, maxQ), 1, 99);
+                h264chn.rate.initQual = -1;
             }
             h264chn.rate.bitrate = config->bitrate;
             h264chn.rate.maxBitrate = MAX(config->bitrate, config->maxBitrate);
             switch (config->profile) {
                 case HAL_VIDPROFILE_BASELINE:
                     h264chn.profile = GM_VENC_H264PROF_BASELINE;
+                    h264chn.coding = GM_VENC_H264CODE_CAVLC;
                     break;
                 case HAL_VIDPROFILE_MAIN:
                     h264chn.profile = GM_VENC_H264PROF_MAIN;
+                    h264chn.coding = GM_VENC_H264CODE_CABAC;
                     break;
                 case HAL_VIDPROFILE_HIGH:
                     h264chn.profile = GM_VENC_H264PROF_HIGH;
+                    h264chn.coding = GM_VENC_H264CODE_CABAC;
                     break;    
             }
             h264chn.level = 41;
+            if (h264_plus) {
+                h264chn.preset = GM_VENC_H264PRES_QUALITY;
+                // Improve I-frames a bit relative to P-frames.
+                h264chn.ipOffset = -3;
+                // If ROI is configured by the driver, make it more effective.
+                h264chn.roiDeltaQp = -6;
+            } else {
+                h264chn.preset = GM_VENC_H264PRES_BALANCED;
+            }
             gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
             break;
         } default: HAL_ERROR("gm_venc", "This codec is not supported by the hardware!");
@@ -375,6 +427,10 @@ void *gm_video_thread(void)
     char *bsData = malloc(bufSize);
     if (!bsData) goto abort;
 
+    // Motion metadata buffers (per-channel, allocated on demand).
+    char *mdBuf[GM_VENC_CHN_NUM] = {0};
+    unsigned int mdCap[GM_VENC_CHN_NUM] = {0};
+
     while (keepRunning) {
         ret = gm_lib.fnPollStream(_gm_venc_fds, GM_VENC_CHN_NUM, 500);
         if (ret == GM_ERR_TIMEOUT) {
@@ -395,8 +451,26 @@ void *gm_video_thread(void)
             stream[i].bind = _gm_venc_fds[i].bind;
             stream[i].pack.bsData = bsData;
             stream[i].pack.bsLength = bufSize;
-            stream[i].pack.mdData = 0;
-            stream[i].pack.mdLength = 0;
+            if (_gm_motion_on && _gm_venc_fds[i].event.mvLength) {
+                unsigned int want = _gm_venc_fds[i].event.mvLength;
+                if (want > mdCap[i]) {
+                    char *nb = realloc(mdBuf[i], want);
+                    if (nb) {
+                        mdBuf[i] = nb;
+                        mdCap[i] = want;
+                    }
+                }
+                if (mdBuf[i]) {
+                    stream[i].pack.mdData = mdBuf[i];
+                    stream[i].pack.mdLength = mdCap[i];
+                } else {
+                    stream[i].pack.mdData = 0;
+                    stream[i].pack.mdLength = 0;
+                }
+            } else {
+                stream[i].pack.mdData = 0;
+                stream[i].pack.mdLength = 0;
+            }
         }
 
         if ((ret = gm_lib.fnReceiveStream(stream, GM_VENC_CHN_NUM)) < 0)
@@ -442,6 +516,8 @@ void *gm_video_thread(void)
 abort:
     HAL_INFO("gm_venc", "Shutting down encoding thread...\n");
     free(bsData);
+    for (char i = 0; i < GM_VENC_CHN_NUM; i++)
+        free(mdBuf[i]);
 }
 
 void gm_system_deinit(void)

@@ -81,7 +81,9 @@ This document describes the fields that can be found within a configuration file
 ## MP4 section
 
 - **enable**: Boolean to activate MP4 output (required by live streams and RTSP).
-- **codec**: Codec used for encoding (H.264 or H.265).
+- **codec**: Codec used for encoding (`H.264`, `H.265`, or `H.264+`).
+- **codec = H.264+**: Enables "H.264+" style optimizations where supported by the current SoC/SDK
+  (e.g. AVBR/EVBR, smart GOP, wider QP window, better entropy/preset, motion metadata).
 - **mode**: Encoding mode.
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.

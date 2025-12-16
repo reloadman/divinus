@@ -156,7 +156,8 @@ int save_app_config(void) {
 
     fprintf(file, "mp4:\n");
     fprintf(file, "  enable: %s\n", app_config.mp4_enable ? "true" : "false");
-    fprintf(file, "  codec: %s\n", app_config.mp4_codecH265 ? "H.265" : "H.264");
+    fprintf(file, "  codec: %s\n", app_config.mp4_codecH265 ? "H.265" :
+        (app_config.mp4_h264_plus ? "H.264+" : "H.264"));
     fprintf(file, "  mode: %d\n", app_config.mp4_mode);
     fprintf(file, "  width: %d\n", app_config.mp4_width);
     fprintf(file, "  height: %d\n", app_config.mp4_height);
@@ -486,15 +487,18 @@ enum ConfigError parse_app_config(void) {
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);
     if (app_config.mp4_enable) {
         {
-            const char *possible_values[] = {"H.264", "H.265", "H264", "H265", "AVC", "HEVC"};
+            const char *possible_values[] = {"H.264", "H.265", "H264", "H265", "AVC", "HEVC",
+                "H.264+", "H264+", "AVC+"};
             const int count = sizeof(possible_values) / sizeof(const char *);
             int val = 0;
             parse_enum(&ini, "mp4", "codec", (void *)&val,
                 possible_values, count, 0);
+            // Even indices are H.264 family, odd are H.265 family.
             if (val % 2)
                 app_config.mp4_codecH265 = true;
             else
                 app_config.mp4_codecH265 = false;
+            app_config.mp4_h264_plus = (!app_config.mp4_codecH265 && val >= 6);
         }
         {
             const char *possible_values[] = {"CBR", "VBR", "QP", "ABR", "AVBR"};

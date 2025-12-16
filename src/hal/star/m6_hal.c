@@ -527,6 +527,9 @@ int m6_video_create(char index, hal_vidconfig *config)
     int ret;
     m6_venc_chn channel;
     m6_venc_attr_h26x *attrib;
+    memset(&channel, 0, sizeof(channel));
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
     
     if (config->codec == HAL_VIDCODEC_JPG || config->codec == HAL_VIDCODEC_MJPG) {
         _m6_venc_dev[index] = M6_VENC_DEV_MJPG_0;
@@ -594,7 +597,10 @@ int m6_video_create(char index, hal_vidconfig *config)
     } else if (config->codec == HAL_VIDCODEC_H264) {
         channel.attrib.codec = M6_VENC_CODEC_H264;
         attrib = &channel.attrib.h264;
-        switch (config->mode) {
+        hal_vidmode mode = config->mode;
+        if (h264_plus && mode != HAL_VIDMODE_QP)
+            mode = HAL_VIDMODE_AVBR;
+        switch (mode) {
             case HAL_VIDMODE_CBR:
                 channel.rate.mode = M6_VENC_RATEMODE_H264CBR;
                 channel.rate.h264Cbr = (m6_venc_rate_h26xcbr){ .gop = config->gop,
@@ -618,8 +624,8 @@ int m6_video_create(char index, hal_vidconfig *config)
                     .avgBitrate = (unsigned int)(config->bitrate) << 10,
                     .maxBitrate = (unsigned int)(config->maxBitrate) << 10 }; break;
             case HAL_VIDMODE_AVBR:
-                channel.rate.mode = M6_VENC_RATEMODE_H265AVBR;
-                channel.rate.h265Avbr = (m6_venc_rate_h26xvbr){ .gop = config->gop,
+                channel.rate.mode = M6_VENC_RATEMODE_H264AVBR;
+                channel.rate.h264Avbr = (m6_venc_rate_h26xvbr){ .gop = config->gop,
                     .statTime = 1, .fpsNum = config->framerate, .fpsDen = 1, .maxBitrate = 
                     (unsigned int)(MAX(config->bitrate, config->maxBitrate)) << 10,
                     .maxQual = config->maxQual, .minQual = config->minQual }; break;

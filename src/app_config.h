@@ -85,6 +85,7 @@ struct AppConfig {
     // [mp4]
     bool mp4_enable;
     bool mp4_codecH265;
+    bool mp4_h264_plus;
     unsigned int mp4_mode;
     unsigned int mp4_fps;
     unsigned int mp4_gop;
