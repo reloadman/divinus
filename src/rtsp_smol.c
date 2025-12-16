@@ -54,6 +54,7 @@ typedef struct Controller {
 
 static int g_client_count = 0;
 static uint64_t g_audio_ts_us = 0;
+static uint32_t g_audio_ts_raw = 0;
 
 typedef struct SmolRtspClient {
     uint64_t session_id;
@@ -334,6 +335,10 @@ static inline int audio_uses_aac(void) {
     return app_config.audio_codec == HAL_AUDCODEC_AAC;
 }
 
+static inline uint32_t audio_frame_samples(void) {
+    return (app_config.audio_codec == HAL_AUDCODEC_AAC) ? 1024 : 1152;
+}
+
 static inline uint8_t audio_payload_type(void) {
     return audio_uses_aac() ? AAC_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
 }
@@ -375,8 +380,7 @@ static inline void aac_config_hex(char *dst, size_t dst_sz) {
 static inline uint64_t audio_frame_duration_us(void) {
     const uint32_t sr = audio_clock_hz();
     if (!sr) return 0;
-    const uint32_t samples = (app_config.audio_codec == HAL_AUDCODEC_AAC) ? 1024 : 1152;
-    return (uint64_t)samples * 1000000ULL / sr;
+    return (uint64_t)audio_frame_samples() * 1000000ULL / sr;
 }
 
 static inline uint64_t monotonic_us(void) {
@@ -385,7 +389,10 @@ static inline uint64_t monotonic_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
-static inline void reset_audio_ts(void) { g_audio_ts_us = 0; }
+static inline void reset_audio_ts(void) {
+    g_audio_ts_us = 0;
+    g_audio_ts_raw = 0;
+}
 
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
@@ -570,15 +577,16 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
 int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!g_srv.running || !buf || !len)
         return -1;
+    SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint64_t frame_us = audio_frame_duration_us();
-        if (!g_audio_ts_us)
-            g_audio_ts_us = monotonic_us();
-        else
-            g_audio_ts_us += frame_us ? frame_us : 0;
-        ts_us = g_audio_ts_us;
+        uint32_t samples = audio_frame_samples();
+        uint32_t raw = g_audio_ts_raw;
+        g_audio_ts_raw += samples;
+        ts = SmolRTSP_RtpTimestamp_Raw(raw);
     }
-    SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+    else {
+        ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+    }
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     // RFC 2250: prepend a 4-byte MPEG audio header (no fragmentation).
     // Length MUST include this header + MPEG audio payload.
@@ -610,15 +618,16 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
 int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!g_srv.running || !buf || !len)
         return -1;
+    SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint64_t frame_us = audio_frame_duration_us();
-        if (!g_audio_ts_us)
-            g_audio_ts_us = monotonic_us();
-        else
-            g_audio_ts_us += frame_us ? frame_us : 0;
-        ts_us = g_audio_ts_us;
+        uint32_t samples = audio_frame_samples();
+        uint32_t raw = g_audio_ts_raw;
+        g_audio_ts_raw += samples;
+        ts = SmolRTSP_RtpTimestamp_Raw(raw);
     }
-    SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+    else {
+        ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
+    }
 
     // RFC 3640 AU headers: 16-bit AU-headers-length, then one AU header (size/offset).
     uint8_t au_header_section[4] = {0};
@@ -639,8 +648,10 @@ int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
+        SmolRTSP_RtpTimestamp ts_use = ts_us ? SmolRTSP_RtpTimestamp_SysClockUs(ts_us)
+                                             : SmolRTSP_RtpTimestamp_Raw(g_audio_ts_raw);
         int ret = SmolRTSP_RtpTransport_send_packet(
-            c->audio_rtp, ts, true, hdr, payload);
+            c->audio_rtp, ts_use, true, hdr, payload);
         if (ret < 0)
             continue;
         sent++;
