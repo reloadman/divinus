@@ -335,6 +335,8 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
             break;
         }
         pthread_mutex_unlock(&g_srv.mtx);
+        // Do not propagate further; just return.
+        return;
     }
 }
 

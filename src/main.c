@@ -35,6 +35,18 @@ static const char *signal_name(int signo) {
 
 void handle_error(int signo) {
     char msg[128];
+
+    // Treat common network disconnect conditions as non-fatal.
+    if (signo == SIGPIPE || errno == ECONNRESET || errno == EPIPE) {
+        int len = snprintf(
+            msg, sizeof(msg),
+            "Non-fatal network signal (%d:%s) errno=%d (%s); ignore\n",
+            signo, signal_name(signo), errno, strerror(errno));
+        if (len > 0)
+            write(STDERR_FILENO, msg, (size_t)len);
+        return;
+    }
+
     int len = snprintf(
         msg, sizeof(msg),
         "Error occured (%d:%s) errno=%d (%s) ! Quitting...\n",
@@ -59,9 +71,10 @@ void handle_exit(int signo) {
 
 int main(int argc, char *argv[]) {
     {
-        char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV};
+        char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGSEGV};
         char signal_exit[] = {SIGINT, SIGQUIT, SIGTERM};
-        char signal_null[] = {EPIPE, SIGPIPE};
+        // SIGPIPE is expected on client disconnect; ignore it.
+        char signal_null[] = {SIGPIPE};
 
         for (char *s = signal_error; s < (&signal_error)[1]; s++)
             signal(*s, handle_error);
