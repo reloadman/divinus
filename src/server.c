@@ -54,6 +54,11 @@ int server_fd = -1;
 pthread_t server_thread_id;
 pthread_mutex_t client_fds_mutex;
 
+// Count active HTTP streaming clients by type (best-effort).
+// Used to avoid blocking audio/video pipelines when nobody is subscribed.
+volatile int server_mp3_clients = 0;
+volatile int server_pcm_clients = 0;
+
 static bool is_local_address(const char *client_ip) {
     if (!client_ip) return false;
     
@@ -80,6 +85,12 @@ void free_client(int i) {
 
     close_socket_fd(client_fds[i].sockFd);
     client_fds[i].sockFd = -1;
+    if (client_fds[i].type == STREAM_MP3) {
+        if (server_mp3_clients > 0) server_mp3_clients--;
+    } else if (client_fds[i].type == STREAM_PCM) {
+        if (server_pcm_clients > 0) server_pcm_clients--;
+    }
+    client_fds[i].type = -1;
 }
 
 int send_to_fd(int fd, char *buf, ssize_t size) {
@@ -268,6 +279,8 @@ void send_mp4_to_client(char index, hal_vidstream *stream, char isH265) {
 }
 
 void send_mp3_to_client(char *buf, ssize_t size) {
+    if (server_mp3_clients <= 0)
+        return;
     pthread_mutex_lock(&client_fds_mutex);
     for (unsigned int i = 0; i < MAX_CLIENTS; ++i) {
         if (client_fds[i].sockFd < 0) continue;
@@ -286,6 +299,8 @@ void send_mp3_to_client(char *buf, ssize_t size) {
 }
 
 void send_pcm_to_client(hal_audframe *frame) {
+    if (server_pcm_clients <= 0)
+        return;
     pthread_mutex_lock(&client_fds_mutex);
     for (unsigned int i = 0; i < MAX_CLIENTS; ++i) {
         if (client_fds[i].sockFd < 0) continue;
@@ -684,6 +699,7 @@ void respond_request(http_request_t *req) {
             if (client_fds[i].sockFd < 0) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_MP3;
+                server_mp3_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -702,6 +718,7 @@ void respond_request(http_request_t *req) {
             if (client_fds[i].sockFd < 0) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_PCM;
+                server_pcm_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -1474,6 +1491,8 @@ void *server_thread(void *vargp) {
 }
 
 int start_server() {
+    server_mp3_clients = 0;
+    server_pcm_clients = 0;
     for (unsigned int i = 0; i < MAX_CLIENTS; i++) {
         client_fds[i].sockFd = -1;
         client_fds[i].type = -1;

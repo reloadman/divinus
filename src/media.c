@@ -22,11 +22,11 @@ struct BitBuf aacBuf;
 faacEncHandle aacEnc = NULL;
 unsigned long aacInputSamples = 0;
 unsigned long aacMaxOutputBytes = 0;
-int16_t *aacPcm = NULL;      // encoder input buffer (16-bit LE)
+int32_t *aacPcm = NULL;      // encoder input buffer (FAAC expects int32_t samples)
 unsigned char *aacOut = NULL;
 unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
-int16_t *aacStash = NULL;    // stash of incoming PCM (16-bit LE)
+int32_t *aacStash = NULL;    // stash of incoming PCM (int32_t samples)
 unsigned int aacStashLen = 0;
 uint64_t aacStashTsUs = 0;
 
@@ -219,7 +219,9 @@ int save_audio_stream(hal_audframe *frame) {
     printf("        ts:%d\n", frame->timestamp);
 #endif
 
-    send_pcm_to_client(frame);
+    // Avoid taking server mutex on every frame when nobody is subscribed to raw PCM.
+    if (server_pcm_clients > 0)
+        send_pcm_to_client(frame);
 
     if (active_audio_codec == HAL_AUDCODEC_AAC)
         return save_audio_stream_aac(frame);
@@ -302,27 +304,37 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         }
     last_ts = frame->timestamp;
 
+    // FAAC's aacInputSamples is the total number of PCM samples required per encode call
+    // (already accounts for channel count).
+    const unsigned int total_samples = samples_per_ch * channels;
+    const unsigned int max_stash = (unsigned int)aacInputSamples * 4U;
+
     // Append to stash
-    unsigned int total_samples = samples_per_ch * channels;
-    unsigned int max_stash = aacInputSamples * channels * 4;
-    if (aacStash && aacStashLen + total_samples <= max_stash) {
-        for (unsigned int i = 0; i < total_samples; i++)
-            aacStash[aacStashLen + i] = (int32_t)pcm16[i];
-        aacStashLen += total_samples;
+    if (aacStash) {
+        if (aacStashLen + total_samples > max_stash) {
+            // Downstream can't keep up (or bad scheduling): drop accumulated samples,
+            // keep newest so audio can recover instead of stalling forever.
+            aacStashLen = 0;
+        }
+        if (aacStashLen + total_samples <= max_stash) {
+            for (unsigned int i = 0; i < total_samples; i++)
+                aacStash[aacStashLen + i] = (int32_t)pcm16[i];
+            aacStashLen += total_samples;
+        }
     }
 
-    // Consume stash in blocks of aacInputSamples * channels
-    while (aacStash && aacStashLen >= aacInputSamples * channels) {
-        for (unsigned int i = 0; i < aacInputSamples * channels; i++)
+    // Consume stash in blocks of aacInputSamples (total samples, incl channels)
+    while (aacStash && aacStashLen >= (unsigned int)aacInputSamples) {
+        for (unsigned int i = 0; i < (unsigned int)aacInputSamples; i++)
             aacPcm[i] = aacStash[i];
 
-        unsigned int remain = aacStashLen - aacInputSamples * channels;
+        unsigned int remain = aacStashLen - (unsigned int)aacInputSamples;
         if (remain)
-            memmove(aacStash, aacStash + aacInputSamples * channels,
+            memmove(aacStash, aacStash + (unsigned int)aacInputSamples,
                 remain * sizeof(int32_t));
         aacStashLen = remain;
 
-        int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
+        int bytes = faacEncEncode(aacEnc, aacPcm, (unsigned int)aacInputSamples,
             aacOut, aacMaxOutputBytes);
         static int log_fail = 0;
         static int log_ok = 0;
@@ -804,9 +816,9 @@ int enable_audio(void) {
             return EXIT_FAILURE;
         }
 
-        aacPcm = calloc(aacInputSamples * app_config.audio_channels, sizeof(int32_t));
+        aacPcm = calloc(aacInputSamples, sizeof(int32_t));
         aacOut = malloc(aacMaxOutputBytes);
-        aacStash = calloc(aacInputSamples * app_config.audio_channels * 4, sizeof(int32_t));
+        aacStash = calloc(aacInputSamples * 4, sizeof(int32_t));
         if (!aacPcm || !aacOut || !aacStash) {
             HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
             return EXIT_FAILURE;
