@@ -38,6 +38,8 @@ typedef enum {
 
 // Forward declarations for helpers used before their definitions.
 static inline uint32_t audio_clock_hz(void);
+static inline uint32_t audio_frame_samples(void);
+static inline uint32_t audio_ts_step(void);
 static inline uint64_t audio_frame_duration_us(void);
 static inline void reset_audio_ts(void);
 static inline int audio_uses_aac(void);
@@ -235,7 +237,7 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
                 ret, w,
                 (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
                 (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // Payload type 14 is static MPA (MP1/MP2/MP3); use actual sample rate
+                // Payload type 14 is static MPA (MP1/MP2/MP3); RTP clock 90 kHz.
                 (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
                 (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
         }
@@ -328,7 +330,10 @@ impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
 static inline uint32_t audio_clock_hz(void) {
-    return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 90000;
+    // RFC 2250: MPEG audio (PT 14) uses 90 kHz RTP clock; AAC uses sample rate.
+    if (app_config.audio_codec == HAL_AUDCODEC_AAC)
+        return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 44100;
+    return 90000;
 }
 
 static inline int audio_uses_aac(void) {
@@ -336,7 +341,15 @@ static inline int audio_uses_aac(void) {
 }
 
 static inline uint32_t audio_frame_samples(void) {
-    return (app_config.audio_codec == HAL_AUDCODEC_AAC) ? 1024 : 1152;
+    return audio_uses_aac() ? 1024 : 1152;
+}
+
+static inline uint32_t audio_ts_step(void) {
+    // Convert frame samples into RTP clock ticks.
+    const uint32_t clock = audio_clock_hz();
+    const uint32_t sr = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
+    if (!clock || !sr) return audio_frame_samples();
+    return (uint32_t)((uint64_t)audio_frame_samples() * clock / sr);
 }
 
 static inline uint8_t audio_payload_type(void) {
@@ -378,7 +391,7 @@ static inline void aac_config_hex(char *dst, size_t dst_sz) {
 }
 
 static inline uint64_t audio_frame_duration_us(void) {
-    const uint32_t sr = audio_clock_hz();
+    const uint32_t sr = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
     if (!sr) return 0;
     return (uint64_t)audio_frame_samples() * 1000000ULL / sr;
 }
@@ -579,9 +592,8 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         return -1;
     SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint32_t samples = audio_frame_samples();
         uint32_t raw = g_audio_ts_raw;
-        g_audio_ts_raw += samples;
+        g_audio_ts_raw += audio_ts_step();
         ts = SmolRTSP_RtpTimestamp_Raw(raw);
     } else {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
@@ -619,9 +631,8 @@ int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
         return -1;
     SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint32_t samples = audio_frame_samples();
         uint32_t raw = g_audio_ts_raw;
-        g_audio_ts_raw += samples;
+        g_audio_ts_raw += audio_ts_step();
         ts = SmolRTSP_RtpTimestamp_Raw(raw);
     } else {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
