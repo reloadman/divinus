@@ -633,16 +633,6 @@ int enable_audio(void) {
     if (audioOn) return ret;
 
     active_audio_codec = app_config.audio_codec ? app_config.audio_codec : HAL_AUDCODEC_MP3;
-#if defined(__ARM_PCS_VFP)
-    if (active_audio_codec == HAL_AUDCODEC_AAC &&
-        (plat == HAL_PLATFORM_I6 || plat == HAL_PLATFORM_I6C || plat == HAL_PLATFORM_M6)) {
-        if (app_config.audio_srate != 32000) {
-            HAL_WARNING("media", "AAC on Sigmastar: forcing samplerate to 32000 (was %u)\n",
-                app_config.audio_srate);
-            app_config.audio_srate = 32000;
-        }
-    }
-#endif
     HAL_INFO("media", "Audio init: codec=%s srate=%u bitrate=%u channels=%u gain=%d\n",
         active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" :
         (active_audio_codec == HAL_AUDCODEC_MP3 ? "MP3" : "UNSPEC"),
