@@ -35,7 +35,7 @@ void *aenc_thread(void) {
             smolrtsp_push_mp3(mp3Buf.buf, mp3FrmSize, 0);
 
         mp3Buf.offset -= mp3FrmSize;
-        if (mp3Buf.offset);
+        if (mp3Buf.offset)
             memcpy(mp3Buf.buf, mp3Buf.buf + mp3FrmSize, mp3Buf.offset);
         pthread_mutex_unlock(&aencMtx);
     }

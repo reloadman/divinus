@@ -26,7 +26,6 @@
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
 #define MP3_PAYLOAD_TYPE 14
-#define MP3_CLOCK 90000
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
 
@@ -146,7 +145,7 @@ static SmolRTSP_RtpTransport *setup_rtp_transport(
         smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
 
     uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
-    uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : MP3_CLOCK;
+    uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : audio_clock_hz();
 
     SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
 
@@ -195,8 +194,8 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
             ret, w,
             (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
             (SMOLRTSP_SDP_ATTR, "control:audio"),
-            // Payload type 14 is static MPA (MP1/MP2/MP3) at 90 kHz; layer=3 narrows it to MP3
-            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, MP3_CLOCK),
+            // Payload type 14 is static MPA (MP1/MP2/MP3); use actual sample rate
+            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, audio_clock_hz()),
             (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
     }
 
@@ -247,6 +246,8 @@ static void Controller_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request
     pthread_mutex_lock(&g_srv.mtx);
     self->client->playing = 1;
     pthread_mutex_unlock(&g_srv.mtx);
+    // Nudge encoder to send fresh IDR/SPS/PPS so new client can decode right away.
+    request_idr();
     smolrtsp_header(ctx, SMOLRTSP_HEADER_SESSION, "%llu", self->client->session_id);
     smolrtsp_respond_ok(ctx);
 }
@@ -282,6 +283,17 @@ static void Controller_after(
 
 impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
+
+static inline uint32_t audio_clock_hz(void) {
+    return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 90000;
+}
+
+static inline uint64_t audio_frame_duration_us(void) {
+    const uint32_t sr = audio_clock_hz();
+    if (!sr) return 0;
+    // MP3 (MPEG-1 Layer III) frame holds 1152 samples at 32/44.1/48 kHz.
+    return (uint64_t)1152 * 1000000ULL / sr;
+}
 
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
@@ -446,8 +458,16 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
 int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
     if (!g_srv.running || !buf || !len)
         return -1;
-    SmolRTSP_RtpTimestamp ts = ts_us ? SmolRTSP_RtpTimestamp_SysClockUs(ts_us)
-                                      : SmolRTSP_RtpTimestamp_SysClockUs(0);
+    static uint64_t audio_ts_us = 0;
+    if (!ts_us) {
+        uint64_t frame_us = audio_frame_duration_us();
+        if (!audio_ts_us)
+            audio_ts_us = smolrtsp_sysclock_us();
+        else
+            audio_ts_us += frame_us ? frame_us : 0;
+        ts_us = audio_ts_us;
+    }
+    SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
     pthread_mutex_lock(&g_srv.mtx);
     for (int i = 0; i < MAX_CLIENTS; i++) {
