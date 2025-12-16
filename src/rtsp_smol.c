@@ -106,7 +106,12 @@ typedef struct {
     SmolRtspClient *client;
 } Controller;
 
+static void Controller_drop(VSelf) {
+    (void)iface99_self;
+}
+
 declImpl(SmolRTSP_Controller, Controller);
+declImpl(SmolRTSP_Droppable, Controller);
 
 static SmolRTSP_RtpTransport *setup_rtp_transport(
     SmolRtspClient *c, SmolRTSP_Context *ctx, SmolRTSP_TransportConfig cfg,
@@ -263,6 +268,7 @@ static void Controller_after(
 }
 
 impl(SmolRTSP_Controller, Controller);
+impl(SmolRTSP_Droppable, Controller);
 
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     (void)ctx;
