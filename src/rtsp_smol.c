@@ -335,9 +335,18 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
             SmolRtspClient *c = &g_srv.clients[i];
             if (!c->alive || c->bev != bev)
                 continue;
-            fprintf(stderr, "[rtsp] dropping client (event=%s) session=%llu\n",
+            fprintf(stderr, "[rtsp] marking client dead (event=%s) session=%llu\n",
                     ev, (unsigned long long)c->session_id);
-            drop_client(c);
+            // Disable further callbacks to avoid use-after-free during this callback.
+            bufferevent_disable(bev, EV_READ | EV_WRITE);
+            bufferevent_setcb(bev, NULL, NULL, NULL, NULL);
+            // Do NOT free transports here; just mark the slot dead.
+            c->playing = 0;
+            c->alive = 0;
+            if (g_client_count > 0)
+                g_client_count--;
+            if (g_client_count == 0)
+                reset_audio_ts();
             break;
         }
         pthread_mutex_unlock(&g_srv.mtx);
