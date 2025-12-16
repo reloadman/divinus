@@ -590,9 +590,13 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         return -1;
     SmolRTSP_RtpTimestamp ts;
     if (!ts_us) {
-        uint32_t raw = g_audio_ts_raw;
-        g_audio_ts_raw += audio_ts_step();
-        ts = SmolRTSP_RtpTimestamp_Raw(raw);
+        uint64_t frame_us = audio_frame_duration_us();
+        if (!g_audio_ts_us)
+            g_audio_ts_us = monotonic_us();
+        else
+            g_audio_ts_us += frame_us ? frame_us : 0;
+        ts_us = g_audio_ts_us;
+        ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     } else {
         ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
     }
