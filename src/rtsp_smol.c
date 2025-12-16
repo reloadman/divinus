@@ -186,7 +186,8 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
             ret, w,
             (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
             (SMOLRTSP_SDP_ATTR, "control:audio"),
-            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MP4A-LATM/%d", MP3_PAYLOAD_TYPE, MP3_CLOCK));
+            // Payload type 14 is static MPA (MP1/MP2/MP3) at 90 kHz
+            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d", MP3_PAYLOAD_TYPE, MP3_CLOCK));
     }
 
     smolrtsp_header(ctx, SMOLRTSP_HEADER_CONTENT_TYPE, "application/sdp");
