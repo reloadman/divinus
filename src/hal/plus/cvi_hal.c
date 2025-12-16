@@ -404,7 +404,11 @@ int cvi_region_create(char handle, hal_rect rect, short opacity)
         regionCurr.overlay.size.width != region.overlay.size.width) {
         HAL_INFO("cvi_rgn", "Parameters are different, recreating "
             "region %d...\n", handle);
-        cvi_rgn.fnDetachChannel(handle, &channel);
+        for (char i = 0; i < CVI_VENC_CHN_NUM; i++) {
+            if (!cvi_state[i].enable) continue;
+            channel.channel = i;
+            cvi_rgn.fnDetachChannel(handle, &channel);
+        }
         cvi_rgn.fnDestroyRegion(handle);
         if (ret = cvi_rgn.fnCreateRegion(handle, &region))
             return ret;
@@ -412,10 +416,14 @@ int cvi_region_create(char handle, hal_rect rect, short opacity)
 
     if (cvi_rgn.fnGetChannelConfig(handle, &channel, &attribCurr))
         HAL_INFO("cvi_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.x != rect.y) {
+    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.y != rect.y) {
         HAL_INFO("cvi_rgn", "Position has changed, reattaching "
             "region %d...\n", handle);
-        cvi_rgn.fnDetachChannel(handle, &channel);
+        for (char i = 0; i < CVI_VENC_CHN_NUM; i++) {
+            if (!cvi_state[i].enable) continue;
+            channel.channel = i;
+            cvi_rgn.fnDetachChannel(handle, &channel);
+        }
     }
 
     memset(&attrib, 0, sizeof(attrib));
@@ -425,7 +433,15 @@ int cvi_region_create(char handle, hal_rect rect, short opacity)
     attrib.overlay.point.y = rect.y;
     attrib.overlay.layer = 7;
 
-    cvi_rgn.fnAttachChannel(handle, &channel, &attrib);
+    for (char i = 0; i < CVI_VENC_CHN_NUM; i++) {
+        if (!cvi_state[i].enable) continue;
+        channel.channel = i;
+        if (!hal_osd_is_allowed_for_channel(&cvi_state[i])) {
+            cvi_rgn.fnDetachChannel(handle, &channel);
+            continue;
+        }
+        cvi_rgn.fnAttachChannel(handle, &channel, &attrib);
+    }
 
     return EXIT_SUCCESS;
 }
@@ -435,7 +451,11 @@ void cvi_region_destroy(char handle)
     cvi_sys_bind channel = { .module = CVI_SYS_MOD_VENC,
         .device = _cvi_venc_dev, .channel = 0 };
     
-    cvi_rgn.fnDetachChannel(handle, &channel);
+    for (char i = 0; i < CVI_VENC_CHN_NUM; i++) {
+        if (!cvi_state[i].enable) continue;
+        channel.channel = i;
+        cvi_rgn.fnDetachChannel(handle, &channel);
+    }
     cvi_rgn.fnDestroyRegion(handle);
 }
 

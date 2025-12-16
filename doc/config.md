@@ -72,9 +72,11 @@ This document describes the fields that can be found within a configuration file
 ## Audio section
 
 - **enable**: Boolean to activate or deactivate audio functionality.
+- **codec**: Audio codec, `MP3` (default) or `AAC` (AAC-LC).
 - **bitrate**: Audio bitrate in kbps (e.g., `128`).
 - **gain**: Audio gain in decibels (e.g., `0` for no gain).
-- **srate**: Audio sampling rate in Hz (e.g., `44100`).
+- **srate**: Audio sampling rate in Hz (default `48000`).
+- **channels**: Number of channels (1 mono, 2 stereo). Default `1`.
 
 ## MP4 section
 
@@ -112,6 +114,7 @@ This document describes the fields that can be found within a configuration file
 ## MJPEG section
 
 - **enable**: Boolean to activate MJPEG output.
+- **osd_enable**: Boolean to enable/disable OSD for MJPEG stream only (default: `true`).
 - **mode**: Encoding mode.
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.

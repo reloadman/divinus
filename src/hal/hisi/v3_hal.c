@@ -342,7 +342,7 @@ int v3_region_create(char handle, hal_rect rect, short opacity)
 {
     int ret;
 
-    v3_sys_bind dest = { .module = V3_SYS_MOD_VENC, .device = _v3_venc_dev };
+    v3_sys_bind dest = { .module = V3_SYS_MOD_VENC, .device = _v3_venc_dev, .channel = 0 };
     v3_rgn_cnf region, regionCurr;
     v3_rgn_chn attrib, attribCurr;
 
@@ -365,7 +365,11 @@ int v3_region_create(char handle, hal_rect rect, short opacity)
         regionCurr.overlay.size.width != region.overlay.size.width) {
         HAL_INFO("v3_rgn", "Parameters are different, recreating "
             "region %d...\n", handle);
-        v3_rgn.fnDetachChannel(handle, &dest);
+        for (char i = 0; i < V3_VENC_CHN_NUM; i++) {
+            if (!v3_state[i].enable) continue;
+            dest.channel = i;
+            v3_rgn.fnDetachChannel(handle, &dest);
+        }
         v3_rgn.fnDestroyRegion(handle);
         if (ret = v3_rgn.fnCreateRegion(handle, &region))
             return ret;
@@ -373,10 +377,14 @@ int v3_region_create(char handle, hal_rect rect, short opacity)
 
     if (v3_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("v3_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.x != rect.y) {
+    else if (attribCurr.overlay.point.x != rect.x || attribCurr.overlay.point.y != rect.y) {
         HAL_INFO("v3_rgn", "Position has changed, reattaching "
             "region %d...\n", handle);
-        v3_rgn.fnDetachChannel(handle, &dest);
+        for (char i = 0; i < V3_VENC_CHN_NUM; i++) {
+            if (!v3_state[i].enable) continue;
+            dest.channel = i;
+            v3_rgn.fnDetachChannel(handle, &dest);
+        }
     }
 
     memset(&attrib, 0, sizeof(attrib));
@@ -388,16 +396,28 @@ int v3_region_create(char handle, hal_rect rect, short opacity)
     attrib.overlay.point.y = rect.y;
     attrib.overlay.layer = 7;
 
-    v3_rgn.fnAttachChannel(handle, &dest, &attrib);
+    for (char i = 0; i < V3_VENC_CHN_NUM; i++) {
+        if (!v3_state[i].enable) continue;
+        dest.channel = i;
+        if (!hal_osd_is_allowed_for_channel(&v3_state[i])) {
+            v3_rgn.fnDetachChannel(handle, &dest);
+            continue;
+        }
+        v3_rgn.fnAttachChannel(handle, &dest, &attrib);
+    }
 
     return EXIT_SUCCESS;
 }
 
 void v3_region_destroy(char handle)
 {
-    v3_sys_bind dest = { .module = V3_SYS_MOD_VENC, .device = _v3_venc_dev };
+    v3_sys_bind dest = { .module = V3_SYS_MOD_VENC, .device = _v3_venc_dev, .channel = 0 };
     
-    v3_rgn.fnDetachChannel(handle, &dest);
+    for (char i = 0; i < V3_VENC_CHN_NUM; i++) {
+        if (!v3_state[i].enable) continue;
+        dest.channel = i;
+        v3_rgn.fnDetachChannel(handle, &dest);
+    }
     v3_rgn.fnDestroyRegion(handle);
 }
 

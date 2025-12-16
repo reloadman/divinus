@@ -14,12 +14,11 @@
 #include "http_post.h"
 #include "lib/shine/layer3.h"
 #include "jpeg.h"
-#include "rtsp/rtsp_server.h"
+#include "rtsp_smol.h"
 #include "server.h"
 #include "stream.h"
 
 extern char audioOn, recordOn, udpOn;
-extern rtsp_handle rtspHandle;
 
 int start_sdk(void);
 int stop_sdk(void);

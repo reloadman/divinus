@@ -147,9 +147,12 @@ int save_app_config(void) {
 
     fprintf(file, "audio:\n");
     fprintf(file, "  enable: %s\n", app_config.audio_enable ? "true" : "false");
+    fprintf(file, "  codec: %s\n",
+        app_config.audio_codec == HAL_AUDCODEC_AAC ? "AAC" : "MP3");
     fprintf(file, "  bitrate: %d\n", app_config.audio_bitrate);
     fprintf(file, "  gain: %d\n", app_config.audio_gain);
     fprintf(file, "  srate: %d\n", app_config.audio_srate);
+    fprintf(file, "  channels: %d\n", app_config.audio_channels);
 
     fprintf(file, "mp4:\n");
     fprintf(file, "  enable: %s\n", app_config.mp4_enable ? "true" : "false");
@@ -191,6 +194,7 @@ int save_app_config(void) {
 
     fprintf(file, "mjpeg:\n");
     fprintf(file, "  enable: %s\n", app_config.mjpeg_enable ? "true" : "false");
+    fprintf(file, "  osd_enable: %s\n", app_config.mjpeg_osd_enable ? "true" : "false");
     fprintf(file, "  mode: %d\n", app_config.mjpeg_mode);
     fprintf(file, "  width: %d\n", app_config.mjpeg_width);
     fprintf(file, "  height: %d\n", app_config.mjpeg_height);
@@ -253,12 +257,16 @@ enum ConfigError parse_app_config(void) {
 
     app_config.sensor_config[0] = 0;
     app_config.audio_enable = false;
+    app_config.audio_codec = HAL_AUDCODEC_MP3;
     app_config.audio_bitrate = 128;
     app_config.audio_gain = 0;
+    app_config.audio_srate = 48000;
+    app_config.audio_channels = 1;
     app_config.jpeg_enable = false;
     app_config.mp4_enable = false;
 
     app_config.mjpeg_enable = false;
+    app_config.mjpeg_osd_enable = true;
     app_config.mjpeg_fps = 15;
     app_config.mjpeg_width = 640;
     app_config.mjpeg_height = 480;
@@ -454,12 +462,25 @@ enum ConfigError parse_app_config(void) {
 
     parse_bool(&ini, "audio", "enable", &app_config.audio_enable);
     if (app_config.audio_enable) {
+        {
+            const char *possible_values[] = {"MP3", "AAC", "AAC-LC"};
+            const int count = sizeof(possible_values) / sizeof(const char *);
+            int val = 0;
+            if (parse_enum(&ini, "audio", "codec", (void *)&val,
+                    possible_values, count, 0) == CONFIG_OK) {
+                if (val == 0)
+                    app_config.audio_codec = HAL_AUDCODEC_MP3;
+                else
+                    app_config.audio_codec = HAL_AUDCODEC_AAC;
+            }
+        }
         parse_int(&ini, "audio", "bitrate", 32, 320, &app_config.audio_bitrate);
         parse_int(&ini, "audio", "gain", -60, 30, &app_config.audio_gain);
         err = parse_int(&ini, "audio", "srate", 8000, 96000, 
             &app_config.audio_srate);
         if (err != CONFIG_OK)
             goto RET_ERR;
+        parse_int(&ini, "audio", "channels", 1, 2, (int *)&app_config.audio_channels);
     }
 
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);
@@ -537,6 +558,8 @@ enum ConfigError parse_app_config(void) {
     err = parse_bool(&ini, "mjpeg", "enable", &app_config.mjpeg_enable);
     if (err != CONFIG_OK)
         goto RET_ERR;
+    // Per-stream OSD control for MJPEG (default: true).
+    parse_bool(&ini, "mjpeg", "osd_enable", &app_config.mjpeg_osd_enable);
     if (app_config.mjpeg_enable) {
         {
             const char *possible_values[] = {"CBR", "VBR", "QP"};

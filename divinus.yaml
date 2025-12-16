@@ -96,6 +96,7 @@ jpeg:
 
 mjpeg:
   enable: true
+  osd_enable: true
   mode: CBR
   width: 3840
   height: 2160

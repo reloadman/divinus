@@ -4,10 +4,11 @@
 #include "media.h"
 #include "network.h"
 #include "night.h"
-#include "rtsp/rtsp_server.h"
+#include "rtsp_smol.h"
 #include "server.h"
 #include "watchdog.h"
 
+#include <errno.h>
 #include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
@@ -15,35 +16,77 @@
 #include <string.h>
 #include <unistd.h>
 
-rtsp_handle rtspHandle;
 char graceful = 0, keepRunning = 1;
 
+static const char *signal_name(int signo) {
+    switch (signo) {
+    case SIGABRT: return "SIGABRT";
+    case SIGBUS:  return "SIGBUS";
+    case SIGFPE:  return "SIGFPE";
+    case SIGILL:  return "SIGILL";
+    case SIGSEGV: return "SIGSEGV";
+    case SIGINT:  return "SIGINT";
+    case SIGQUIT: return "SIGQUIT";
+    case SIGTERM: return "SIGTERM";
+    case SIGPIPE: return "SIGPIPE";
+    default:      return "SIGUNKNOWN";
+    }
+}
+
 void handle_error(int signo) {
-    char msg[64];
-    sprintf(msg, "Error occured (%d)! Quitting...\n", signo);
-    write(STDERR_FILENO, msg, strlen(msg));
+    char msg[128];
+
+    // SIGPIPE is expected when a client disconnects while we're writing.
+    // Never "ignore" crash signals like SIGSEGV/SIGILL based on errno: errno may
+    // refer to an unrelated previous syscall, and returning from SIGSEGV will
+    // just re-trigger the fault and spam logs in an infinite loop.
+    if (signo == SIGPIPE) {
+        int len = snprintf(
+            msg, sizeof(msg),
+            "Non-fatal network signal (%d:%s) errno=%d (%s); ignore\n",
+            signo, signal_name(signo), errno, strerror(errno));
+        if (len > 0)
+            write(STDERR_FILENO, msg, (size_t)len);
+        return;
+    }
+
+    int len = snprintf(
+        msg, sizeof(msg),
+        "Error occured (%d:%s) errno=%d (%s) ! Quitting...\n",
+        signo, signal_name(signo), errno, strerror(errno));
+    if (len > 0)
+        write(STDERR_FILENO, msg, (size_t)len);
     keepRunning = 0;
     exit(EXIT_FAILURE);
 }
 
 void handle_exit(int signo) {
-    write(STDERR_FILENO, "Graceful shutdown...\n", 21);
+    char msg[128];
+    int len = snprintf(
+        msg, sizeof(msg),
+        "Graceful shutdown... (%d:%s)\n",
+        signo, signal_name(signo));
+    if (len > 0)
+        write(STDERR_FILENO, msg, (size_t)len);
     keepRunning = 0;
     graceful = 1;
+    // Wake main loop quickly if sleeping.
+    alarm(1);
 }
 
 int main(int argc, char *argv[]) {
     {
-        char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV};
+        char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGSEGV};
         char signal_exit[] = {SIGINT, SIGQUIT, SIGTERM};
-        char signal_null[] = {EPIPE, SIGPIPE};
+        // SIGPIPE can occur on client disconnect/teardown; ignore it.
+        char signal_null[] = {SIGPIPE};
 
         for (char *s = signal_error; s < (&signal_error)[1]; s++)
             signal(*s, handle_error);
         for (char *s = signal_exit; s < (&signal_exit)[1]; s++)
             signal(*s, handle_exit);
         for (char *s = signal_null; s < (&signal_null)[1]; s++)
-            signal(*s, NULL);
+            signal(*s, SIG_IGN);
     }
 
     hal_identify();
@@ -65,16 +108,10 @@ int main(int argc, char *argv[]) {
     start_server();
 
     if (app_config.rtsp_enable) {
-        rtspHandle = rtsp_create(RTSP_MAXIMUM_CONNECTIONS, app_config.rtsp_port, 1);
-        HAL_INFO("rtsp", "Started listening for clients...\n");
-        if (app_config.rtsp_enable_auth) {
-            if (!app_config.rtsp_auth_user || !app_config.rtsp_auth_pass)
-                HAL_ERROR("rtsp", "One or both credential fields have been left empty!\n");
-            else {
-                rtsp_configure_auth(rtspHandle, app_config.rtsp_auth_user, app_config.rtsp_auth_pass);
-                HAL_INFO("rtsp", "Authentication enabled!\n");
-            }
-        }
+        if (smolrtsp_server_start() == 0)
+            HAL_INFO("rtsp", "Started smolrtsp server on port %d\n", app_config.rtsp_port);
+        else
+            HAL_ERROR("rtsp", "Failed to start smolrtsp server\n");
     }
 
     if (app_config.stream_enable)
@@ -104,8 +141,8 @@ int main(int argc, char *argv[]) {
         record_stop();
 
     if (app_config.rtsp_enable) {
-        rtsp_finish(rtspHandle);
-        HAL_INFO("rtsp", "Server has closed!\n");
+        smolrtsp_server_stop();
+        HAL_INFO("rtsp", "SmolRTSP server has closed!\n");
     }
 
     if (app_config.osd_enable)
