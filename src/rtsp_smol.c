@@ -332,10 +332,18 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
             SmolRtspClient *c = &g_srv.clients[i];
             if (!c->alive || c->bev != bev)
                 continue;
-            fprintf(stderr, "[rtsp] dropping client session=%llu\n",
+            fprintf(stderr, "[rtsp] marking client dead session=%llu\n",
                     (unsigned long long)c->session_id);
-            drop_client(c);
+            if (c->bev) {
+                bufferevent_free(c->bev);
+                c->bev = NULL;
+            }
+            c->playing = 0;
             c->alive = 0;
+            if (g_client_count > 0)
+                g_client_count--;
+            if (g_client_count == 0)
+                reset_audio_ts();
             break;
         }
         pthread_mutex_unlock(&g_srv.mtx);
