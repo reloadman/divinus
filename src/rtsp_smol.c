@@ -127,6 +127,8 @@ static void drop_client(SmolRtspClient *c) {
     if (c->video_nal) {
         VTABLE(SmolRTSP_NalTransport, SmolRTSP_Droppable).drop(c->video_nal);
         c->video_nal = NULL;
+        // NalTransport owns the underlying RTP transport and drops it as well.
+        c->video_rtp = NULL;
     }
     if (c->video_rtp) {
         VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(c->video_rtp);
@@ -206,6 +208,8 @@ static int setup_rtp_transport(
         if (c->video_nal) {
             VTABLE(SmolRTSP_NalTransport, SmolRTSP_Droppable).drop(c->video_nal);
             c->video_nal = NULL;
+            // NalTransport owns the underlying RTP transport and drops it too.
+            c->video_rtp = NULL;
         }
         if (c->video_rtp) {
             VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(c->video_rtp);
