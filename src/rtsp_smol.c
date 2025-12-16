@@ -330,10 +330,11 @@ impl(SmolRTSP_Controller, Controller);
 impl(SmolRTSP_Droppable, Controller);
 
 static inline uint32_t audio_clock_hz(void) {
-    // RFC 2250: MPEG audio PT14 uses 90 kHz clock; AAC uses sample rate.
-    if (app_config.audio_codec == HAL_AUDCODEC_AAC)
-        return app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
-    return 90000;
+    // Use the actual sample rate for both AAC and MP3 to keep RTP clock,
+    // SDP rtpmap, and decoder expectations aligned (ffmpeg/ffplay otherwise
+    // treat 90 kHz as the media sample rate and fail to decode).
+    uint32_t srate = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
+    return srate ? srate : 48000;
 }
 
 static inline int audio_uses_aac(void) {
