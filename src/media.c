@@ -180,6 +180,8 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         consumed += chunk;
 
         if (aacPcmPos == aacInputSamples) {
+            HAL_INFO("media", "AAC encode call: samples=%lu outMax=%lu\n",
+                aacInputSamples, aacMaxOutputBytes);
             int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
                 aacOut, aacMaxOutputBytes);
             aacPcmPos = 0;
