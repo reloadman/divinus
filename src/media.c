@@ -609,10 +609,12 @@ int enable_audio(void) {
         cfg->aacObjectType = LOW;
         cfg->mpegVersion = MPEG4;
         cfg->useTns = 0;
-        cfg->allowMidside = 1;
+        cfg->allowMidside = app_config.audio_channels > 1;
         cfg->outputFormat = 0; // raw AAC-LC frames
-        cfg->bitRate = app_config.audio_bitrate * 1000;
+        cfg->bitRate = app_config.audio_bitrate * 1000 / (app_config.audio_channels ? app_config.audio_channels : 1);
         cfg->inputFormat = FAAC_INPUT_16BIT;
+        cfg->inputChannels = app_config.audio_channels ? app_config.audio_channels : 1;
+        cfg->outputChannels = cfg->inputChannels;
         if (!faacEncSetConfiguration(aacEnc, cfg)) {
             HAL_ERROR("media", "AAC encoder configuration failed!\n");
             return EXIT_FAILURE;
