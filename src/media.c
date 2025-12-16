@@ -172,12 +172,11 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     static uint32_t last_ts = 0;
     static int log_cnt = 0;
     uint32_t delta_ts = frame->timestamp - last_ts;
-    if (log_cnt < 5) {
-        HAL_INFO("media", "AAC in frame len=%u samples=%u pcmPos=%u offset=%u ts=%u dt=%u\n",
-            frame->length[0], samples, aacPcmPos, aacBuf.offset,
-            frame->timestamp, delta_ts);
-        log_cnt++;
-    }
+        if (log_cnt < 3) {
+            HAL_INFO("media", "AAC in frame len=%u samples=%u ts=%u dt=%u\n",
+                frame->length[0], samples, frame->timestamp, delta_ts);
+            log_cnt++;
+        }
     last_ts = frame->timestamp;
 
     while (consumed < samples) {
@@ -188,8 +187,6 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         consumed += chunk;
 
         if (aacPcmPos == aacInputSamples) {
-            HAL_INFO("media", "AAC encode call: samples=%lu outMax=%lu\n",
-                aacInputSamples, aacMaxOutputBytes);
             int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
                 aacOut, aacMaxOutputBytes);
             aacPcmPos = 0;
@@ -211,9 +208,6 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             if (e1 != BUF_OK || e2 != BUF_OK) {
                 HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
                 aacBuf.offset = 0;
-            } else {
-                HAL_INFO("media", "AAC encoded bytes=%d queued_offset=%u\n",
-                    bytes, aacBuf.offset);
             }
             pthread_mutex_unlock(&aencMtx);
         }
