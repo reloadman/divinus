@@ -564,14 +564,6 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         sent++;
     }
     pthread_mutex_unlock(&g_srv.mtx);
-    if (sent == 0) {
-        static uint64_t last_log = 0;
-        uint64_t now = monotonic_us();
-        if (now - last_log > 2 * 1000000ULL) { // log once per 2s to avoid spam
-            fprintf(stderr, "[rtsp] video drop: no active clients\n");
-            last_log = now;
-        }
-    }
     return 0;
 }
 
@@ -612,14 +604,6 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         sent++;
     }
     pthread_mutex_unlock(&g_srv.mtx);
-    if (sent == 0) {
-        static uint64_t last_log = 0;
-        uint64_t now = monotonic_us();
-        if (now - last_log > 2 * 1000000ULL) {
-            fprintf(stderr, "[rtsp] audio drop: no active clients\n");
-            last_log = now;
-        }
-    }
     return 0;
 }
 
@@ -662,15 +646,6 @@ int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
         sent++;
     }
     pthread_mutex_unlock(&g_srv.mtx);
-
-    if (sent == 0) {
-        static uint64_t last_log = 0;
-        uint64_t now = monotonic_us();
-        if (now - last_log > 2 * 1000000ULL) {
-            fprintf(stderr, "[rtsp] audio drop (AAC): no active clients\n");
-            last_log = now;
-        }
-    }
 
     return 0;
 }
