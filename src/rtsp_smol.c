@@ -50,6 +50,7 @@ static inline uint8_t audio_payload_type(void);
 static inline uint8_t aac_samplerate_index(uint32_t srate);
 static inline uint16_t aac_audio_specific_config(void);
 static inline void aac_config_hex(char *dst, size_t dst_sz);
+static void on_event_cb(struct bufferevent *bev, short events, void *ctx);
 
 typedef struct SmolRtspClient SmolRtspClient;
 
