@@ -32,7 +32,7 @@ void *aenc_thread(void) {
         pthread_mutex_unlock(&mp4Mtx);
 
         if (app_config.rtsp_enable)
-            rtp_send_mp3(rtspHandle, mp3Buf.buf, mp3FrmSize);
+            smolrtsp_push_mp3(mp3Buf.buf, mp3FrmSize, 0);
 
         mp3Buf.offset -= mp3FrmSize;
         if (mp3Buf.offset);
@@ -95,8 +95,11 @@ int save_video_stream(char index, hal_vidstream *stream) {
             }
             if (app_config.rtsp_enable)
                 for (int i = 0; i < stream->count; i++)
-                    rtp_send_h26x(rtspHandle, stream->pack[i].data + stream->pack[i].offset, 
-                        stream->pack[i].length - stream->pack[i].offset, isH265);
+                    smolrtsp_push_video(
+                        stream->pack[i].data + stream->pack[i].offset,
+                        stream->pack[i].length - stream->pack[i].offset,
+                        isH265,
+                        stream->pack[i].timestamp);
 
             if (app_config.stream_enable)
                 for (int i = 0; i < stream->count; i++)

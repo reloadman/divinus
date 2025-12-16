@@ -4,7 +4,7 @@
 #include "media.h"
 #include "network.h"
 #include "night.h"
-#include "rtsp/rtsp_server.h"
+#include "rtsp_smol.h"
 #include "server.h"
 #include "watchdog.h"
 
@@ -15,7 +15,6 @@
 #include <string.h>
 #include <unistd.h>
 
-rtsp_handle rtspHandle;
 char graceful = 0, keepRunning = 1;
 
 void handle_error(int signo) {
@@ -65,16 +64,10 @@ int main(int argc, char *argv[]) {
     start_server();
 
     if (app_config.rtsp_enable) {
-        rtspHandle = rtsp_create(RTSP_MAXIMUM_CONNECTIONS, app_config.rtsp_port, 1);
-        HAL_INFO("rtsp", "Started listening for clients...\n");
-        if (app_config.rtsp_enable_auth) {
-            if (!app_config.rtsp_auth_user || !app_config.rtsp_auth_pass)
-                HAL_ERROR("rtsp", "One or both credential fields have been left empty!\n");
-            else {
-                rtsp_configure_auth(rtspHandle, app_config.rtsp_auth_user, app_config.rtsp_auth_pass);
-                HAL_INFO("rtsp", "Authentication enabled!\n");
-            }
-        }
+        if (smolrtsp_server_start() == 0)
+            HAL_INFO("rtsp", "Started smolrtsp server on port %d\n", app_config.rtsp_port);
+        else
+            HAL_ERROR("rtsp", "Failed to start smolrtsp server\n");
     }
 
     if (app_config.stream_enable)
@@ -104,8 +97,8 @@ int main(int argc, char *argv[]) {
         record_stop();
 
     if (app_config.rtsp_enable) {
-        rtsp_finish(rtspHandle);
-        HAL_INFO("rtsp", "Server has closed!\n");
+        smolrtsp_server_stop();
+        HAL_INFO("rtsp", "SmolRTSP server has closed!\n");
     }
 
     if (app_config.osd_enable)
