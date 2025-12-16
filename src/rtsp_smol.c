@@ -26,8 +26,8 @@
 #define MAX_CLIENTS 16
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
-// Use a dynamic payload type for MP3 to avoid clients (ffmpeg/ffplay) treating
-// static PT=14 "MPA" as MP2 and failing to detect MP3 frame parameters.
+// Use a dynamic payload type for MP3. Some clients (ffmpeg/ffplay) aggressively
+// map static PT=14 ("MPA") to MP2 and then fail to parse MP3 frames.
 #define MP3_PAYLOAD_TYPE 98
 #define AAC_PAYLOAD_TYPE 97
 #define DEFAULT_TCP_CHANNEL_RTP 0
@@ -239,15 +239,18 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
                 ret, w,
                 (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
                 (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // Use dynamic PT + fmtp layer=3 so clients (ffmpeg/ffplay) pick MP3,
-                // instead of mapping static PT=14 ("MPA") to MP2.
-                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d/%d",
+                // Be explicit for ffmpeg: use "MP3" encoding name (non-standard but
+                // widely accepted) so it selects the MP3 decoder.
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MP3/%d/%d",
                     MP3_PAYLOAD_TYPE,
                     audio_clock_hz(),
                     app_config.audio_channels ? app_config.audio_channels : 1),
                 (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
         }
     }
+
+    // Helpful when debugging client-side codec detection (ffmpeg/ffplay).
+    fprintf(stderr, "[rtsp] SDP (len=%zu):\n%s\n", strlen(sdp), sdp);
 
     smolrtsp_header(ctx, SMOLRTSP_HEADER_CONTENT_TYPE, "application/sdp");
     smolrtsp_body(ctx, CharSlice99_from_str(sdp));
