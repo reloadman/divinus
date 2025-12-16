@@ -163,23 +163,31 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         return EXIT_FAILURE;
     }
 
-    unsigned int samples = frame->length[0] / 2;
-    short *pcm = (short *)frame->data[0];
+    unsigned int bytes_per_sample = 2;
+    if ((frame->length[0] % 4) == 0)
+        bytes_per_sample = 4;
+    unsigned int samples = frame->length[0] / bytes_per_sample;
+    short *pcm16 = (short *)frame->data[0];
+    int32_t *pcm32 = (int32_t *)frame->data[0];
     unsigned int consumed = 0;
     static uint32_t last_ts = 0;
     static int log_cnt = 0;
     uint32_t delta_ts = frame->timestamp - last_ts;
         if (log_cnt < 3) {
-            HAL_INFO("media", "AAC in frame len=%u samples=%u ts=%u dt=%u\n",
-                frame->length[0], samples, frame->timestamp, delta_ts);
+        HAL_INFO("media", "AAC in frame len=%u samples=%u bps=%u ts=%u dt=%u\n",
+            frame->length[0], samples, bytes_per_sample, frame->timestamp, delta_ts);
             log_cnt++;
         }
     last_ts = frame->timestamp;
 
     while (consumed < samples) {
         unsigned int chunk = MIN(aacInputSamples - aacPcmPos, samples - consumed);
-        for (unsigned int i = 0; i < chunk; i++)
-            aacPcm[aacPcmPos + i] = (int32_t)pcm[consumed + i];
+        for (unsigned int i = 0; i < chunk; i++) {
+            if (bytes_per_sample == 4)
+                aacPcm[aacPcmPos + i] = pcm32[consumed + i] >> 16;
+            else
+                aacPcm[aacPcmPos + i] = (int32_t)pcm16[consumed + i];
+        }
         aacPcmPos += chunk;
         consumed += chunk;
 
