@@ -412,7 +412,11 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->video_nal || !c->playing)
             continue;
-        (void)SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
+        int ret = SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
+        if (ret < 0) {
+            // Best-effort send; skip on error.
+            continue;
+        }
     }
     pthread_mutex_unlock(&g_srv.mtx);
     return 0;
@@ -429,8 +433,11 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
         SmolRtspClient *c = &g_srv.clients[i];
         if (!c->alive || !c->audio_rtp || !c->playing)
             continue;
-        (void)SmolRTSP_RtpTransport_send_packet(
+        int ret = SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, U8Slice99_empty(), payload);
+        if (ret < 0) {
+            continue;
+        }
     }
     pthread_mutex_unlock(&g_srv.mtx);
     return 0;
