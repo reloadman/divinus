@@ -95,9 +95,6 @@ static void *aenc_thread_aac(void) {
         unsigned char *payload =
             (unsigned char *)(aacBuf.buf + sizeof(uint16_t));
 
-        HAL_INFO("media", "AAC send frame_len=%u offset_before=%u\n",
-            frame_len, aacBuf.offset);
-
         pthread_mutex_lock(&mp4Mtx);
         mp4_ingest_audio((char *)payload, frame_len);
         pthread_mutex_unlock(&mp4Mtx);
