@@ -78,6 +78,14 @@ static void *aenc_thread_aac(void) {
         uint16_t frame_len = (uint8_t)aacBuf.buf[0] |
             ((uint8_t)aacBuf.buf[1] << 8);
 
+        if (frame_len == 0 || frame_len > aacMaxOutputBytes) {
+            HAL_ERROR("media", "AAC frame_len invalid: %u offset=%u\n",
+                frame_len, aacBuf.offset);
+            aacBuf.offset = 0;
+            pthread_mutex_unlock(&aencMtx);
+            continue;
+        }
+
         if (aacBuf.offset < frame_len + sizeof(uint16_t)) {
             pthread_mutex_unlock(&aencMtx);
             usleep(5000);
@@ -172,14 +180,25 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             int bytes = faacEncEncode(aacEnc, aacPcm, aacInputSamples,
                 aacOut, aacMaxOutputBytes);
             aacPcmPos = 0;
-            if (bytes <= 0)
+            if (bytes <= 0) {
+                HAL_ERROR("media", "faacEncEncode returned %d\n", bytes);
                 continue;
+            }
+            if ((unsigned int)bytes > aacMaxOutputBytes) {
+                HAL_ERROR("media", "AAC frame %d exceeds buffer %lu\n",
+                    bytes, aacMaxOutputBytes);
+                bytes = (int)aacMaxOutputBytes;
+            }
             if (bytes > UINT16_MAX)
                 bytes = UINT16_MAX;
 
             pthread_mutex_lock(&aencMtx);
-            put_u16_le(&aacBuf, (uint16_t)bytes);
-            put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
+            enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
+            enum BufError e2 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
+            if (e1 != BUF_OK || e2 != BUF_OK) {
+                HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d\n", e1, e2);
+                aacBuf.offset = 0;
+            }
             pthread_mutex_unlock(&aencMtx);
         }
     }
