@@ -79,7 +79,7 @@ static void *aenc_thread_aac(void) {
             ((uint8_t)aacBuf.buf[1] << 8);
 
         if (frame_len == 0 || frame_len > aacMaxOutputBytes) {
-            HAL_ERROR("media", "AAC frame_len invalid: %u offset=%u\n",
+            HAL_WARNING("media", "AAC frame_len invalid: %u offset=%u\n",
                 frame_len, aacBuf.offset);
             aacBuf.offset = 0;
             pthread_mutex_unlock(&aencMtx);
@@ -613,8 +613,6 @@ int enable_audio(void) {
         cfg->outputFormat = 0; // raw AAC-LC frames
         cfg->bitRate = app_config.audio_bitrate * 1000 / (app_config.audio_channels ? app_config.audio_channels : 1);
         cfg->inputFormat = FAAC_INPUT_16BIT;
-        cfg->inputChannels = app_config.audio_channels ? app_config.audio_channels : 1;
-        cfg->outputChannels = cfg->inputChannels;
         if (!faacEncSetConfiguration(aacEnc, cfg)) {
             HAL_ERROR("media", "AAC encoder configuration failed!\n");
             return EXIT_FAILURE;
