@@ -1917,7 +1917,58 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
 
     ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
     if (ret) {
-        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x\n", ret);
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x (sanitizing & retry)\n", ret);
+
+        // Some SDKs require strictly increasing exposure time and valid gain ranges.
+        // Build a sanitized table and retry once.
+        ISP_AE_ROUTE_EX_S clean;
+        memset(&clean, 0, sizeof(clean));
+        HI_U32 prevT = 0;
+        int outN = 0;
+        for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+            HI_U32 t = route.astRouteExNode[i].u32IntTime;
+            HI_U32 a = route.astRouteExNode[i].u32Again;
+            HI_U32 d = route.astRouteExNode[i].u32Dgain;
+            HI_U32 g = route.astRouteExNode[i].u32IspDgain;
+
+            if (t == 0) continue;
+            if (outN > 0 && t <= prevT) {
+                // drop duplicates/non-increasing nodes
+                continue;
+            }
+            prevT = t;
+
+            // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
+            if (a < 0x400) a = 0x400;
+            if (d < 0x400) d = 0x400;
+            if (g < 0x400) g = 0x400;
+            if (a > 0x3FFFFF) a = 0x3FFFFF;
+            if (d > 0x3FFFFF) d = 0x3FFFFF;
+            if (g > 0x40000) g = 0x40000;
+
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = a;
+            clean.astRouteExNode[outN].u32Dgain = d;
+            clean.astRouteExNode[outN].u32IspDgain = g;
+            outN++;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+        }
+        clean.u32TotalNum = (HI_U32)outN;
+
+        if (outN >= 2) {
+            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%d nodes, dropped %d)\n", outN, total - outN);
+            int ret2 = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
+            if (!ret2) {
+                route = clean;
+                ret = 0;
+            } else {
+                HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx retry failed with %#x\n", ret2);
+                return ret2;
+            }
+        } else {
+            HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after sanitize, skipping\n");
+            return ret;
+        }
     } else {
         // Ensure AE is configured to actually use the RouteEx table.
         // Some SDKs require bAERouteExValid=1 in ExposureAttr.
