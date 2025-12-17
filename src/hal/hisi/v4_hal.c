@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <strings.h>
+#include <pthread.h>
 
 // For debug prints; avoids adding include dependency here.
 char *errstr(int error);
@@ -36,6 +37,22 @@ char _v4_vi_dev = 0;
 char _v4_vi_pipe = 0;
 char _v4_vpss_chn = 0;
 char _v4_vpss_grp = 0;
+
+static char _v4_iq_cfg_path[256] = {0};
+
+typedef struct {
+    char path[256];
+    int pipe;
+} v4_iq_delayed_apply_ctx;
+
+static void *v4_iq_delayed_apply_thread(void *arg) {
+    v4_iq_delayed_apply_ctx *ctx = (v4_iq_delayed_apply_ctx *)arg;
+    if (!ctx) return NULL;
+    usleep(300 * 1000);
+    v4_iq_apply(ctx->path, ctx->pipe);
+    free(ctx);
+    return NULL;
+}
 
 void v4_hal_deinit(void)
 {
@@ -224,6 +241,21 @@ int v4_channel_unbind(char index)
 void *v4_image_thread(void)
 {
     int ret;
+
+    // Some SDKs/firmwares overwrite ISP attributes when ISP_Run starts.
+    // Re-apply IQ shortly after Run begins, in a helper thread.
+    if (_v4_iq_cfg_path[0]) {
+        pthread_t tid;
+        v4_iq_delayed_apply_ctx *ctx = (v4_iq_delayed_apply_ctx *)calloc(1, sizeof(*ctx));
+        if (ctx) {
+            snprintf(ctx->path, sizeof(ctx->path), "%s", _v4_iq_cfg_path);
+            ctx->pipe = _v4_vi_pipe;
+            if (pthread_create(&tid, NULL, v4_iq_delayed_apply_thread, ctx) == 0)
+                pthread_detach(tid);
+            else
+                free(ctx);
+        }
+    }
 
     if (ret = v4_isp.fnRun(_v4_isp_dev))
         HAL_DANGER("v4_isp", "Operation failed with %#x!\n", ret);
@@ -1310,6 +1342,10 @@ static int v4_iq_apply(const char *path, int pipe) {
 int v4_pipeline_create(const char *iqConfig)
 {
     int ret;
+    if (iqConfig && *iqConfig)
+        snprintf(_v4_iq_cfg_path, sizeof(_v4_iq_cfg_path), "%s", iqConfig);
+    else
+        _v4_iq_cfg_path[0] = '\0';
 
     {
         v4_sys_oper mode[4];
