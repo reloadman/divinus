@@ -60,6 +60,10 @@ typedef struct {
     int (*fnSetDRCAttr)(int pipe, const void *attr);
     int (*fnGetModuleControl)(int pipe, void *ctrl);
     int (*fnSetModuleControl)(int pipe, const void *ctrl);
+    int (*fnGetDehazeAttr)(int pipe, void *attr);
+    int (*fnSetDehazeAttr)(int pipe, const void *attr);
+    int (*fnGetLDCIAttr)(int pipe, void *attr);
+    int (*fnSetLDCIAttr)(int pipe, const void *attr);
     int (*fnGetNRAttr)(int pipe, void *attr);
     int (*fnSetNRAttr)(int pipe, const void *attr);
     int (*fnGetGammaAttr)(int pipe, void *attr);
@@ -186,6 +190,7 @@ loaded:
     // Optional symbols used for applying IQ profiles. These may be absent on some SDKs.
     // Prefer libhi_mpi.so when present, fallback to the ISP library handle.
     void *handles_isp[] = { isp_lib->handleMpi, isp_lib->handle, NULL };
+    void *handles_isp_ext[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleDehaze, isp_lib->handleLdci, NULL };
     void *handles_ae[]  = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAe, isp_lib->handleGokeAe, NULL };
     void *handles_awb[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAwb, isp_lib->handleGokeAwb, NULL };
 
@@ -218,6 +223,14 @@ loaded:
         handles_isp, (const char*[]){ "HI_MPI_ISP_GetModuleControl", "MPI_ISP_GetModuleControl", "GK_API_ISP_GetModuleControl", NULL });
     isp_lib->fnSetModuleControl = (int(*)(int, const void*))v4_dlsym_multi(
         handles_isp, (const char*[]){ "HI_MPI_ISP_SetModuleControl", "MPI_ISP_SetModuleControl", "GK_API_ISP_SetModuleControl", NULL });
+    isp_lib->fnGetDehazeAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_GetDehazeAttr", "MPI_ISP_GetDehazeAttr", "GK_API_ISP_GetDehazeAttr", NULL });
+    isp_lib->fnSetDehazeAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_SetDehazeAttr", "MPI_ISP_SetDehazeAttr", "GK_API_ISP_SetDehazeAttr", NULL });
+    isp_lib->fnGetLDCIAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_GetLDCIAttr", "MPI_ISP_GetLDCIAttr", "GK_API_ISP_GetLDCIAttr", NULL });
+    isp_lib->fnSetLDCIAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_SetLDCIAttr", "MPI_ISP_SetLDCIAttr", "GK_API_ISP_SetLDCIAttr", NULL });
     isp_lib->fnGetNRAttr = (int(*)(int, void*))v4_dlsym_multi(
         handles_isp, (const char*[]){ "HI_MPI_ISP_GetNRAttr", "MPI_ISP_GetNRAttr", "GK_API_ISP_GetNRAttr", NULL });
     isp_lib->fnSetNRAttr = (int(*)(int, const void*))v4_dlsym_multi(

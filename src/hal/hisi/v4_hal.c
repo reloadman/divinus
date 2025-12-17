@@ -470,6 +470,58 @@ typedef union {
     HI_U64 u64Key;
 } ISP_MODULE_CTRL_U;
 
+// ---- LDCI ----
+typedef struct {
+    HI_U8 u8Wgt;
+    HI_U8 u8Sigma;
+    HI_U8 u8Mean;
+} ISP_LDCI_GAUSS_COEF_ATTR_S;
+
+typedef struct {
+    ISP_LDCI_GAUSS_COEF_ATTR_S stHePosWgt;
+    ISP_LDCI_GAUSS_COEF_ATTR_S stHeNegWgt;
+} ISP_LDCI_HE_WGT_ATTR_S;
+
+typedef struct {
+    ISP_LDCI_HE_WGT_ATTR_S stHeWgt;
+    HI_U16 u16BlcCtrl;
+} ISP_LDCI_MANUAL_ATTR_S;
+
+typedef struct {
+    ISP_LDCI_HE_WGT_ATTR_S astHeWgt[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16BlcCtrl[ISP_AUTO_ISO_STRENGTH_NUM];
+} ISP_LDCI_AUTO_ATTR_S;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_U8 u8GaussLPFSigma;
+    ISP_OP_TYPE_E enOpType;
+    ISP_LDCI_MANUAL_ATTR_S stManual;
+    ISP_LDCI_AUTO_ATTR_S stAuto;
+    HI_U16 u16TprIncrCoef;
+    HI_U16 u16TprDecrCoef;
+} ISP_LDCI_ATTR_S;
+
+// ---- Dehaze ----
+typedef struct {
+    HI_U8 u8strength;
+} ISP_DEHAZE_MANUAL_ATTR_S;
+
+typedef struct {
+    HI_U8 u8strength;
+} ISP_DEHAZE_AUTO_ATTR_S;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_BOOL bUserLutEnable;
+    HI_U8 au8DehazeLut[256];
+    ISP_OP_TYPE_E enOpType;
+    ISP_DEHAZE_MANUAL_ATTR_S stManual;
+    ISP_DEHAZE_AUTO_ATTR_S stAuto;
+    HI_U16 u16TmprfltIncrCoef;
+    HI_U16 u16TmprfltDecrCoef;
+} ISP_DEHAZE_ATTR_S;
+
 // ---- DRC ----
 #ifndef HI_ISP_DRC_CC_NODE_NUM
 #define HI_ISP_DRC_CC_NODE_NUM 33
@@ -1178,6 +1230,191 @@ static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
     return ret;
 }
 
+static int v4_iq_apply_static_ldci(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetLDCIAttr || !v4_isp.fnSetLDCIAttr) {
+        HAL_INFO("v4_iq", "LDCI: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_ldci", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "LDCI: no [static_ldci] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    // Ensure LDCI module is not bypassed
+    if (v4_isp.fnGetModuleControl && v4_isp.fnSetModuleControl) {
+        ISP_MODULE_CTRL_U mc;
+        memset(&mc, 0, sizeof(mc));
+        int gr = v4_isp.fnGetModuleControl(pipe, &mc);
+        if (!gr) {
+            HI_U64 before = mc.u64Key;
+            mc.u64Key &= ~(1ULL << 21); // bitBypassLdci
+            int sr = v4_isp.fnSetModuleControl(pipe, &mc);
+            if (!sr) {
+                ISP_MODULE_CTRL_U mc2;
+                memset(&mc2, 0, sizeof(mc2));
+                if (!v4_isp.fnGetModuleControl(pipe, &mc2))
+                    HAL_INFO("v4_iq", "LDCI: module control u64Key %#llx -> %#llx\n",
+                        (unsigned long long)before, (unsigned long long)mc2.u64Key);
+            }
+        }
+    }
+
+    ISP_LDCI_ATTR_S ldci;
+    memset(&ldci, 0, sizeof(ldci));
+    int ret = v4_isp.fnGetLDCIAttr(pipe, &ldci);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetLDCIAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_ldci", "Enable", 0, 1, &val) == CONFIG_OK)
+        ldci.bEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_ldci", "LDCIOpType", 0, 1, &val) == CONFIG_OK)
+        ldci.enOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ldci", "LDCIGaussLPFSigma", 0, 255, &val) == CONFIG_OK)
+        ldci.u8GaussLPFSigma = (HI_U8)val;
+
+    char buf[1024];
+    HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+
+    // Auto per-ISO HE parameters
+    if (parse_param_value(ini, "static_ldci", "AutoHePosWgt", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHePosWgt.u8Wgt = (HI_U8)tmp[i];
+    }
+    if (parse_param_value(ini, "static_ldci", "AutoHePosSigma", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHePosWgt.u8Sigma = (HI_U8)tmp[i];
+    }
+    if (parse_param_value(ini, "static_ldci", "AutoHePosMean", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHePosWgt.u8Mean = (HI_U8)tmp[i];
+    }
+
+    if (parse_param_value(ini, "static_ldci", "AutoHeNegWgt", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHeNegWgt.u8Wgt = (HI_U8)tmp[i];
+    }
+    if (parse_param_value(ini, "static_ldci", "AutoHeNegSigma", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHeNegWgt.u8Sigma = (HI_U8)tmp[i];
+    }
+    if (parse_param_value(ini, "static_ldci", "AutoHeNegMean", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.astHeWgt[i].stHeNegWgt.u8Mean = (HI_U8)tmp[i];
+    }
+    if (parse_param_value(ini, "static_ldci", "AutoBlcCtrl", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int i = 0; i < n; i++) ldci.stAuto.au16BlcCtrl[i] = (HI_U16)tmp[i];
+    }
+
+    ret = v4_isp.fnSetLDCIAttr(pipe, &ldci);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetLDCIAttr failed with %#x\n", ret);
+    } else {
+        ISP_LDCI_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetLDCIAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "LDCI: applied (en=%d opType=%d posWgt[0]=%u negWgt[0]=%u blc[0]=%u)\n",
+                (int)rb.bEnable, (int)rb.enOpType,
+                (unsigned)rb.stAuto.astHeWgt[0].stHePosWgt.u8Wgt,
+                (unsigned)rb.stAuto.astHeWgt[0].stHeNegWgt.u8Wgt,
+                (unsigned)rb.stAuto.au16BlcCtrl[0]);
+        } else {
+            HAL_INFO("v4_iq", "LDCI: applied\n");
+        }
+    }
+    return ret;
+}
+
+static int v4_iq_apply_static_dehaze(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetDehazeAttr || !v4_isp.fnSetDehazeAttr) {
+        HAL_INFO("v4_iq", "Dehaze: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_dehaze", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "Dehaze: no [static_dehaze] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    // Ensure Dehaze module is not bypassed
+    if (v4_isp.fnGetModuleControl && v4_isp.fnSetModuleControl) {
+        ISP_MODULE_CTRL_U mc;
+        memset(&mc, 0, sizeof(mc));
+        int gr = v4_isp.fnGetModuleControl(pipe, &mc);
+        if (!gr) {
+            HI_U64 before = mc.u64Key;
+            mc.u64Key &= ~(1ULL << 5); // bitBypassDehaze
+            int sr = v4_isp.fnSetModuleControl(pipe, &mc);
+            if (!sr) {
+                ISP_MODULE_CTRL_U mc2;
+                memset(&mc2, 0, sizeof(mc2));
+                if (!v4_isp.fnGetModuleControl(pipe, &mc2))
+                    HAL_INFO("v4_iq", "Dehaze: module control u64Key %#llx -> %#llx\n",
+                        (unsigned long long)before, (unsigned long long)mc2.u64Key);
+            }
+        }
+    }
+
+    ISP_DEHAZE_ATTR_S dh;
+    memset(&dh, 0, sizeof(dh));
+    int ret = v4_isp.fnGetDehazeAttr(pipe, &dh);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetDehazeAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_dehaze", "Enable", 0, 1, &val) == CONFIG_OK)
+        dh.bEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_dehaze", "DehazeUserLutEnable", 0, 1, &val) == CONFIG_OK)
+        dh.bUserLutEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_dehaze", "DehazeOpType", 0, 1, &val) == CONFIG_OK)
+        dh.enOpType = (ISP_OP_TYPE_E)val;
+
+    // User LUT (256 nodes), often multiline.
+    {
+        HI_U32 tmp[256];
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_multiline_u32(ini, "static_dehaze", "DehazeLut", tmp, 256);
+        if (n > 0) {
+            for (int i = 0; i < n && i < 256; i++) {
+                HI_U32 v = tmp[i];
+                if (v > 255) v = 255;
+                dh.au8DehazeLut[i] = (HI_U8)v;
+            }
+        }
+    }
+
+    ret = v4_isp.fnSetDehazeAttr(pipe, &dh);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetDehazeAttr failed with %#x\n", ret);
+    } else {
+        ISP_DEHAZE_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetDehazeAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "Dehaze: applied (en=%d opType=%d userLut=%d lut[0]=%u lut[255]=%u)\n",
+                (int)rb.bEnable, (int)rb.enOpType, (int)rb.bUserLutEnable,
+                (unsigned)rb.au8DehazeLut[0], (unsigned)rb.au8DehazeLut[255]);
+        } else {
+            HAL_INFO("v4_iq", "Dehaze: applied\n");
+        }
+    }
+    return ret;
+}
+
 static int v4_iq_apply_static_drc(struct IniConfig *ini, int pipe) {
     if (!v4_isp.fnGetDRCAttr || !v4_isp.fnSetDRCAttr) {
         HAL_INFO("v4_iq", "DRC: API not available, skipping\n");
@@ -1514,11 +1751,14 @@ static int v4_iq_apply(const char *path, int pipe) {
 
     // Respect module_state toggles when present; default to "apply" if section/key missing.
     bool doStaticAE = true, doStaticCCM = true, doStaticSat = true;
+    bool doStaticLDCI = true, doStaticDehaze = true;
     bool doStaticDRC = true, doStaticNR = true, doStaticSharpen = true;
     bool doGamma = true;
     parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
     parse_bool(&ini, "module_state", "bStaticCCM", &doStaticCCM);
     parse_bool(&ini, "module_state", "bStaticSaturation", &doStaticSat);
+    parse_bool(&ini, "module_state", "bStaticLDCI", &doStaticLDCI);
+    parse_bool(&ini, "module_state", "bStaticDehaze", &doStaticDehaze);
     parse_bool(&ini, "module_state", "bStaticDRC", &doStaticDRC);
     parse_bool(&ini, "module_state", "bStaticNr", &doStaticNR);
     parse_bool(&ini, "module_state", "bStaticSharpen", &doStaticSharpen);
@@ -1539,6 +1779,14 @@ static int v4_iq_apply(const char *path, int pipe) {
     }
     if (doStaticSat) {
         int r = v4_iq_apply_static_saturation(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticLDCI) {
+        int r = v4_iq_apply_static_ldci(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticDehaze) {
+        int r = v4_iq_apply_static_dehaze(&ini, pipe);
         if (r) ret = r;
     }
     if (doStaticDRC) {
