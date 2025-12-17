@@ -866,6 +866,11 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_ae", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE: no [static_ae] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
 
     ISP_EXPOSURE_ATTR_S exp;
     memset(&exp, 0, sizeof(exp));
@@ -876,16 +881,96 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
     }
 
     int val;
+    // Top-level AE/exposure switches
+    if (parse_int(ini, "static_ae", "ByPass", 0, 1, &val) == CONFIG_OK)
+        exp.bByPass = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "HistStatAdjust", 0, 1, &val) == CONFIG_OK)
+        exp.bHistStatAdjust = (HI_BOOL)val;
     if (parse_int(ini, "static_ae", "AERunInterval", 1, 255, &val) == CONFIG_OK)
         exp.u8AERunInterval = (HI_U8)val;
     if (parse_int(ini, "static_ae", "AERouteExValid", 0, 1, &val) == CONFIG_OK)
         exp.bAERouteExValid = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "PriorFrame", 0, 2, &val) == CONFIG_OK)
+        exp.enPriorFrame = (ISP_PRIOR_FRAME_E)val;
+    if (parse_int(ini, "static_ae", "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
+        exp.bAEGainSepCfg = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "AEOpType", 0, 1, &val) == CONFIG_OK)
+        exp.enOpType = (ISP_OP_TYPE_E)val;
+
+    // Auto ranges (the most common knobs in vendor IQ)
+    if (parse_int(ini, "static_ae", "AutoExpTimeMin", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stExpTimeRange.u32Min = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoExpTimeMax", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stExpTimeRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoAGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stAGainRange.u32Min = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoAGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stAGainRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stDGainRange.u32Min = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stDGainRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoISPDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stISPDGainRange.u32Min = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoISPDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stISPDGainRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoSysGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stSysGainRange.u32Min = (HI_U32)val;
     if (parse_int(ini, "static_ae", "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stSysGainRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoGainThreshold", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.u32GainThreshold = (HI_U32)val;
+
+    // Auto behavior
     if (parse_int(ini, "static_ae", "AutoSpeed", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Speed = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoBlackSpeedBias", 0, 65535, &val) == CONFIG_OK)
+        exp.stAuto.u16BlackSpeedBias = (HI_U16)val;
     if (parse_int(ini, "static_ae", "AutoTolerance", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Tolerance = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoCompensation", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.u8Compensation = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoEVBias", 0, 65535, &val) == CONFIG_OK)
+        exp.stAuto.u16EVBias = (HI_U16)val;
+    if (parse_int(ini, "static_ae", "AutoAEStrategyMode", 0, 1, &val) == CONFIG_OK)
+        exp.stAuto.enAEStrategyMode = (ISP_AE_STRATEGY_E)val;
+    if (parse_int(ini, "static_ae", "AutoHistRatioSlope", 0, 65535, &val) == CONFIG_OK)
+        exp.stAuto.u16HistRatioSlope = (HI_U16)val;
+    if (parse_int(ini, "static_ae", "AutoMaxHistOffset", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.u8MaxHistOffset = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoAEMode", 0, 1, &val) == CONFIG_OK)
+        exp.stAuto.enAEMode = (ISP_AE_MODE_E)val;
+
+    // Anti-flicker (optional)
+    if (parse_int(ini, "static_ae", "AntiFlickerEnable", 0, 1, &val) == CONFIG_OK)
+        exp.stAuto.stAntiflicker.bEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "AntiFlickerFrequency", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.stAntiflicker.u8Frequency = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AntiFlickerMode", 0, 1, &val) == CONFIG_OK)
+        exp.stAuto.stAntiflicker.enMode = (ISP_ANTIFLICKER_MODE_E)val;
+    if (parse_int(ini, "static_ae", "SubFlickerEnable", 0, 1, &val) == CONFIG_OK)
+        exp.stAuto.stSubflicker.bEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "SubFlickerLumaDiff", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.stSubflicker.u8LumaDiff = (HI_U8)val;
+
+    // Manual exposure (optional)
+    if (parse_int(ini, "static_ae", "ManualExpTimeOpType", 0, 1, &val) == CONFIG_OK)
+        exp.stManual.enExpTimeOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ae", "ManualAGainOpType", 0, 1, &val) == CONFIG_OK)
+        exp.stManual.enAGainOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ae", "ManualDGainOpType", 0, 1, &val) == CONFIG_OK)
+        exp.stManual.enDGainOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ae", "ManualISPDGainOpType", 0, 1, &val) == CONFIG_OK)
+        exp.stManual.enISPDGainOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ae", "ManualExpTime", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stManual.u32ExpTime = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "ManualAGain", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stManual.u32AGain = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "ManualDGain", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stManual.u32DGain = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "ManualISPDGain", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stManual.u32ISPDGain = (HI_U32)val;
+
     if (parse_int(ini, "static_ae", "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.stAEDelayAttr.u16BlackDelayFrame = (HI_U16)val;
     if (parse_int(ini, "static_ae", "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
@@ -913,6 +998,11 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE route-ex: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE route-ex: no [static_aerouteex] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
 
     ISP_AE_ROUTE_EX_S route;
     memset(&route, 0, sizeof(route));
@@ -928,33 +1018,44 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
-    char buf[1024];
     HI_U32 ints[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
     HI_U32 again[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
     HI_U32 dgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
     HI_U32 ispdgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
 
-    if (parse_param_value(ini, "static_aerouteex", "RouteEXIntTime", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u32(buf, ints, ISP_AE_ROUTE_EX_MAX_NODES);
-    if (parse_param_value(ini, "static_aerouteex", "RouteEXAGain", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u32(buf, again, ISP_AE_ROUTE_EX_MAX_NODES);
-    if (parse_param_value(ini, "static_aerouteex", "RouteEXDGain", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u32(buf, dgain, ISP_AE_ROUTE_EX_MAX_NODES);
-    if (parse_param_value(ini, "static_aerouteex", "RouteEXISPDGain", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u32(buf, ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nInts = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXIntTime", ints, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nAgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXAGain", again, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXDGain", dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nIspDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXISPDGain", ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
 
     route.u32TotalNum = (HI_U32)total;
     for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
-        if (ints[i]) route.astRouteExNode[i].u32IntTime = ints[i];
-        if (again[i]) route.astRouteExNode[i].u32Again = again[i];
-        if (dgain[i]) route.astRouteExNode[i].u32Dgain = dgain[i];
-        if (ispdgain[i]) route.astRouteExNode[i].u32IspDgain = ispdgain[i];
+        if (i < nInts) route.astRouteExNode[i].u32IntTime = ints[i];
+        if (i < nAgain) route.astRouteExNode[i].u32Again = again[i];
+        if (i < nDgain) route.astRouteExNode[i].u32Dgain = dgain[i];
+        if (i < nIspDgain) route.astRouteExNode[i].u32IspDgain = ispdgain[i];
     }
 
     ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x\n", ret);
     } else {
+        // Ensure AE is configured to actually use the RouteEx table.
+        // Some SDKs require bAERouteExValid=1 in ExposureAttr.
+        if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+            ISP_EXPOSURE_ATTR_S exp;
+            memset(&exp, 0, sizeof(exp));
+            int gr = v4_isp.fnGetExposureAttr(pipe, &exp);
+            if (!gr && !exp.bAERouteExValid) {
+                exp.bAERouteExValid = HI_TRUE;
+                int sr = v4_isp.fnSetExposureAttr(pipe, &exp);
+                if (!sr)
+                    HAL_INFO("v4_iq", "AE route-ex: enabled AERouteExValid=1\n");
+                else
+                    HAL_WARNING("v4_iq", "AE route-ex: failed to set AERouteExValid=1 (%#x)\n", sr);
+            }
+        }
+
         ISP_AE_ROUTE_EX_S rb;
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetAERouteAttrEx(pipe, &rb);
