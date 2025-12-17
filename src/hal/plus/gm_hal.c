@@ -278,15 +278,19 @@ int gm_video_create(char index, hal_vidconfig *config)
 
     if (h264_plus && !_gm_motion_on) {
         // Try to enable capture motion metadata at runtime.
-        _gm_motion_on = 1;
+        // Some GK/GM SDK builds return positive error codes (e.g. 0xa0088008),
+        // so treat any non-zero as failure and do NOT refresh the group.
         GM_DECLARE(gm_lib, cap, gm_cap_cnf, "gm_cap_attr_t");
         cap.channel = 0;
         cap.output = GM_CAP_OUT_SCALER1;
         cap.motionDataOn = 1;
-        // Some SDK builds don't support motion metadata; ignore if it fails.
-        if (gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap) < 0)
+        ret = gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap);
+        if (ret == 0) {
+            _gm_motion_on = 1;
+            gm_lib.fnRefreshGroup(_gm_cap_grp);
+        } else {
             _gm_motion_on = 0;
-        gm_lib.fnRefreshGroup(_gm_cap_grp);
+        }
     }
 
     switch (config->codec) {
