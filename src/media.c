@@ -1008,8 +1008,15 @@ int enable_mp4(void) {
         // Deterministic defaults + baseline for H.264+ logic in HAL.
         config.minQual = 34;
         config.maxQual = 48;
-        if (!app_config.mp4_codecH265 && app_config.mp4_h264_plus)
-            config.flags |= HAL_VIDOPT_H264_PLUS;
+        if (!app_config.mp4_codecH265 && app_config.mp4_h264_plus) {
+            // GM/Goke (libgm.so) firmwares can reject extended H.264 settings with NOT_SUPPORT.
+            // Keep "H.264+" as a best-effort feature: enable where supported, otherwise fall back.
+            if (plat == HAL_PLATFORM_GM) {
+                HAL_WARNING("media", "H.264+ requested, but GM platform may not support it; falling back to H.264.\n");
+            } else {
+                config.flags |= HAL_VIDOPT_H264_PLUS;
+            }
+        }
 
         switch (plat) {
 #if defined(__ARM_PCS_VFP)
