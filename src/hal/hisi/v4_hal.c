@@ -888,7 +888,15 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetExposureAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "AE: applied\n");
+        ISP_EXPOSURE_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetExposureAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "AE: applied (runInt=%u routeExValid=%d)\n",
+                (unsigned)rb.u8AERunInterval, (int)rb.bAERouteExValid);
+        } else {
+            HAL_INFO("v4_iq", "AE: applied\n");
+        }
     }
     return ret;
 }
@@ -940,7 +948,19 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
+        ISP_AE_ROUTE_EX_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetAERouteAttrEx(pipe, &rb);
+        if (!gr && rb.u32TotalNum > 0) {
+            HAL_INFO("v4_iq", "AE route-ex: applied (%u nodes) first={t=%u again=%u dgain=%u ispd=%u}\n",
+                (unsigned)rb.u32TotalNum,
+                (unsigned)rb.astRouteExNode[0].u32IntTime,
+                (unsigned)rb.astRouteExNode[0].u32Again,
+                (unsigned)rb.astRouteExNode[0].u32Dgain,
+                (unsigned)rb.astRouteExNode[0].u32IspDgain);
+        } else {
+            HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
+        }
     }
     return ret;
 }
@@ -996,7 +1016,18 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "CCM: applied\n");
+        ISP_COLORMATRIX_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetCCMAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "CCM: applied (opType=%d manualCCM[0..2]=%u,%u,%u)\n",
+                (int)rb.enOpType,
+                (unsigned)rb.stManual.au16CCM[0],
+                (unsigned)rb.stManual.au16CCM[1],
+                (unsigned)rb.stManual.au16CCM[2]);
+        } else {
+            HAL_INFO("v4_iq", "CCM: applied\n");
+        }
     }
     return ret;
 }
@@ -1024,7 +1055,17 @@ static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetSaturationAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "Saturation: applied\n");
+        ISP_SATURATION_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetSaturationAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "Saturation: applied (opType=%d auto[0]=%u auto[15]=%u)\n",
+                (int)rb.enOpType,
+                (unsigned)rb.stAuto.au8Sat[0],
+                (unsigned)rb.stAuto.au8Sat[15]);
+        } else {
+            HAL_INFO("v4_iq", "Saturation: applied\n");
+        }
     }
     return ret;
 }
@@ -1077,7 +1118,18 @@ static int v4_iq_apply_static_drc(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetDRCAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "DRC: applied\n");
+        ISP_DRC_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetDRCAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "DRC: applied (en=%d opType=%d strength=%u tm[0]=%u tm[last]=%u)\n",
+                (int)rb.bEnable, (int)rb.enOpType,
+                (unsigned)rb.stAuto.u16Strength,
+                (unsigned)rb.au16ToneMappingValue[0],
+                (unsigned)rb.au16ToneMappingValue[HI_ISP_DRC_TM_NODE_NUM - 1]);
+        } else {
+            HAL_INFO("v4_iq", "DRC: applied\n");
+        }
     }
     return ret;
 }
@@ -1122,7 +1174,17 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetNRAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "NR: applied\n");
+        ISP_NR_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetNRAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "NR: applied (en=%d opType=%d fine[0]=%u coringWgt[0]=%u)\n",
+                (int)rb.bEnable, (int)rb.enOpType,
+                (unsigned)rb.stAuto.au8FineStr[0],
+                (unsigned)rb.stAuto.au16CoringWgt[0]);
+        } else {
+            HAL_INFO("v4_iq", "NR: applied\n");
+        }
     }
     return ret;
 }
@@ -1161,7 +1223,17 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
         if (ret) {
             HAL_WARNING("v4_iq", "HI_MPI_ISP_SetGammaAttr failed with %#x\n", ret);
         } else {
-            HAL_INFO("v4_iq", "Gamma: applied (%d nodes)\n", n);
+            ISP_GAMMA_ATTR_S rb;
+            memset(&rb, 0, sizeof(rb));
+            int gr = v4_isp.fnGetGammaAttr(pipe, &rb);
+            if (!gr) {
+                HAL_INFO("v4_iq", "Gamma: applied (type=%d node0=%u nodeLast=%u)\n",
+                    (int)rb.enCurveType,
+                    (unsigned)rb.u16Table[0],
+                    (unsigned)rb.u16Table[GAMMA_NODE_NUM - 1]);
+            } else {
+                HAL_INFO("v4_iq", "Gamma: applied (%d nodes)\n", n);
+            }
         }
         return ret;
     }
@@ -1270,7 +1342,17 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetIspSharpenAttr failed with %#x\n", ret);
     } else {
-        HAL_INFO("v4_iq", "Sharpen: applied\n");
+        ISP_SHARPEN_ATTR_S rb;
+        memset(&rb, 0, sizeof(rb));
+        int gr = v4_isp.fnGetIspSharpenAttr(pipe, &rb);
+        if (!gr) {
+            HAL_INFO("v4_iq", "Sharpen: applied (en=%d opType=%d texFreq[0]=%u edgeFreq[0]=%u)\n",
+                (int)rb.bEnable, (int)rb.enOpType,
+                (unsigned)rb.stAuto.au16TextureFreq[0],
+                (unsigned)rb.stAuto.au16EdgeFreq[0]);
+        } else {
+            HAL_INFO("v4_iq", "Sharpen: applied\n");
+        }
     }
     return ret;
 }
