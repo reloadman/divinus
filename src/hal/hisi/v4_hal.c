@@ -1144,6 +1144,12 @@ static int v4_iq_apply_static_drc(struct IniConfig *ini, int pipe) {
         if (n > 0) {
             for (int i = 0; i < n && i < HI_ISP_DRC_TM_NODE_NUM; i++)
                 drc.au16ToneMappingValue[i] = (HI_U16)tmp[i];
+            // If a user-defined tone mapping LUT is provided, force user curve selection.
+            // Otherwise, some SDKs ignore au16ToneMappingValue when CurveSelect=0 (asymmetry).
+            if (drc.enCurveSelect != DRC_CURVE_USER) {
+                HAL_INFO("v4_iq", "DRC: DRCToneMappingValue present (%d nodes), forcing CurveSelect=2 (USER)\n", n);
+                drc.enCurveSelect = DRC_CURVE_USER;
+            }
         }
     }
 
