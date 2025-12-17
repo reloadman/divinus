@@ -356,6 +356,22 @@ int gm_video_create(char index, hal_vidconfig *config)
             // GM / GK7205 firmwares are picky about optional knobs (preset/coding/ipOffset/ROI).
             // Best-effort: try as-is, and if NOT_SUPPORT -> retry with a minimal config.
             ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            // On some Goke SDKs EVBR/ECBR are not supported even though headers expose them.
+            // Fall back to plain VBR/CBR automatically so the stream can start.
+            if (ret != 0 && (h264chn.rate.mode == GM_VENC_RATEMODE_EVBR ||
+                             h264chn.rate.mode == GM_VENC_RATEMODE_ECBR)) {
+                h264chn.rate.mode = GM_VENC_RATEMODE_VBR;
+                ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            }
+            // Some firmwares reject High profile; try Main then Baseline.
+            if (ret != 0 && h264chn.profile == GM_VENC_H264PROF_HIGH) {
+                h264chn.profile = GM_VENC_H264PROF_MAIN;
+                ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            }
+            if (ret != 0 && h264chn.profile == GM_VENC_H264PROF_MAIN) {
+                h264chn.profile = GM_VENC_H264PROF_BASELINE;
+                ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            }
             if (ret != 0 && h264_plus) {
                 GM_DECLARE(gm_lib, base, gm_venc_h264_cnf, "gm_h264e_attr_t");
                 base.dest.width = config->width;
@@ -377,6 +393,12 @@ int gm_video_create(char index, hal_vidconfig *config)
                 }
                 base.level = 41;
                 ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &base);
+                // If minimal config still fails and we're in EVBR/ECBR, retry with plain VBR.
+                if (ret != 0 && (base.rate.mode == GM_VENC_RATEMODE_EVBR ||
+                                 base.rate.mode == GM_VENC_RATEMODE_ECBR)) {
+                    base.rate.mode = GM_VENC_RATEMODE_VBR;
+                    ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &base);
+                }
             }
             if (ret != 0)
                 return ret;
