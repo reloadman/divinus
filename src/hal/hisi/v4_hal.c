@@ -1454,6 +1454,18 @@ typedef struct {
     HI_U8  asymmetry, secondPole, compress, stretch;
 } v4_iq_dyn_drc_sig;
 
+// ---- 3DNR (VPSS NRX) profile (parsed from [static_3dnr]/[ir_static_3dnr]) ----
+typedef struct {
+    HI_S32 sfc, tfc, tpc, trc, mode, presfc;
+} v4_iq_3dnr_nrc;
+
+typedef struct {
+    bool enabled;
+    int n;
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS];
+    v4_iq_3dnr_nrc nrc[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_3dnr_cfg;
+
 typedef struct {
     pthread_mutex_t lock;
     bool thread_started;
@@ -1616,18 +1628,6 @@ static int v4_iq_parse_multiline_str(
     return (int)w;
 }
 
-// ---- 3DNR (VPSS NRX V3) ----
-typedef struct {
-    HI_S32 sfc, tfc, tpc, trc, mode, presfc;
-} v4_iq_3dnr_nrc;
-
-typedef struct {
-    bool enabled;
-    int n;
-    HI_U32 iso[V4_IQ_DYN_MAX_POINTS];
-    v4_iq_3dnr_nrc nrc[V4_IQ_DYN_MAX_POINTS];
-} v4_iq_3dnr_cfg;
-
 // Minimal VPSS NRX V3 (Hi3516EV200-style) structs to access NRc.
 // We keep the full V3 layout so Get/SetGrpNRXParam doesn't overwrite the stack.
 typedef int OPERATION_MODE_E;
@@ -1746,7 +1746,28 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
 
 static int v4_iq_find_int_token(const char *txt, const char *tag, HI_S32 *out) {
     if (!txt || !tag || !out) return 0;
-    const char *p = strcasestr(txt, tag);
+    // strcasestr() is a GNU extension and may be unavailable in some toolchains.
+    // Implement a tiny ASCII-only case-insensitive substring search.
+    const char *p = NULL;
+    {
+        const char *h = txt;
+        const char *n = tag;
+        size_t nl = strlen(n);
+        if (nl == 0) p = h;
+        else {
+            for (; *h; h++) {
+                size_t i = 0;
+                while (i < nl) {
+                    unsigned char hc = (unsigned char)h[i];
+                    unsigned char nc = (unsigned char)n[i];
+                    if (!hc) break;
+                    if (tolower(hc) != tolower(nc)) break;
+                    i++;
+                }
+                if (i == nl) { p = h; break; }
+            }
+        }
+    }
     if (!p) return 0;
     p += strlen(tag);
     while (*p && isspace((unsigned char)*p)) p++;
