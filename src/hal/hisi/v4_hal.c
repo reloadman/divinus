@@ -745,15 +745,17 @@ int v4_video_create(char index, hal_vidconfig *config)
     if (ret) {
         // Best-effort fallback for H.264+: try to reduce features until the SDK accepts it.
         if (h264_plus && channel.attrib.codec == V4_VENC_CODEC_H264) {
-            HAL_WARNING("v4_venc", "H264+ create failed, retrying with NORMALP + VBR\n");
+            // Try a few combinations to find what the firmware actually supports.
+            // 1) NORMALP + AVBR (keep adaptive RC, drop Smart GOP)
+            HAL_WARNING("v4_venc", "H264+ create failed, retrying with NORMALP + AVBR\n");
             memset(&channel, 0, sizeof(channel));
             channel.attrib.codec = V4_VENC_CODEC_H264;
             channel.gop.mode = V4_VENC_GOPMODE_NORMALP;
             channel.gop.normalP.ipQualDelta = config->gop / config->framerate;
-            channel.rate.mode = V4_VENC_RATEMODE_H264VBR;
-            channel.rate.h264Vbr = (v4_venc_rate_h26xbr){ .gop = config->gop,
+            channel.rate.mode = V4_VENC_RATEMODE_H264AVBR;
+            channel.rate.h264Avbr = (v4_venc_rate_h26xbr){ .gop = config->gop,
                 .statTime = 1, .srcFps = config->framerate, .dstFps = config->framerate,
-                .maxBitrate = MAX(config->bitrate, config->maxBitrate) };
+                .maxBitrate = config->bitrate };
             channel.attrib.maxPic.width = config->width;
             channel.attrib.maxPic.height = config->height;
             channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
@@ -762,7 +764,56 @@ int v4_video_create(char index, hal_vidconfig *config)
             channel.attrib.pic.width = config->width;
             channel.attrib.pic.height = config->height;
             ret = v4_venc.fnCreateChannel(index, &channel);
-            HAL_INFO("v4_venc", "CreateChannel ch=%d retry -> ret=%#x (%s)\n", index, ret, errstr(ret));
+            HAL_INFO("v4_venc", "CreateChannel ch=%d retry(NORMALP+AVBR) -> ret=%#x (%s)\n",
+                index, ret, errstr(ret));
+
+            // 2) SMARTP + VBR (keep Smart GOP, drop AVBR)
+            if (ret) {
+                HAL_WARNING("v4_venc", "H264+ create failed, retrying with SMARTP + VBR\n");
+                memset(&channel, 0, sizeof(channel));
+                channel.attrib.codec = V4_VENC_CODEC_H264;
+                channel.gop.mode = V4_VENC_GOPMODE_SMARTP;
+                channel.gop.smartP.bgInterv = config->gop;
+                channel.gop.smartP.bgQualDelta = 6;
+                channel.gop.smartP.viQualDelta = 3;
+                channel.rate.mode = V4_VENC_RATEMODE_H264VBR;
+                channel.rate.h264Vbr = (v4_venc_rate_h26xbr){ .gop = config->gop,
+                    .statTime = 1, .srcFps = config->framerate, .dstFps = config->framerate,
+                    .maxBitrate = MAX(config->bitrate, config->maxBitrate) };
+                channel.attrib.maxPic.width = config->width;
+                channel.attrib.maxPic.height = config->height;
+                channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+                channel.attrib.profile = config->profile;
+                channel.attrib.byFrame = 1;
+                channel.attrib.pic.width = config->width;
+                channel.attrib.pic.height = config->height;
+                ret = v4_venc.fnCreateChannel(index, &channel);
+                HAL_INFO("v4_venc", "CreateChannel ch=%d retry(SMARTP+VBR) -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
+            }
+
+            // 3) NORMALP + VBR (baseline fallback)
+            if (ret) {
+                HAL_WARNING("v4_venc", "H264+ create failed, retrying with NORMALP + VBR\n");
+                memset(&channel, 0, sizeof(channel));
+                channel.attrib.codec = V4_VENC_CODEC_H264;
+                channel.gop.mode = V4_VENC_GOPMODE_NORMALP;
+                channel.gop.normalP.ipQualDelta = config->gop / config->framerate;
+                channel.rate.mode = V4_VENC_RATEMODE_H264VBR;
+                channel.rate.h264Vbr = (v4_venc_rate_h26xbr){ .gop = config->gop,
+                    .statTime = 1, .srcFps = config->framerate, .dstFps = config->framerate,
+                    .maxBitrate = MAX(config->bitrate, config->maxBitrate) };
+                channel.attrib.maxPic.width = config->width;
+                channel.attrib.maxPic.height = config->height;
+                channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+                channel.attrib.profile = config->profile;
+                channel.attrib.byFrame = 1;
+                channel.attrib.pic.width = config->width;
+                channel.attrib.pic.height = config->height;
+                ret = v4_venc.fnCreateChannel(index, &channel);
+                HAL_INFO("v4_venc", "CreateChannel ch=%d retry(NORMALP+VBR) -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
+            }
         }
         if (ret)
             return ret;
