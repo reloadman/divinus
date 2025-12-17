@@ -1,12 +1,14 @@
 SRC_LOCAL = $(shell find ./ -name '*.c')
-SMOL_LOCAL = $(shell find ../3dparty/smolrtsp/src ../3dparty/smolrtsp-libevent/src -name '*.c')
+SMOLRTSP_LOCAL = $(shell find ../3dparty/smolrtsp/src -name '*.c')
+SMOLLE_LOCAL = $(shell find ../3dparty/smolrtsp-libevent/src -name '*.c')
 FAAC_LOCAL = $(shell find ../3dparty/faac/libfaac -name '*.c')
 
 # Store sources as paths relative to repo root (no leading ./ or ../).
 # This lets us build all objects into a toolchain/ABI-specific OBJDIR without
 # accidentally escaping it via ".." path segments.
 SRC = $(patsubst ./%,src/%,$(SRC_LOCAL))
-SMOL_SRC = $(patsubst ../%,%,$(SMOL_LOCAL))
+SMOLRTSP_SRC = $(patsubst ../%,%,$(SMOLRTSP_LOCAL))
+SMOLLE_SRC = $(patsubst ../%,%,$(SMOLLE_LOCAL))
 FAAC_SRC = $(patsubst ../%,%,$(FAAC_LOCAL))
 
 OBJ = ../divinus
@@ -41,17 +43,25 @@ OBJDIR ?= ../build/$(TOOLCHAIN)-$(FLOATABI)
 FAAC_CACHEDIR ?= ../build/faac/$(TOOLCHAIN)-$(FLOATABI)
 FAAC_LIB = $(FAAC_CACHEDIR)/libfaac.a
 
-DIVINUS_OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC) $(SMOL_SRC))
+# Cache smolrtsp + smolrtsp-libevent separately as static archives.
+SMOLRTSP_CACHEDIR ?= ../build/smolrtsp/$(TOOLCHAIN)-$(FLOATABI)
+SMOLRTSP_LIB = $(SMOLRTSP_CACHEDIR)/libsmolrtsp.a
+SMOLLE_CACHEDIR ?= ../build/smolrtsp-libevent/$(TOOLCHAIN)-$(FLOATABI)
+SMOLLE_LIB = $(SMOLLE_CACHEDIR)/libsmolrtsp-libevent.a
+
+DIVINUS_OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC))
 FAAC_OBJS = $(patsubst %.c,$(FAAC_CACHEDIR)/%.o,$(FAAC_SRC))
+SMOLRTSP_OBJS = $(patsubst %.c,$(SMOLRTSP_CACHEDIR)/%.o,$(SMOLRTSP_SRC))
+SMOLLE_OBJS = $(patsubst %.c,$(SMOLLE_CACHEDIR)/%.o,$(SMOLLE_SRC))
 
 # Default to an optimized release build unless OPT is provided by the caller.
 OPT ?= -O2 -pipe -s
 
-.PHONY: clean distclean faac-clean divinus
+.PHONY: clean distclean faac-clean smol-clean divinus
 divinus: $(OBJ)
 
-$(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB)
-	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(LDLIBS) -o $@
+$(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB) $(SMOLRTSP_LIB) $(SMOLLE_LIB)
+	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LDLIBS) -o $@
 
 $(OBJDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
@@ -69,10 +79,31 @@ $(FAAC_LIB): $(FAAC_OBJS)
 	$(AR) rcs $@ $^
 	$(RANLIB) $@ >/dev/null 2>&1 || true
 
+$(SMOLRTSP_CACHEDIR)/%.o: ../%.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
+
+$(SMOLRTSP_LIB): $(SMOLRTSP_OBJS)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@ >/dev/null 2>&1 || true
+
+$(SMOLLE_CACHEDIR)/%.o: ../%.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
+
+$(SMOLLE_LIB): $(SMOLLE_OBJS)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@ >/dev/null 2>&1 || true
+
 clean:
 	rm -rf $(OBJDIR) $(OBJ)
 
 faac-clean:
 	rm -rf $(FAAC_CACHEDIR)
 
-distclean: clean faac-clean
+smol-clean:
+	rm -rf $(SMOLRTSP_CACHEDIR) $(SMOLLE_CACHEDIR)
+
+distclean: clean faac-clean smol-clean
