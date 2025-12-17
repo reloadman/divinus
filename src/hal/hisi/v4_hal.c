@@ -2,6 +2,9 @@
 
 #include "v4_hal.h"
 
+// For debug prints; avoids adding include dependency here.
+char *errstr(int error);
+
 v4_isp_alg      v4_ae_lib = { .id = 0, .libName = "ae_lib" };
 v4_aud_impl     v4_aud;
 v4_isp_alg      v4_awb_lib = { .id = 0, .libName = "awb_lib" };
@@ -717,14 +720,62 @@ int v4_video_create(char index, hal_vidconfig *config)
     channel.attrib.pic.width = config->width;
     channel.attrib.pic.height = config->height;
 
-    if (ret = v4_venc.fnCreateChannel(index, &channel))
-        return ret;
+    // Debug: dump what we're asking the SDK to create.
+    if (channel.attrib.codec == V4_VENC_CODEC_H264) {
+        HAL_INFO("v4_venc", "CreateChannel ch=%d H264 plus=%d %dx%d fps=%d gop=%d gopMode=%d rateMode=%d bitrate=%d maxBitrate=%d qp=[%d..%d] profile=%u (cfgProfile=%d)\n",
+            index, h264_plus ? 1 : 0, config->width, config->height, config->framerate, config->gop,
+            (int)channel.gop.mode, (int)channel.rate.mode,
+            (int)config->bitrate, (int)MAX(config->bitrate, config->maxBitrate),
+            (int)config->minQual, (int)config->maxQual,
+            channel.attrib.profile, (int)config->profile);
+    } else if (channel.attrib.codec == V4_VENC_CODEC_MJPG) {
+        HAL_INFO("v4_venc", "CreateChannel ch=%d MJPEG %dx%d fps=%d rateMode=%d bitrate=%d maxBitrate=%d quality=%d\n",
+            index, config->width, config->height, config->framerate,
+            (int)channel.rate.mode, config->bitrate, MAX(config->bitrate, config->maxBitrate),
+            config->maxQual);
+    } else if (channel.attrib.codec == V4_VENC_CODEC_H265) {
+        HAL_INFO("v4_venc", "CreateChannel ch=%d H265 %dx%d fps=%d gop=%d gopMode=%d rateMode=%d maxBitrate=%d\n",
+            index, config->width, config->height, config->framerate, config->gop,
+            (int)channel.gop.mode, (int)channel.rate.mode,
+            MAX(config->bitrate, config->maxBitrate));
+    }
+
+    ret = v4_venc.fnCreateChannel(index, &channel);
+    HAL_INFO("v4_venc", "CreateChannel ch=%d -> ret=%#x (%s)\n", index, ret, errstr(ret));
+    if (ret) {
+        // Best-effort fallback for H.264+: try to reduce features until the SDK accepts it.
+        if (h264_plus && channel.attrib.codec == V4_VENC_CODEC_H264) {
+            HAL_WARNING("v4_venc", "H264+ create failed, retrying with NORMALP + VBR\n");
+            memset(&channel, 0, sizeof(channel));
+            channel.attrib.codec = V4_VENC_CODEC_H264;
+            channel.gop.mode = V4_VENC_GOPMODE_NORMALP;
+            channel.gop.normalP.ipQualDelta = config->gop / config->framerate;
+            channel.rate.mode = V4_VENC_RATEMODE_H264VBR;
+            channel.rate.h264Vbr = (v4_venc_rate_h26xbr){ .gop = config->gop,
+                .statTime = 1, .srcFps = config->framerate, .dstFps = config->framerate,
+                .maxBitrate = MAX(config->bitrate, config->maxBitrate) };
+            channel.attrib.maxPic.width = config->width;
+            channel.attrib.maxPic.height = config->height;
+            channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+            channel.attrib.profile = config->profile;
+            channel.attrib.byFrame = 1;
+            channel.attrib.pic.width = config->width;
+            channel.attrib.pic.height = config->height;
+            ret = v4_venc.fnCreateChannel(index, &channel);
+            HAL_INFO("v4_venc", "CreateChannel ch=%d retry -> ret=%#x (%s)\n", index, ret, errstr(ret));
+        }
+        if (ret)
+            return ret;
+    }
 
     {
         int count = -1;
         if (config->codec != HAL_VIDCODEC_JPG && 
-            (ret = v4_venc.fnStartReceivingEx(index, &count)))
+            (ret = v4_venc.fnStartReceivingEx(index, &count))) {
+            HAL_WARNING("v4_venc", "StartReceivingEx ch=%d -> ret=%#x (%s)\n",
+                index, ret, errstr(ret));
             return ret;
+        }
     }
     
     v4_state[index].payload = config->codec;
