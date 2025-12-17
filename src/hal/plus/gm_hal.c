@@ -2,6 +2,9 @@
 
 #include "gm_hal.h"
 
+// Avoid pulling in heavy headers here; we only need errstr() for debug logs.
+char *errstr(int error);
+
 gm_lib_impl gm_lib;
 
 hal_chnstate gm_state[GM_VENC_CHN_NUM] = {0};
@@ -71,7 +74,12 @@ int gm_audio_init(int samplerate)
         config.rate = samplerate;
         config.frmNum = 16;
         config.chnNum = 1;
-        gm_lib.fnSetDeviceConfig(_gm_ain_dev, &config);
+        HAL_INFO("gm_aud", "set_attr AIN rate=%d frmNum=%d chnNum=%d\n",
+            config.rate, config.frmNum, config.chnNum);
+        ret = gm_lib.fnSetDeviceConfig(_gm_ain_dev, &config);
+        HAL_INFO("gm_aud", "set_attr AIN -> ret=%#x (%s)\n", ret, errstr(ret));
+        if (ret != 0)
+            return ret;
     }
 
     _gm_aenc_dev = gm_lib.fnCreateDevice(GM_LIB_DEV_AUDENC);
@@ -80,7 +88,12 @@ int gm_audio_init(int samplerate)
         config.codec = GM_AENC_TYPE_PCM;
         config.bitrate = 32000;
         config.packNumPerFrm = 2048;
-        gm_lib.fnSetDeviceConfig(_gm_aenc_dev, &config);
+        HAL_INFO("gm_aud", "set_attr AENC codec=%d bitrate=%d packNumPerFrm=%d\n",
+            (int)config.codec, config.bitrate, config.packNumPerFrm);
+        ret = gm_lib.fnSetDeviceConfig(_gm_aenc_dev, &config);
+        HAL_INFO("gm_aud", "set_attr AENC -> ret=%#x (%s)\n", ret, errstr(ret));
+        if (ret != 0)
+            return ret;
     }
 
     _gm_aud_fds[0].bind = gm_lib.fnBind(_gm_aud_grp, _gm_ain_dev, _gm_aenc_dev);
@@ -191,12 +204,18 @@ int gm_pipeline_create(char mirror, char flip)
 
     _gm_cap_dev = gm_lib.fnCreateDevice(GM_LIB_DEV_CAPTURE);
     {
+        int ret;
         GM_DECLARE(gm_lib, config, gm_cap_cnf, "gm_cap_attr_t");
         config.channel = 0;
         config.output = GM_CAP_OUT_SCALER1;
         config.motionDataOn = _gm_motion_on ? 1 : 0;
 
-        gm_lib.fnSetDeviceConfig(_gm_cap_dev, &config);
+        HAL_INFO("gm_cap", "set_attr CAP channel=%d output=%d motionDataOn=%d\n",
+            config.channel, (int)config.output, config.motionDataOn);
+        ret = gm_lib.fnSetDeviceConfig(_gm_cap_dev, &config);
+        HAL_INFO("gm_cap", "set_attr CAP -> ret=%#x (%s)\n", ret, errstr(ret));
+        if (ret != 0)
+            return ret;
     }
 
     return EXIT_SUCCESS;
