@@ -2,7 +2,9 @@
 
 #include "v4_hal.h"
 #include <ctype.h>
+#include <limits.h>
 #include <stdbool.h>
+#include <strings.h>
 
 // For debug prints; avoids adding include dependency here.
 char *errstr(int error);
@@ -233,6 +235,9 @@ typedef int HI_BOOL;
 typedef unsigned char HI_U8;
 typedef unsigned short HI_U16;
 typedef unsigned int HI_U32;
+typedef signed char HI_S8;
+typedef short HI_S16;
+typedef int HI_S32;
 
 #ifndef HI_TRUE
 #define HI_TRUE 1
@@ -423,6 +428,222 @@ typedef struct {
     ISP_SATURATION_AUTO_S stAuto;
 } ISP_SATURATION_ATTR_S;
 
+// ---- DRC ----
+#ifndef HI_ISP_DRC_CC_NODE_NUM
+#define HI_ISP_DRC_CC_NODE_NUM 33
+#endif
+#ifndef HI_ISP_DRC_TM_NODE_NUM
+#define HI_ISP_DRC_TM_NODE_NUM 200
+#endif
+#ifndef HI_ISP_DRC_CUBIC_POINT_NUM
+#define HI_ISP_DRC_CUBIC_POINT_NUM 5
+#endif
+
+typedef struct {
+    HI_U16 u16X;
+    HI_U16 u16Y;
+    HI_U16 u16Slope;
+} ISP_DRC_CUBIC_POINT_ATTR_S;
+
+typedef struct {
+    HI_U8 u8Asymmetry;
+    HI_U8 u8SecondPole;
+    HI_U8 u8Stretch;
+    HI_U8 u8Compress;
+} ISP_DRC_ASYMMETRY_CURVE_ATTR_S;
+
+typedef struct {
+    HI_U16 u16Strength;
+} ISP_DRC_MANUAL_ATTR_S;
+
+typedef struct {
+    HI_U16 u16Strength;
+    HI_U16 u16StrengthMax;
+    HI_U16 u16StrengthMin;
+} ISP_DRC_AUTO_ATTR_S;
+
+typedef enum {
+    DRC_CURVE_ASYMMETRY = 0x0,
+    DRC_CURVE_CUBIC,
+    DRC_CURVE_USER,
+    DRC_CURVE_BUTT
+} ISP_DRC_CURVE_SELECT_E;
+
+typedef struct {
+    HI_BOOL bEnable;
+    ISP_DRC_CURVE_SELECT_E enCurveSelect;
+    HI_U8  u8PDStrength;
+    HI_U8  u8LocalMixingBrightMax;
+    HI_U8  u8LocalMixingBrightMin;
+    HI_U8  u8LocalMixingBrightThr;
+    HI_S8  s8LocalMixingBrightSlo;
+    HI_U8  u8LocalMixingDarkMax;
+    HI_U8  u8LocalMixingDarkMin;
+    HI_U8  u8LocalMixingDarkThr;
+    HI_S8  s8LocalMixingDarkSlo;
+
+    HI_U8  u8DetailBrightStr;
+    HI_U8  u8DetailDarkStr;
+    HI_U8  u8DetailBrightStep;
+    HI_U8  u8DetailDarkStep;
+
+    HI_U8  u8BrightGainLmt;
+    HI_U8  u8BrightGainLmtStep;
+    HI_U8  u8DarkGainLmtY;
+    HI_U8  u8DarkGainLmtC;
+    HI_U16 au16ColorCorrectionLut[HI_ISP_DRC_CC_NODE_NUM];
+    HI_U16 au16ToneMappingValue[HI_ISP_DRC_TM_NODE_NUM];
+
+    HI_U8  u8FltScaleCoarse;
+    HI_U8  u8FltScaleFine;
+    HI_U8  u8ContrastControl;
+    HI_S8  s8DetailAdjustFactor;
+
+    HI_U8  u8SpatialFltCoef;
+    HI_U8  u8RangeFltCoef;
+    HI_U8  u8RangeAdaMax;
+
+    HI_U8  u8GradRevMax;
+    HI_U8  u8GradRevThr;
+
+    HI_U8  u8DpDetectRangeRatio;
+    HI_U8  u8DpDetectThrSlo;
+    HI_U16 u16DpDetectThrMin;
+
+    ISP_OP_TYPE_E enOpType;
+    ISP_DRC_MANUAL_ATTR_S stManual;
+    ISP_DRC_AUTO_ATTR_S   stAuto;
+    ISP_DRC_CUBIC_POINT_ATTR_S astCubicPoint[HI_ISP_DRC_CUBIC_POINT_NUM];
+    ISP_DRC_ASYMMETRY_CURVE_ATTR_S stAsymmetryCurve;
+} ISP_DRC_ATTR_S;
+
+// ---- NR ----
+#ifndef ISP_BAYER_CHN_NUM
+#define ISP_BAYER_CHN_NUM 4
+#endif
+#ifndef HI_ISP_BAYERNR_LUT_LENGTH
+#define HI_ISP_BAYERNR_LUT_LENGTH 33
+#endif
+#ifndef WDR_MAX_FRAME_NUM
+#define WDR_MAX_FRAME_NUM 4
+#endif
+
+typedef struct {
+    HI_U8   au8ChromaStr[ISP_BAYER_CHN_NUM];
+    HI_U8   u8FineStr;
+    HI_U16  u16CoringWgt;
+    HI_U16  au16CoarseStr[ISP_BAYER_CHN_NUM];
+} ISP_NR_MANUAL_ATTR_S;
+
+typedef struct {
+    HI_U8   au8ChromaStr[ISP_BAYER_CHN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8   au8FineStr[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  au16CoringWgt[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16  au16CoarseStr[ISP_BAYER_CHN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+} ISP_NR_AUTO_ATTR_S;
+
+typedef struct {
+    HI_U8    au8WDRFrameStr[WDR_MAX_FRAME_NUM];
+    HI_U8    au8FusionFrameStr[WDR_MAX_FRAME_NUM];
+} ISP_NR_WDR_ATTR_S;
+
+typedef struct {
+    HI_BOOL  bEnable;
+    HI_BOOL  bLowPowerEnable;
+    HI_BOOL  bNrLscEnable;
+    HI_U8    u8NrLscRatio;
+    HI_U8    u8BnrLscMaxGain;
+    HI_U16   u16BnrLscCmpStrength;
+    HI_U16   au16CoringRatio[HI_ISP_BAYERNR_LUT_LENGTH];
+
+    ISP_OP_TYPE_E enOpType;
+    ISP_NR_AUTO_ATTR_S stAuto;
+    ISP_NR_MANUAL_ATTR_S stManual;
+    ISP_NR_WDR_ATTR_S  stWdr;
+} ISP_NR_ATTR_S;
+
+// ---- Gamma ----
+#ifndef GAMMA_NODE_NUM
+#define GAMMA_NODE_NUM 1025
+#endif
+
+typedef enum {
+    ISP_GAMMA_CURVE_DEFAULT = 0x0,
+    ISP_GAMMA_CURVE_SRGB,
+    ISP_GAMMA_CURVE_HDR,
+    ISP_GAMMA_CURVE_USER_DEFINE,
+    ISP_GAMMA_CURVE_BUTT
+} ISP_GAMMA_CURVE_TYPE_E;
+
+typedef struct {
+    HI_BOOL   bEnable;
+    HI_U16    u16Table[GAMMA_NODE_NUM];
+    ISP_GAMMA_CURVE_TYPE_E enCurveType;
+} ISP_GAMMA_ATTR_S;
+
+// ---- Sharpen ----
+#ifndef ISP_SHARPEN_LUMA_NUM
+#define ISP_SHARPEN_LUMA_NUM 32
+#endif
+#ifndef ISP_SHARPEN_GAIN_NUM
+#define ISP_SHARPEN_GAIN_NUM 32
+#endif
+
+typedef struct {
+    HI_U8  au8LumaWgt[ISP_SHARPEN_LUMA_NUM];
+    HI_U16 au16TextureStr[ISP_SHARPEN_GAIN_NUM];
+    HI_U16 au16EdgeStr[ISP_SHARPEN_GAIN_NUM];
+    HI_U16 u16TextureFreq;
+    HI_U16 u16EdgeFreq;
+    HI_U8  u8OverShoot;
+    HI_U8  u8UnderShoot;
+    HI_U8  u8ShootSupStr;
+    HI_U8  u8ShootSupAdj;
+    HI_U8  u8DetailCtrl;
+    HI_U8  u8DetailCtrlThr;
+    HI_U8  u8EdgeFiltStr;
+    HI_U8  u8EdgeFiltMaxCap;
+    HI_U8  u8RGain;
+    HI_U8  u8GGain;
+    HI_U8  u8BGain;
+    HI_U8  u8SkinGain;
+    HI_U16 u16MaxSharpGain;
+    HI_U8  u8WeakDetailGain;
+} ISP_SHARPEN_MANUAL_ATTR_S;
+
+typedef struct {
+    HI_U8  au8LumaWgt[ISP_SHARPEN_LUMA_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16TextureStr[ISP_SHARPEN_GAIN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16EdgeStr[ISP_SHARPEN_GAIN_NUM][ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16TextureFreq[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16EdgeFreq[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8OverShoot[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8UnderShoot[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8ShootSupStr[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8ShootSupAdj[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8DetailCtrl[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8DetailCtrlThr[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8EdgeFiltStr[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8EdgeFiltMaxCap[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8RGain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8GGain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8BGain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8SkinGain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U16 au16MaxSharpGain[ISP_AUTO_ISO_STRENGTH_NUM];
+    HI_U8  au8WeakDetailGain[ISP_AUTO_ISO_STRENGTH_NUM];
+} ISP_SHARPEN_AUTO_ATTR_S;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_U8 u8SkinUmin;
+    HI_U8 u8SkinVmin;
+    HI_U8 u8SkinUmax;
+    HI_U8 u8SkinVmax;
+    ISP_OP_TYPE_E enOpType;
+    ISP_SHARPEN_MANUAL_ATTR_S stManual;
+    ISP_SHARPEN_AUTO_ATTR_S   stAuto;
+} ISP_SHARPEN_ATTR_S;
+
 static int v4_iq_parse_csv_u32(const char *s, HI_U32 *out, int max) {
     int n = 0;
     const char *p = s;
@@ -437,6 +658,146 @@ static int v4_iq_parse_csv_u32(const char *s, HI_U32 *out, int max) {
         while (*p && (isspace((unsigned char)*p) || *p == ',')) p++;
     }
     return n;
+}
+
+static const char *v4_iq_skip_ws(const char *p, const char *end) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r'))
+        p++;
+    return p;
+}
+
+static const char *v4_iq_line_end(const char *p, const char *end) {
+    while (p < end && *p && *p != '\n')
+        p++;
+    return p;
+}
+
+static int v4_iq_parse_csv_u32_into(const char *s, HI_U32 *out, int max, int *idx) {
+    if (!s || !out || !idx) return 0;
+    HI_U32 tmp[512];
+    int n = v4_iq_parse_csv_u32(s, tmp, (int)(sizeof(tmp) / sizeof(tmp[0])));
+    int wrote = 0;
+    for (int i = 0; i < n && *idx < max; i++) {
+        out[(*idx)++] = tmp[i];
+        wrote++;
+    }
+    return wrote;
+}
+
+// Parse "key = \\" multiline lists into an array. Handles '\' line continuations.
+static int v4_iq_parse_multiline_u32(
+    struct IniConfig *ini, const char *section, const char *key,
+    HI_U32 *out, int max) {
+    if (!ini || !ini->str || !section || !key || !out || max <= 0)
+        return 0;
+
+    int start_pos = 0, end_pos = 0;
+    if (section_pos(ini, section, &start_pos, &end_pos) != CONFIG_OK)
+        return 0;
+    const char *base = ini->str;
+    const char *p = base + start_pos;
+    const char *end = (end_pos >= 0) ? (base + end_pos) : (base + strlen(base));
+
+    int idx = 0;
+    while (p < end) {
+        const char *ls = p;
+        const char *le = v4_iq_line_end(ls, end);
+        p = (le < end) ? (le + 1) : le;
+
+        const char *q = v4_iq_skip_ws(ls, le);
+        if (q >= le) continue;
+        if (*q == ';' || *q == '#') continue;
+
+        // Match key at line start (case-insensitive)
+        size_t klen = strlen(key);
+        if ((size_t)(le - q) < klen) continue;
+        if (strncasecmp(q, key, klen) != 0) continue;
+        const char *r = q + klen;
+        r = v4_iq_skip_ws(r, le);
+        if (r >= le || (*r != '=' && *r != ':')) continue;
+        r++;
+        r = v4_iq_skip_ws(r, le);
+
+        bool cont = false;
+        // Parse this line's numbers (if any)
+        {
+            const char *value_end = le;
+            // stop at comment
+            for (const char *c = r; c < le; c++) {
+                if (*c == ';' || *c == '#') { value_end = c; break; }
+            }
+            // trim right
+            while (value_end > r && isspace((unsigned char)value_end[-1]))
+                value_end--;
+            if (value_end > r && value_end[-1] == '\\') {
+                cont = true;
+                value_end--;
+                while (value_end > r && isspace((unsigned char)value_end[-1]))
+                    value_end--;
+            }
+
+            // strip quotes for this fragment
+            if (value_end - r >= 2 && *r == '"' && value_end[-1] == '"') {
+                r++;
+                value_end--;
+            }
+
+            // special-case: line contains only "\" (i.e. begins continuation)
+            if ((value_end - r) == 1 && *r == '\\') {
+                cont = true;
+            } else if (value_end > r) {
+                char tmp[8192];
+                size_t n = (size_t)(value_end - r);
+                if (n >= sizeof(tmp)) n = sizeof(tmp) - 1;
+                memcpy(tmp, r, n);
+                tmp[n] = '\0';
+                v4_iq_parse_csv_u32_into(tmp, out, max, &idx);
+            }
+        }
+
+        // Continuation lines: consume until a line without trailing '\'
+        while (cont && p < end && idx < max) {
+            const char *nls = p;
+            const char *nle = v4_iq_line_end(nls, end);
+            p = (nle < end) ? (nle + 1) : nle;
+
+            const char *nr = v4_iq_skip_ws(nls, nle);
+            if (nr >= nle) { cont = false; break; }
+            if (*nr == ';' || *nr == '#') continue;
+
+            const char *value_end = nle;
+            for (const char *c = nr; c < nle; c++) {
+                if (*c == ';' || *c == '#') { value_end = c; break; }
+            }
+            while (value_end > nr && isspace((unsigned char)value_end[-1]))
+                value_end--;
+            cont = false;
+            if (value_end > nr && value_end[-1] == '\\') {
+                cont = true;
+                value_end--;
+                while (value_end > nr && isspace((unsigned char)value_end[-1]))
+                    value_end--;
+            }
+
+            if (value_end - nr >= 2 && *nr == '"' && value_end[-1] == '"') {
+                nr++;
+                value_end--;
+            }
+
+            if (value_end > nr) {
+                char tmp[8192];
+                size_t n = (size_t)(value_end - nr);
+                if (n >= sizeof(tmp)) n = sizeof(tmp) - 1;
+                memcpy(tmp, nr, n);
+                tmp[n] = '\0';
+                v4_iq_parse_csv_u32_into(tmp, out, max, &idx);
+            }
+        }
+
+        break; // key processed
+    }
+
+    return idx;
 }
 
 static int v4_iq_parse_csv_u16(const char *s, HI_U16 *out, int max) {
@@ -459,8 +820,10 @@ static int v4_iq_parse_csv_u8(const char *s, HI_U8 *out, int max) {
 }
 
 static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
-    if (!v4_isp.fnGetExposureAttr || !v4_isp.fnSetExposureAttr)
+    if (!v4_isp.fnGetExposureAttr || !v4_isp.fnSetExposureAttr) {
+        HAL_INFO("v4_iq", "AE: API not available, skipping\n");
         return EXIT_SUCCESS;
+    }
 
     ISP_EXPOSURE_ATTR_S exp;
     memset(&exp, 0, sizeof(exp));
@@ -487,14 +850,19 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         exp.stAuto.stAEDelayAttr.u16WhiteDelayFrame = (HI_U16)val;
 
     ret = v4_isp.fnSetExposureAttr(pipe, &exp);
-    if (ret)
+    if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetExposureAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "AE: applied\n");
+    }
     return ret;
 }
 
 static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
-    if (!v4_isp.fnGetAERouteAttrEx || !v4_isp.fnSetAERouteAttrEx)
+    if (!v4_isp.fnGetAERouteAttrEx || !v4_isp.fnSetAERouteAttrEx) {
+        HAL_INFO("v4_iq", "AE route-ex: API not available, skipping\n");
         return EXIT_SUCCESS;
+    }
 
     ISP_AE_ROUTE_EX_S route;
     memset(&route, 0, sizeof(route));
@@ -505,8 +873,10 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     }
 
     int total = 0;
-    if (parse_int(ini, "static_aerouteex", "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK)
+    if (parse_int(ini, "static_aerouteex", "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE route-ex: no static_aerouteex/TotalNum, skipping\n");
         return EXIT_SUCCESS;
+    }
 
     char buf[1024];
     HI_U32 ints[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
@@ -532,14 +902,19 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     }
 
     ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
-    if (ret)
+    if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
+    }
     return ret;
 }
 
 static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
-    if (!v4_isp.fnGetCCMAttr || !v4_isp.fnSetCCMAttr)
+    if (!v4_isp.fnGetCCMAttr || !v4_isp.fnSetCCMAttr) {
+        HAL_INFO("v4_iq", "CCM: API not available, skipping\n");
         return EXIT_SUCCESS;
+    }
 
     ISP_COLORMATRIX_ATTR_S ccm;
     memset(&ccm, 0, sizeof(ccm));
@@ -583,14 +958,19 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     }
 
     ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
-    if (ret)
+    if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "CCM: applied\n");
+    }
     return ret;
 }
 
 static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
-    if (!v4_isp.fnGetSaturationAttr || !v4_isp.fnSetSaturationAttr)
+    if (!v4_isp.fnGetSaturationAttr || !v4_isp.fnSetSaturationAttr) {
+        HAL_INFO("v4_iq", "Saturation: API not available, skipping\n");
         return EXIT_SUCCESS;
+    }
 
     ISP_SATURATION_ATTR_S sat;
     memset(&sat, 0, sizeof(sat));
@@ -606,8 +986,257 @@ static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
         v4_iq_parse_csv_u8(buf, sat.stAuto.au8Sat, ISP_AUTO_ISO_STRENGTH_NUM);
 
     ret = v4_isp.fnSetSaturationAttr(pipe, &sat);
-    if (ret)
+    if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetSaturationAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "Saturation: applied\n");
+    }
+    return ret;
+}
+
+static int v4_iq_apply_static_drc(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetDRCAttr || !v4_isp.fnSetDRCAttr) {
+        HAL_INFO("v4_iq", "DRC: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_drc", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "DRC: no [static_drc] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ISP_DRC_ATTR_S drc;
+    memset(&drc, 0, sizeof(drc));
+    int ret = v4_isp.fnGetDRCAttr(pipe, &drc);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetDRCAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_drc", "Enable", 0, 1, &val) == CONFIG_OK)
+        drc.bEnable = (HI_BOOL)val;
+    if (parse_int(ini, "static_drc", "CurveSelect", 0, 2, &val) == CONFIG_OK)
+        drc.enCurveSelect = (ISP_DRC_CURVE_SELECT_E)val;
+    if (parse_int(ini, "static_drc", "DRCOpType", 0, 1, &val) == CONFIG_OK)
+        drc.enOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_drc", "DRCAutoStr", 0, INT_MAX, &val) == CONFIG_OK)
+        drc.stAuto.u16Strength = (HI_U16)val;
+    if (parse_int(ini, "static_drc", "DRCAutoStrMin", 0, INT_MAX, &val) == CONFIG_OK)
+        drc.stAuto.u16StrengthMin = (HI_U16)val;
+    if (parse_int(ini, "static_drc", "DRCAutoStrMax", 0, INT_MAX, &val) == CONFIG_OK)
+        drc.stAuto.u16StrengthMax = (HI_U16)val;
+
+    // User curve (optional; 200 nodes). This INI often provides it as a multiline list.
+    {
+        HI_U32 tmp[HI_ISP_DRC_TM_NODE_NUM];
+        memset(tmp, 0, sizeof(tmp));
+        int n = v4_iq_parse_multiline_u32(ini, "static_drc", "DRCToneMappingValue", tmp, HI_ISP_DRC_TM_NODE_NUM);
+        if (n > 0) {
+            for (int i = 0; i < n && i < HI_ISP_DRC_TM_NODE_NUM; i++)
+                drc.au16ToneMappingValue[i] = (HI_U16)tmp[i];
+        }
+    }
+
+    ret = v4_isp.fnSetDRCAttr(pipe, &drc);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetDRCAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "DRC: applied\n");
+    }
+    return ret;
+}
+
+static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetNRAttr || !v4_isp.fnSetNRAttr) {
+        HAL_INFO("v4_iq", "NR: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_nr", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "NR: no [static_nr] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ISP_NR_ATTR_S nr;
+    memset(&nr, 0, sizeof(nr));
+    int ret = v4_isp.fnGetNRAttr(pipe, &nr);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetNRAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_nr", "Enable", 0, 1, &val) == CONFIG_OK)
+        nr.bEnable = (HI_BOOL)val;
+    nr.enOpType = OP_TYPE_AUTO;
+
+    char buf[512];
+    if (parse_param_value(ini, "static_nr", "FineStr", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, nr.stAuto.au8FineStr, ISP_AUTO_ISO_STRENGTH_NUM);
+    {
+        HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+        if (parse_param_value(ini, "static_nr", "CoringWgt", buf) == CONFIG_OK) {
+            int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+            for (int i = 0; i < n; i++)
+                nr.stAuto.au16CoringWgt[i] = (HI_U16)tmp[i];
+        }
+    }
+
+    ret = v4_isp.fnSetNRAttr(pipe, &nr);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetNRAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "NR: applied\n");
+    }
+    return ret;
+}
+
+static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetGammaAttr || !v4_isp.fnSetGammaAttr) {
+        HAL_INFO("v4_iq", "Gamma: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ISP_GAMMA_ATTR_S gamma;
+    memset(&gamma, 0, sizeof(gamma));
+    int ret = v4_isp.fnGetGammaAttr(pipe, &gamma);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetGammaAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    // This IQ format uses [dynamic_gamma] with Table_0..; apply Table_0 as a user-defined gamma curve at init.
+    HI_U32 tmp[GAMMA_NODE_NUM];
+    memset(tmp, 0, sizeof(tmp));
+    int n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", "Table_0", tmp, GAMMA_NODE_NUM);
+    if (n <= 0) {
+        // Some IQ files may have a static section.
+        n = v4_iq_parse_multiline_u32(ini, "static_gamma", "Table", tmp, GAMMA_NODE_NUM);
+    }
+    if (n > 0) {
+        gamma.bEnable = HI_TRUE;
+        gamma.enCurveType = ISP_GAMMA_CURVE_USER_DEFINE;
+        for (int i = 0; i < n && i < GAMMA_NODE_NUM; i++) {
+            HI_U32 v = tmp[i];
+            if (v > 4095) v = 4095;
+            gamma.u16Table[i] = (HI_U16)v;
+        }
+        ret = v4_isp.fnSetGammaAttr(pipe, &gamma);
+        if (ret) {
+            HAL_WARNING("v4_iq", "HI_MPI_ISP_SetGammaAttr failed with %#x\n", ret);
+        } else {
+            HAL_INFO("v4_iq", "Gamma: applied (%d nodes)\n", n);
+        }
+        return ret;
+    }
+
+    HAL_INFO("v4_iq", "Gamma: no table found, skipping\n");
+    return EXIT_SUCCESS;
+}
+
+static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetIspSharpenAttr || !v4_isp.fnSetIspSharpenAttr) {
+        HAL_INFO("v4_iq", "Sharpen: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_sharpen", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "Sharpen: no [static_sharpen] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ISP_SHARPEN_ATTR_S shp;
+    memset(&shp, 0, sizeof(shp));
+    int ret = v4_isp.fnGetIspSharpenAttr(pipe, &shp);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetIspSharpenAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_sharpen", "Enable", 0, 1, &val) == CONFIG_OK)
+        shp.bEnable = (HI_BOOL)val;
+    shp.enOpType = OP_TYPE_AUTO;
+
+    char buf[1024];
+    // Auto luma weights: AutoLumaWgt_0..31 (each has 16 values)
+    for (int i = 0; i < ISP_SHARPEN_LUMA_NUM; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "AutoLumaWgt_%d", i);
+        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK)
+            v4_iq_parse_csv_u8(buf, shp.stAuto.au8LumaWgt[i], ISP_AUTO_ISO_STRENGTH_NUM);
+    }
+
+    // Auto texture/edge strength: AutoTextureStr_0..31, AutoEdgeStr_0..31
+    for (int i = 0; i < ISP_SHARPEN_GAIN_NUM; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "AutoTextureStr_%d", i);
+        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+            HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+            int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+            for (int j = 0; j < n; j++)
+                shp.stAuto.au16TextureStr[i][j] = (HI_U16)tmp[j];
+        }
+        snprintf(key, sizeof(key), "AutoEdgeStr_%d", i);
+        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+            HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+            int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+            for (int j = 0; j < n; j++)
+                shp.stAuto.au16EdgeStr[i][j] = (HI_U16)tmp[j];
+        }
+    }
+
+    // Per-ISO scalars
+    if (parse_param_value(ini, "static_sharpen", "AutoTextureFreq", buf) == CONFIG_OK) {
+        HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int j = 0; j < n; j++)
+            shp.stAuto.au16TextureFreq[j] = (HI_U16)tmp[j];
+    }
+    if (parse_param_value(ini, "static_sharpen", "AutoEdgeFreq", buf) == CONFIG_OK) {
+        HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int j = 0; j < n; j++)
+            shp.stAuto.au16EdgeFreq[j] = (HI_U16)tmp[j];
+    }
+    if (parse_param_value(ini, "static_sharpen", "AutoOverShoot", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8OverShoot, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoUnderShoot", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8UnderShoot, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoShootSupStr", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8ShootSupStr, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoShootSupAdj", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8ShootSupAdj, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoDetailCtrl", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8DetailCtrl, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoDetailCtrlThr", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8DetailCtrlThr, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoEdgeFiltStr", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8EdgeFiltStr, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoEdgeFiltMaxCap", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8EdgeFiltMaxCap, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoRGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8RGain, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoGGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8GGain, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoBGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8BGain, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoSkinGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, shp.stAuto.au8SkinGain, ISP_AUTO_ISO_STRENGTH_NUM);
+    if (parse_param_value(ini, "static_sharpen", "AutoMaxSharpGain", buf) == CONFIG_OK) {
+        HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+        int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
+        for (int j = 0; j < n; j++)
+            shp.stAuto.au16MaxSharpGain[j] = (HI_U16)tmp[j];
+    }
+
+    ret = v4_isp.fnSetIspSharpenAttr(pipe, &shp);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetIspSharpenAttr failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "Sharpen: applied\n");
+    }
     return ret;
 }
 
@@ -628,11 +1257,19 @@ static int v4_iq_apply(const char *path, int pipe) {
 
     // Respect module_state toggles when present; default to "apply" if section/key missing.
     bool doStaticAE = true, doStaticCCM = true, doStaticSat = true;
+    bool doStaticDRC = true, doStaticNR = true, doStaticSharpen = true;
+    bool doGamma = true;
     parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
     parse_bool(&ini, "module_state", "bStaticCCM", &doStaticCCM);
     parse_bool(&ini, "module_state", "bStaticSaturation", &doStaticSat);
+    parse_bool(&ini, "module_state", "bStaticDRC", &doStaticDRC);
+    parse_bool(&ini, "module_state", "bStaticNr", &doStaticNR);
+    parse_bool(&ini, "module_state", "bStaticSharpen", &doStaticSharpen);
+    // Gamma in this IQ is described under "dynamic_gamma"
+    parse_bool(&ini, "module_state", "bDynamicGamma", &doGamma);
 
     int ret = EXIT_SUCCESS;
+    HAL_INFO("v4_iq", "Loading IQ config '%s'\n", path);
     if (doStaticAE) {
         int r = v4_iq_apply_static_ae(&ini, pipe);
         if (r) ret = r;
@@ -647,8 +1284,26 @@ static int v4_iq_apply(const char *path, int pipe) {
         int r = v4_iq_apply_static_saturation(&ini, pipe);
         if (r) ret = r;
     }
+    if (doStaticDRC) {
+        int r = v4_iq_apply_static_drc(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticNR) {
+        int r = v4_iq_apply_static_nr(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticSharpen) {
+        int r = v4_iq_apply_static_sharpen(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doGamma) {
+        int r = v4_iq_apply_gamma(&ini, pipe);
+        if (r) ret = r;
+    }
 
     free(ini.str);
+    if (ret) HAL_WARNING("v4_iq", "IQ apply finished with error %#x\n", ret);
+    else HAL_INFO("v4_iq", "IQ apply finished OK\n");
     return ret;
 }
 
@@ -755,7 +1410,9 @@ int v4_pipeline_create(const char *iqConfig)
         return ret;
 
     // Apply optional IQ/scene profile before ISP Run thread starts.
-    v4_iq_apply(iqConfig, _v4_vi_pipe);
+    ret = v4_iq_apply(iqConfig, _v4_vi_pipe);
+    if (ret)
+        HAL_WARNING("v4_iq", "IQ application returned %#x (continuing)\n", ret);
     
     {
         v4_vpss_grp group;

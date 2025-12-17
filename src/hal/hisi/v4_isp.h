@@ -56,6 +56,14 @@ typedef struct {
     int (*fnSetCCMAttr)(int pipe, const void *attr);
     int (*fnGetSaturationAttr)(int pipe, void *attr);
     int (*fnSetSaturationAttr)(int pipe, const void *attr);
+    int (*fnGetDRCAttr)(int pipe, void *attr);
+    int (*fnSetDRCAttr)(int pipe, const void *attr);
+    int (*fnGetNRAttr)(int pipe, void *attr);
+    int (*fnSetNRAttr)(int pipe, const void *attr);
+    int (*fnGetGammaAttr)(int pipe, void *attr);
+    int (*fnSetGammaAttr)(int pipe, const void *attr);
+    int (*fnGetIspSharpenAttr)(int pipe, void *attr);
+    int (*fnSetIspSharpenAttr)(int pipe, const void *attr);
 } v4_isp_impl;
 
 static int v4_isp_load(v4_isp_impl *isp_lib) {
@@ -191,6 +199,34 @@ loaded:
     sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetSaturationAttr") : NULL;
     if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetSaturationAttr");
     isp_lib->fnSetSaturationAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetDRCAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetDRCAttr");
+    isp_lib->fnGetDRCAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetDRCAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetDRCAttr");
+    isp_lib->fnSetDRCAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetNRAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetNRAttr");
+    isp_lib->fnGetNRAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetNRAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetNRAttr");
+    isp_lib->fnSetNRAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetGammaAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetGammaAttr");
+    isp_lib->fnGetGammaAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetGammaAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetGammaAttr");
+    isp_lib->fnSetGammaAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetIspSharpenAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetIspSharpenAttr");
+    isp_lib->fnGetIspSharpenAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetIspSharpenAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetIspSharpenAttr");
+    isp_lib->fnSetIspSharpenAttr = (int(*)(int, const void*))sym;
 
     return EXIT_SUCCESS;
 }
