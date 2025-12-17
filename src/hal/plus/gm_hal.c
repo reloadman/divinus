@@ -18,7 +18,10 @@ void* _gm_venc_dev[GM_VENC_CHN_NUM];
 int   _gm_venc_sz[GM_VENC_CHN_NUM] = {0};
 
 // Enable capture motion metadata when H.264+ is requested.
+// 0 = disabled/unsupported, 1 = enabled
 static char _gm_motion_on = 0;
+// -1 = unknown, 0 = unsupported, 1 = supported
+static signed char _gm_motion_supported = -1;
 
 static inline int gm_clamp_int(int v, int lo, int hi)
 {
@@ -276,7 +279,10 @@ int gm_video_create(char index, hal_vidconfig *config)
         default: HAL_ERROR("gm_venc", "Video encoder does not support this mode!");
     }
 
-    if (h264_plus && !_gm_motion_on) {
+    // On some GK/GM SDKs, trying to enable motion metadata can fail (NOT_SUPPORT) and may
+    // interfere with subsequent configuration attempts. Only try when we actually benefit
+    // from motion metadata (non-CBR modes), and probe support only once.
+    if (h264_plus && config->mode != HAL_VIDMODE_CBR && !_gm_motion_on && _gm_motion_supported != 0) {
         // Try to enable capture motion metadata at runtime.
         // Some GK/GM SDK builds return positive error codes (e.g. 0xa0088008),
         // so treat any non-zero as failure and do NOT refresh the group.
@@ -287,9 +293,11 @@ int gm_video_create(char index, hal_vidconfig *config)
         ret = gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap);
         if (ret == 0) {
             _gm_motion_on = 1;
+            _gm_motion_supported = 1;
             gm_lib.fnRefreshGroup(_gm_cap_grp);
         } else {
             _gm_motion_on = 0;
+            _gm_motion_supported = 0;
         }
     }
 
