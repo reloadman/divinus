@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <strings.h>
 #include <pthread.h>
+#include "night.h"
 
 // For debug prints; avoids adding include dependency here.
 char *errstr(int error);
@@ -905,6 +906,58 @@ typedef struct {
     ISP_SATURATION_AUTO_S stAuto;
 } ISP_SATURATION_ATTR_S;
 
+// ---- Statistics config (for AE weight table) ----
+#ifndef AE_ZONE_ROW
+#define AE_ZONE_ROW 15
+#endif
+#ifndef AE_ZONE_COLUMN
+#define AE_ZONE_COLUMN 17
+#endif
+
+typedef int ISP_AE_SWITCH_E;
+typedef int ISP_AE_FOUR_PLANE_MODE_E;
+typedef int ISP_AE_HIST_SKIP_E;
+typedef int ISP_AE_HIST_OFFSET_X_E;
+typedef int ISP_AE_HIST_OFFSET_Y_E;
+typedef int ISP_AE_STAT_MODE_E;
+
+typedef struct {
+    ISP_AE_HIST_SKIP_E enHistSkipX;
+    ISP_AE_HIST_SKIP_E enHistSkipY;
+    ISP_AE_HIST_OFFSET_X_E enHistOffsetX;
+    ISP_AE_HIST_OFFSET_Y_E enHistOffsetY;
+} ISP_AE_HIST_CONFIG_S;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_U16  u16X;
+    HI_U16  u16Y;
+    HI_U16  u16W;
+    HI_U16  u16H;
+} ISP_AE_CROP_S;
+
+typedef struct {
+    ISP_AE_SWITCH_E enAESwitch;
+    ISP_AE_HIST_CONFIG_S stHistConfig;
+    ISP_AE_FOUR_PLANE_MODE_E enFourPlaneMode;
+    ISP_AE_STAT_MODE_E enHistMode;
+    ISP_AE_STAT_MODE_E enAverMode;
+    ISP_AE_STAT_MODE_E enMaxGainMode;
+    ISP_AE_CROP_S stCrop;
+    HI_U8 au8Weight[AE_ZONE_ROW][AE_ZONE_COLUMN];
+} ISP_AE_STATISTICS_CFG_S;
+
+typedef union {
+    HI_U64 u64Key;
+} ISP_STATISTICS_CTRL_U;
+
+typedef struct {
+    ISP_STATISTICS_CTRL_U unKey;
+    ISP_AE_STATISTICS_CFG_S stAECfg;
+    // Opaque tail: WB + Focus configs (we preserve bytes via Get/Set; size just needs to be >= real)
+    HI_U8 _tail[4096];
+} ISP_STATISTICS_CFG_S;
+
 // Minimal ModuleControl union (we only need u64Key bitmask).
 // In Hi/GK SDK, bit 8 is bitBypassDRC.
 typedef union {
@@ -1406,6 +1459,16 @@ typedef struct {
     v4_iq_dyn_dehaze_cfg dehaze;
     v4_iq_dyn_linear_drc_cfg linear_drc;
 
+    // all_param hysteresis for ISO-driven profile switching
+    HI_U32 upFrameIso;
+    HI_U32 downFrameIso;
+
+    // 3DNR (VPSS NRX) day/ir profiles
+    v4_iq_3dnr_cfg nr3d_day;
+    v4_iq_3dnr_cfg nr3d_ir;
+    int last_nr3d_idx;
+    HI_BOOL last_nr3d_is_ir;
+
     HI_BOOL have_last;
     HI_U8  last_dehaze_strength;
     v4_iq_dyn_drc_sig last_drc;
@@ -1441,6 +1504,302 @@ static inline HI_S32 v4_iq_dyn_interp_s32(HI_U32 x, const HI_U32 *xp, const HI_S
         }
     }
     return yp[n - 1];
+}
+
+static int v4_iq_parse_multiline_str(
+    struct IniConfig *ini, const char *section, const char *key,
+    char *out, size_t out_sz) {
+    if (!ini || !ini->str || !section || !key || !out || out_sz == 0)
+        return 0;
+    out[0] = '\0';
+
+    int start_pos = 0, end_pos = 0;
+    if (section_pos(ini, section, &start_pos, &end_pos) != CONFIG_OK)
+        return 0;
+
+    const char *base = ini->str;
+    const char *p = base + start_pos;
+    const char *end = (end_pos >= 0) ? (base + end_pos) : (base + strlen(base));
+    size_t w = 0;
+
+    while (p < end) {
+        const char *ls = p;
+        const char *le = v4_iq_line_end(ls, end);
+        p = (le < end) ? (le + 1) : le;
+
+        const char *q = v4_iq_skip_ws(ls, le);
+        if (q >= le) continue;
+        if (*q == ';' || *q == '#') continue;
+
+        size_t klen = strlen(key);
+        if ((size_t)(le - q) < klen) continue;
+        if (strncasecmp(q, key, klen) != 0) continue;
+        const char *r = q + klen;
+        r = v4_iq_skip_ws(r, le);
+        if (r >= le || (*r != '=' && *r != ':')) continue;
+        r++;
+        r = v4_iq_skip_ws(r, le);
+
+        bool cont = false;
+        const char *value_end = le;
+        for (const char *c = r; c < le; c++) {
+            if (*c == ';' || *c == '#') { value_end = c; break; }
+        }
+        while (value_end > r && isspace((unsigned char)value_end[-1]))
+            value_end--;
+        if (value_end > r && value_end[-1] == '\\') {
+            cont = true;
+            value_end--;
+            while (value_end > r && isspace((unsigned char)value_end[-1]))
+                value_end--;
+        }
+        if (value_end - r >= 2 && *r == '"' && value_end[-1] == '"') {
+            r++; value_end--;
+        }
+        if ((value_end - r) == 1 && *r == '\\') {
+            cont = true;
+        } else if (value_end > r) {
+            size_t n = (size_t)(value_end - r);
+            if (w + n + 2 >= out_sz) n = (out_sz > w + 2) ? (out_sz - w - 2) : 0;
+            if (n) {
+                memcpy(out + w, r, n);
+                w += n;
+                out[w++] = ' ';
+                out[w] = '\0';
+            }
+        }
+
+        while (cont && p < end) {
+            const char *nls = p;
+            const char *nle = v4_iq_line_end(nls, end);
+            p = (nle < end) ? (nle + 1) : nle;
+
+            const char *nr = v4_iq_skip_ws(nls, nle);
+            if (nr >= nle) { cont = false; break; }
+            if (*nr == ';' || *nr == '#') continue;
+
+            const char *ve = nle;
+            for (const char *c = nr; c < nle; c++) {
+                if (*c == ';' || *c == '#') { ve = c; break; }
+            }
+            while (ve > nr && isspace((unsigned char)ve[-1]))
+                ve--;
+            cont = false;
+            if (ve > nr && ve[-1] == '\\') {
+                cont = true;
+                ve--;
+                while (ve > nr && isspace((unsigned char)ve[-1]))
+                    ve--;
+            }
+            if (ve - nr >= 2 && *nr == '"' && ve[-1] == '"') {
+                nr++; ve--;
+            }
+            if (ve > nr) {
+                size_t n = (size_t)(ve - nr);
+                if (w + n + 2 >= out_sz) n = (out_sz > w + 2) ? (out_sz - w - 2) : 0;
+                if (n) {
+                    memcpy(out + w, nr, n);
+                    w += n;
+                    out[w++] = ' ';
+                    out[w] = '\0';
+                }
+            }
+        }
+        break;
+    }
+
+    // trim
+    while (w > 0 && isspace((unsigned char)out[w - 1]))
+        out[--w] = '\0';
+    return (int)w;
+}
+
+// ---- 3DNR (VPSS NRX V3) ----
+typedef struct {
+    HI_S32 sfc, tfc, tpc, trc, mode, presfc;
+} v4_iq_3dnr_nrc;
+
+typedef struct {
+    bool enabled;
+    int n;
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS];
+    v4_iq_3dnr_nrc nrc[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_3dnr_cfg;
+
+// Minimal VPSS NRX V3 (Hi3516EV200-style) structs to access NRc.
+// We keep the full V3 layout so Get/SetGrpNRXParam doesn't overwrite the stack.
+typedef int OPERATION_MODE_E;
+typedef int VPSS_NR_VER_E;
+
+typedef struct {
+    HI_U8  IES0, IES1, IES2, IES3;
+    HI_U16 IEDZ : 10, IEEn : 1, _rb_ : 5;
+} tV200_VPSS_IEy;
+
+typedef struct {
+    HI_U8  SPN6 : 3, SFR  : 5;
+    HI_U8  SBN6 : 3, PBR6 : 5;
+    HI_U16 SRT0 : 5, SRT1 : 5, JMODE : 3, DeIdx : 3;
+    HI_U8  SFR6[4], SBR6[2], DeRate;
+    HI_U8  SFS1,  SFT1,  SBR1;
+    HI_U8  SFS2,  SFT2,  SBR2;
+    HI_U8  SFS4,  SFT4,  SBR4;
+    HI_U16 STH1 : 9,  SFN1 : 3, SFN0  : 3, NRyEn   : 1;
+    HI_U16 STHd1 : 9, _rb0_ : 7;
+    HI_U16 STH2 : 9,  SFN2 : 3, kMode : 3, _rb1_   : 1;
+    HI_U16 STHd2 : 9, _rb2_ : 7;
+    HI_U16 SBSk[32], SDSk[32];
+} tV200_VPSS_SFy;
+
+typedef struct {
+    HI_U16 TFS0 : 4,   TDZ0 : 10,  TDX0    : 2;
+    HI_U16 TFS1 : 4,   TDZ1 : 10,  TDX1    : 2;
+    HI_U16 SDZ0 : 10,  STR0 : 5,   DZMode0 : 1;
+    HI_U16 SDZ1 : 10,  STR1 : 5,   DZMode1 : 1;
+    HI_U8  TSS0 : 4,   TSI0 : 4,  TFR0[6];
+    HI_U8  TSS1 : 4,   TSI1 : 4,  TFR1[6];
+    HI_U8  TFRS : 4,   TED  : 2,   bRef    : 1,  _rb_ : 1;
+} tV200_VPSS_TFy;
+
+typedef struct {
+    HI_U16 MADZ0   : 9,   MAI00 : 2,  MAI01  : 2, MAI02 : 2, _rb0_ : 1;
+    HI_U16 MADZ1   : 9,   MAI10 : 2,  MAI11  : 2, MAI12 : 2, _rb1_ : 1;
+    HI_U8  MABR0, MABR1;
+    HI_U16 MATH0   : 10,  MATE0 : 4,  MATW   : 2;
+    HI_U16 MATHd0  : 10,  _rb2_ : 6;
+    HI_U16 MATH1   : 10,  _rb3_ : 6;
+    HI_U16 MATHd1  : 10,  _rb4_ : 6;
+    HI_U8  MASW    :  4,  MATE1 : 4;
+    HI_U8  MABW0   :  4,  MABW1 : 4;
+    HI_U16 AdvMATH : 1,   AdvTH : 12, _rb5_  : 3;
+} tV200_VPSS_MDy;
+
+typedef struct {
+    HI_U8  SFC, TFC : 6, _rb0_ : 2;
+    HI_U8  TRC, TPC : 6, _rb1_ : 2;
+    HI_U8  MODE : 1, _rb2_ : 7;
+    HI_U8  PRESFC : 6, _rb3_ : 2;
+} tV200_VPSS_NRc;
+
+typedef struct {
+    tV200_VPSS_IEy IEy[5];
+    tV200_VPSS_SFy SFy[5];
+    tV200_VPSS_MDy MDy[2];
+    tV200_VPSS_TFy TFy[3];
+    tV200_VPSS_NRc NRc;
+} VPSS_NRX_V3_S;
+
+typedef struct { VPSS_NRX_V3_S stNRXParam; } VPSS_NRX_PARAM_MANUAL_V3_S;
+typedef struct { HI_U32 u32ParamNum; HI_U32 *pau32ISO; VPSS_NRX_V3_S *pastNRXParam; } VPSS_NRX_PARAM_AUTO_V3_S;
+typedef struct {
+    OPERATION_MODE_E enOptMode;
+    VPSS_NRX_PARAM_MANUAL_V3_S stNRXManual;
+    VPSS_NRX_PARAM_AUTO_V3_S stNRXAuto;
+} VPSS_NRX_PARAM_V3_S;
+
+typedef struct {
+    VPSS_NR_VER_E enNRVer;
+    union {
+        VPSS_NRX_PARAM_V3_S stNRXParam_V3;
+        HI_U8 _pad[8192];
+    };
+} VPSS_GRP_NRX_PARAM_S;
+
+static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
+    if (!cfg) return EXIT_SUCCESS;
+    if (!v4_vpss.fnGetGrpNRXParam || !v4_vpss.fnSetGrpNRXParam) {
+        HAL_INFO("v4_iq", "3DNR: VPSS NRX API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    VPSS_GRP_NRX_PARAM_S p;
+    memset(&p, 0, sizeof(p));
+    int ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
+    if (ret) {
+        HAL_WARNING("v4_iq", "3DNR: HI_MPI_VPSS_GetGrpNRXParam failed with %#x\n", ret);
+        return ret;
+    }
+
+    // Expect EV200-style V3 on GK7205V210; if not, don't risk corrupting union.
+    if (p.enNRVer != 3) {
+        HAL_INFO("v4_iq", "3DNR: unsupported VPSS NRX version %d, skipping\n", (int)p.enNRVer);
+        return EXIT_SUCCESS;
+    }
+
+    tV200_VPSS_NRc *n = &p.stNRXParam_V3.stNRXManual.stNRXParam.NRc;
+    if (cfg->sfc >= 0) { HI_S32 v = cfg->sfc; if (v > 255) v = 255; if (v < 0) v = 0; n->SFC = (HI_U8)v; }
+    if (cfg->tfc >= 0) { HI_S32 v = cfg->tfc; if (v > 32) v = 32; if (v < 0) v = 0; n->TFC = (HI_U8)v; }
+    if (cfg->trc >= 0) { HI_S32 v = cfg->trc; if (v > 255) v = 255; if (v < 0) v = 0; n->TRC = (HI_U8)v; }
+    if (cfg->tpc >= 0) { HI_S32 v = cfg->tpc; if (v > 32) v = 32; if (v < 0) v = 0; n->TPC = (HI_U8)v; }
+    if (cfg->mode >= 0) { HI_S32 v = cfg->mode; if (v > 1) v = 1; if (v < 0) v = 0; n->MODE = (HI_U8)v; }
+    if (cfg->presfc >= 0) { HI_S32 v = cfg->presfc; if (v > 32) v = 32; if (v < 0) v = 0; n->PRESFC = (HI_U8)v; }
+
+    ret = v4_vpss.fnSetGrpNRXParam(grp, &p);
+    if (ret) {
+        HAL_WARNING("v4_iq", "3DNR: HI_MPI_VPSS_SetGrpNRXParam failed with %#x\n", ret);
+        return ret;
+    }
+    return EXIT_SUCCESS;
+}
+
+static int v4_iq_find_int_token(const char *txt, const char *tag, HI_S32 *out) {
+    if (!txt || !tag || !out) return 0;
+    const char *p = strcasestr(txt, tag);
+    if (!p) return 0;
+    p += strlen(tag);
+    while (*p && isspace((unsigned char)*p)) p++;
+    char *end = NULL;
+    long v = strtol(p, &end, 0);
+    if (!end || end == p) return 0;
+    *out = (HI_S32)v;
+    return 1;
+}
+
+static void v4_iq_load_3dnr_section(struct IniConfig *ini, const char *section, v4_iq_3dnr_cfg *dst) {
+    if (!dst) return;
+    memset(dst, 0, sizeof(*dst));
+    if (!ini || !section) return;
+
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, section, &sec_s, &sec_e) != CONFIG_OK)
+        return;
+
+    int cnt = 0;
+    if (parse_int(ini, section, "3DNRCount", 1, V4_IQ_DYN_MAX_POINTS, &cnt) != CONFIG_OK)
+        return;
+
+    char buf[4096];
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS] = {0};
+    if (parse_param_value(ini, section, "IsoThresh", buf) != CONFIG_OK)
+        return;
+    int nIso = v4_iq_parse_csv_u32(buf, iso, V4_IQ_DYN_MAX_POINTS);
+    int n = cnt;
+    if (nIso < n) n = nIso;
+    if (n < 1) return;
+
+    dst->enabled = true;
+    dst->n = n;
+    for (int i = 0; i < n; i++) {
+        dst->iso[i] = iso[i];
+        dst->nrc[i].sfc = dst->nrc[i].tfc = dst->nrc[i].tpc = dst->nrc[i].trc = -1;
+        dst->nrc[i].mode = dst->nrc[i].presfc = -1;
+    }
+
+    for (int i = 0; i < n; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "3DnrParam_%d", i);
+        char txt[16384];
+        int tl = v4_iq_parse_multiline_str(ini, section, key, txt, sizeof(txt));
+        if (tl <= 0) continue;
+
+        HI_S32 v;
+        if (v4_iq_find_int_token(txt, "-sfc", &v)) dst->nrc[i].sfc = v;
+        if (v4_iq_find_int_token(txt, "-tfc", &v)) dst->nrc[i].tfc = v;
+        if (v4_iq_find_int_token(txt, "-tpc", &v)) dst->nrc[i].tpc = v;
+        if (v4_iq_find_int_token(txt, "-trc", &v)) dst->nrc[i].trc = v;
+        if (v4_iq_find_int_token(txt, "-mode", &v)) dst->nrc[i].mode = v;
+        if (v4_iq_find_int_token(txt, "-presfc", &v)) dst->nrc[i].presfc = v;
+    }
 }
 
 static void v4_iq_dyn_unbypass_modules(int pipe) {
@@ -1526,6 +1885,38 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
     }
 
     // dynamic_linear_drc
+    // all_param hysteresis
+    {
+        HI_U32 up = 0, down = 0;
+        int v;
+        if (parse_int(ini, "all_param", "UpFrameIso", 0, INT_MAX, &v) == CONFIG_OK)
+            up = (HI_U32)v;
+        if (parse_int(ini, "all_param", "DownFrameIso", 0, INT_MAX, &v) == CONFIG_OK)
+            down = (HI_U32)v;
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.upFrameIso = up;
+        _v4_iq_dyn.downFrameIso = down;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+        if (up || down)
+            HAL_INFO("v4_iq", "all_param: UpFrameIso=%u DownFrameIso=%u\n", (unsigned)up, (unsigned)down);
+    }
+
+    // static_3dnr (day) and ir_static_3dnr (night)
+    {
+        v4_iq_3dnr_cfg day, ir;
+        v4_iq_load_3dnr_section(ini, "static_3dnr", &day);
+        v4_iq_load_3dnr_section(ini, "ir_static_3dnr", &ir);
+
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.nr3d_day = day;
+        _v4_iq_dyn.nr3d_ir = ir;
+        _v4_iq_dyn.last_nr3d_idx = -1;
+        _v4_iq_dyn.last_nr3d_is_ir = HI_FALSE;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+        if (day.enabled) HAL_INFO("v4_iq", "3DNR: loaded [static_3dnr] (%d points)\n", day.n);
+        if (ir.enabled)  HAL_INFO("v4_iq", "3DNR: loaded [ir_static_3dnr] (%d points)\n", ir.n);
+    }
     {
         int sec_s = 0, sec_e = 0;
         if (section_pos(ini, "dynamic_linear_drc", &sec_s, &sec_e) == CONFIG_OK && enableDynLinearDRC) {
@@ -1587,6 +1978,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
     for (;;) {
         v4_iq_dyn_dehaze_cfg deh;
         v4_iq_dyn_linear_drc_cfg drc;
+        v4_iq_3dnr_cfg nr_day, nr_ir;
+        HI_U32 upIso = 0, downIso = 0;
+        int last_nr_idx = -1;
+        HI_BOOL last_nr_ir = HI_FALSE;
         HI_BOOL have_last;
         HI_U8 last_deh;
         v4_iq_dyn_drc_sig last_drc;
@@ -1594,12 +1989,18 @@ static void *v4_iq_dynamic_thread(void *arg) {
         pthread_mutex_lock(&_v4_iq_dyn.lock);
         deh = _v4_iq_dyn.dehaze;
         drc = _v4_iq_dyn.linear_drc;
+        nr_day = _v4_iq_dyn.nr3d_day;
+        nr_ir = _v4_iq_dyn.nr3d_ir;
+        upIso = _v4_iq_dyn.upFrameIso;
+        downIso = _v4_iq_dyn.downFrameIso;
+        last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
+        last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
         have_last = _v4_iq_dyn.have_last;
         last_deh = _v4_iq_dyn.last_dehaze_strength;
         last_drc = _v4_iq_dyn.last_drc;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
-        if (!deh.enabled && !drc.enabled) {
+        if (!deh.enabled && !drc.enabled && !nr_day.enabled && !nr_ir.enabled) {
             usleep(1000 * 1000);
             continue;
         }
@@ -1714,6 +2115,49 @@ static void *v4_iq_dynamic_thread(void *arg) {
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u contrast=%u\n",
                             (unsigned)iso, (unsigned)cur.strength, (unsigned)cur.contrastControl);
+                    }
+                }
+            }
+        }
+
+        // 3DNR (VPSS NRX) by ISO + night mode
+        {
+            const bool is_ir = night_mode_on();
+            const v4_iq_3dnr_cfg *cfg = NULL;
+            if (is_ir && nr_ir.enabled) cfg = &nr_ir;
+            else if (nr_day.enabled) cfg = &nr_day;
+
+            if (cfg && cfg->enabled && cfg->n > 0) {
+                int desired = 0;
+                for (int i = 0; i < cfg->n; i++) {
+                    if (iso >= cfg->iso[i]) desired = i;
+                    else break;
+                }
+
+                bool allow = false;
+                if (last_nr_idx < 0 || (last_nr_ir != (is_ir ? HI_TRUE : HI_FALSE))) {
+                    allow = true; // first apply or IR mode changed
+                } else if (desired != last_nr_idx) {
+                    if (upIso == 0 && downIso == 0) {
+                        allow = true;
+                    } else if (desired > last_nr_idx) {
+                        if (downIso == 0 || iso >= downIso) allow = true;
+                    } else if (desired < last_nr_idx) {
+                        if (upIso == 0 || iso <= upIso) allow = true;
+                    }
+                }
+
+                if (allow && (desired != last_nr_idx || last_nr_ir != (is_ir ? HI_TRUE : HI_FALSE))) {
+                    int ar = v4_iq_apply_vpss_3dnr_nrc(_v4_vpss_grp, &cfg->nrc[desired]);
+                    if (!ar) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_nr3d_idx = desired;
+                        _v4_iq_dyn.last_nr3d_is_ir = is_ir ? HI_TRUE : HI_FALSE;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "3DNR: %s idx=%d iso=%u (sfc=%d tfc=%d tpc=%d trc=%d)\n",
+                            is_ir ? "IR" : "DAY", desired, (unsigned)iso,
+                            (int)cfg->nrc[desired].sfc, (int)cfg->nrc[desired].tfc,
+                            (int)cfg->nrc[desired].tpc, (int)cfg->nrc[desired].trc);
                     }
                 }
             }
@@ -2175,6 +2619,59 @@ static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
         } else {
             HAL_INFO("v4_iq", "Saturation: applied\n");
         }
+    }
+    return ret;
+}
+
+static int v4_iq_apply_static_aeweight(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetStatisticsConfig || !v4_isp.fnSetStatisticsConfig) {
+        HAL_INFO("v4_iq", "AE weight: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "static_aeweight", &sec_s, &sec_e) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE weight: no [static_aeweight] section, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ISP_STATISTICS_CFG_S cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    int ret = v4_isp.fnGetStatisticsConfig(pipe, &cfg);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetStatisticsConfig failed with %#x\n", ret);
+        return ret;
+    }
+
+    // Parse rows ExpWeight_0..14, each has 17 entries.
+    char buf[4096];
+    HI_U32 row[AE_ZONE_COLUMN];
+    int rowsParsed = 0;
+    for (int r = 0; r < AE_ZONE_ROW; r++) {
+        char key[32];
+        snprintf(key, sizeof(key), "ExpWeight_%d", r);
+        if (parse_param_value(ini, "static_aeweight", key, buf) != CONFIG_OK)
+            continue;
+        memset(row, 0, sizeof(row));
+        int n = v4_iq_parse_csv_u32(buf, row, AE_ZONE_COLUMN);
+        if (n <= 0) continue;
+        for (int c = 0; c < n && c < AE_ZONE_COLUMN; c++) {
+            HI_U32 v = row[c];
+            if (v > 0xF) v = 0xF;
+            cfg.stAECfg.au8Weight[r][c] = (HI_U8)v;
+        }
+        rowsParsed++;
+    }
+
+    if (rowsParsed == 0) {
+        HAL_INFO("v4_iq", "AE weight: no ExpWeight_* rows found, skipping\n");
+        return EXIT_SUCCESS;
+    }
+
+    ret = v4_isp.fnSetStatisticsConfig(pipe, &cfg);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetStatisticsConfig failed with %#x\n", ret);
+    } else {
+        HAL_INFO("v4_iq", "AE weight: applied (%d/%d rows)\n", rowsParsed, AE_ZONE_ROW);
     }
     return ret;
 }
@@ -2727,6 +3224,10 @@ static int v4_iq_apply(const char *path, int pipe) {
         int r = v4_iq_apply_static_ae(&ini, pipe);
         if (r) ret = r;
         r = v4_iq_apply_static_aerouteex(&ini, pipe);
+        if (r) ret = r;
+    }
+    {
+        int r = v4_iq_apply_static_aeweight(&ini, pipe);
         if (r) ret = r;
     }
     if (doStaticCCM) {

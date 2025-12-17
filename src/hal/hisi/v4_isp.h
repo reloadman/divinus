@@ -73,6 +73,9 @@ typedef struct {
     int (*fnSetGammaAttr)(int pipe, const void *attr);
     int (*fnGetIspSharpenAttr)(int pipe, void *attr);
     int (*fnSetIspSharpenAttr)(int pipe, const void *attr);
+
+    int (*fnGetStatisticsConfig)(int pipe, void *cfg);
+    int (*fnSetStatisticsConfig)(int pipe, const void *cfg);
 } v4_isp_impl;
 
 // Helper: resolve a symbol from multiple handles and multiple name variants.
@@ -212,6 +215,12 @@ loaded:
         handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttr", "MPI_ISP_GetAERouteAttr", "GK_API_ISP_GetAERouteAttr", NULL });
     isp_lib->fnSetAERouteAttr = (int(*)(int, const void*))v4_dlsym_multi(
         handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttr", "MPI_ISP_SetAERouteAttr", "GK_API_ISP_SetAERouteAttr", NULL });
+
+    // Statistics config (used for AE weight table)
+    isp_lib->fnGetStatisticsConfig = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetStatisticsConfig", "MPI_ISP_GetStatisticsConfig", "GK_API_ISP_GetStatisticsConfig", NULL });
+    isp_lib->fnSetStatisticsConfig = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetStatisticsConfig", "MPI_ISP_SetStatisticsConfig", "GK_API_ISP_SetStatisticsConfig", NULL });
 
     // AWB/Color helpers (often exported from AWB libs)
     isp_lib->fnGetCCMAttr = (int(*)(int, void*))v4_dlsym_multi(
