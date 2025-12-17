@@ -40,6 +40,9 @@ char _v4_vpss_grp = 0;
 
 static char _v4_iq_cfg_path[256] = {0};
 
+// Forward decl (used by delayed apply thread)
+static int v4_iq_apply(const char *path, int pipe);
+
 typedef struct {
     char path[256];
     int pipe;
