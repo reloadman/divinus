@@ -76,11 +76,11 @@ void *night_thread(void) {
     } else {
         while (keepRunning) {
             bool state = false;
-            if (!gpio_read(app_config.ir_sensor_pin, &state)) {
+            if (gpio_read(app_config.ir_sensor_pin, &state) != EXIT_SUCCESS) {
                 sleep(app_config.check_interval_s);
                 continue;
             }
-            if (!manual) night_mode(night_mode);
+            if (!manual) night_mode(state);
             sleep(app_config.check_interval_s);
         }
     }
