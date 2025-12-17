@@ -52,6 +52,8 @@ typedef struct {
     int (*fnSetExposureAttr)(int pipe, const void *attr);
     int (*fnGetAERouteAttrEx)(int pipe, void *attr);
     int (*fnSetAERouteAttrEx)(int pipe, const void *attr);
+    int (*fnGetAERouteAttr)(int pipe, void *attr);
+    int (*fnSetAERouteAttr)(int pipe, const void *attr);
     int (*fnQueryExposureInfo)(int pipe, void *expInfo);
     int (*fnGetCCMAttr)(int pipe, void *attr);
     int (*fnSetCCMAttr)(int pipe, const void *attr);
@@ -206,6 +208,10 @@ loaded:
         handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttrEx", "MPI_ISP_GetAERouteAttrEx", "GK_API_ISP_GetAERouteAttrEx", NULL });
     isp_lib->fnSetAERouteAttrEx = (int(*)(int, const void*))v4_dlsym_multi(
         handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttrEx", "MPI_ISP_SetAERouteAttrEx", "GK_API_ISP_SetAERouteAttrEx", NULL });
+    isp_lib->fnGetAERouteAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttr", "MPI_ISP_GetAERouteAttr", "GK_API_ISP_GetAERouteAttr", NULL });
+    isp_lib->fnSetAERouteAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttr", "MPI_ISP_SetAERouteAttr", "GK_API_ISP_SetAERouteAttr", NULL });
 
     // AWB/Color helpers (often exported from AWB libs)
     isp_lib->fnGetCCMAttr = (int(*)(int, void*))v4_dlsym_multi(

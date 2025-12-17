@@ -805,6 +805,20 @@ typedef struct {
     ISP_AE_ROUTE_NODE_S astRouteNode[ISP_AE_ROUTE_MAX_NODES];
 } ISP_AE_ROUTE_S;
 
+static HI_U32 v4_iq_sysgain_from_routeex(HI_U32 again, HI_U32 dgain, HI_U32 ispdgain) {
+    // Gains are typically 22.10 fixed point (1.0 == 0x400).
+    // sysgain should be 22.10 too, so multiply and shift back by 20.
+    if (again == 0) again = 0x400;
+    if (dgain == 0) dgain = 0x400;
+    if (ispdgain == 0) ispdgain = 0x400;
+    HI_U64 prod = (HI_U64)again * (HI_U64)dgain;
+    prod = (prod * (HI_U64)ispdgain);
+    HI_U64 sg = (prod >> 20);
+    if (sg > 0xFFFFFFFFULL) sg = 0xFFFFFFFFULL;
+    if (sg < 0x400ULL) sg = 0x400ULL;
+    return (HI_U32)sg;
+}
+
 #define ISP_AE_ROUTE_EX_MAX_NODES 16
 typedef struct {
     HI_U32 u32IntTime;
@@ -1963,11 +1977,11 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
                 ret = 0;
             } else {
                 HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx retry failed with %#x\n", ret2);
-                return ret2;
+                ret = ret2;
             }
         } else {
             HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after sanitize, skipping\n");
-            return ret;
+            // continue to fallback below
         }
     } else {
         // Ensure AE is configured to actually use the RouteEx table.
@@ -1999,6 +2013,53 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         } else {
             HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
         }
+    }
+
+    // If RouteEx is not supported/accepted by this SDK, try to approximate using non-Ex AERouteAttr.
+    if (ret && v4_isp.fnSetAERouteAttr) {
+        ISP_AE_ROUTE_S r;
+        memset(&r, 0, sizeof(r));
+        int outN = 0;
+        HI_U32 prevT = 0;
+        for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+            HI_U32 t = route.astRouteExNode[i].u32IntTime;
+            if (t == 0) continue;
+            if (outN > 0 && t <= prevT) continue;
+            prevT = t;
+            r.astRouteNode[outN].u32IntTime = t;
+            r.astRouteNode[outN].u32SysGain = v4_iq_sysgain_from_routeex(
+                route.astRouteExNode[i].u32Again,
+                route.astRouteExNode[i].u32Dgain,
+                route.astRouteExNode[i].u32IspDgain);
+            outN++;
+            if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+        }
+        r.u32TotalNum = (HI_U32)outN;
+
+        if (outN >= 2) {
+            int rret = v4_isp.fnSetAERouteAttr(pipe, &r);
+            if (!rret) {
+                HAL_INFO("v4_iq", "AE route-ex: RouteEx rejected (%#x), applied fallback AERouteAttr (%d nodes)\n", ret, outN);
+                // Disable RouteExValid so firmware uses the non-Ex route.
+                if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+                    ISP_EXPOSURE_ATTR_S exp;
+                    memset(&exp, 0, sizeof(exp));
+                    if (!v4_isp.fnGetExposureAttr(pipe, &exp) && exp.bAERouteExValid) {
+                        exp.bAERouteExValid = HI_FALSE;
+                        v4_isp.fnSetExposureAttr(pipe, &exp);
+                    }
+                }
+                return EXIT_SUCCESS;
+            } else {
+                HAL_WARNING("v4_iq", "AE route-ex: fallback HI_MPI_ISP_SetAERouteAttr failed with %#x\n", rret);
+            }
+        }
+    }
+
+    // Don't fail full IQ apply because RouteEx isn't accepted on this SDK.
+    if (ret) {
+        HAL_WARNING("v4_iq", "AE route-ex: skipping (SDK rejected), continuing\n");
+        return EXIT_SUCCESS;
     }
     return ret;
 }
