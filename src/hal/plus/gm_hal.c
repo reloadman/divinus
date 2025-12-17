@@ -301,7 +301,13 @@ int gm_video_create(char index, hal_vidconfig *config)
             mjpgchn.mode = ratemode;
             mjpgchn.bitrate = config->bitrate;
             mjpgchn.maxBitrate = MAX(config->bitrate, config->maxBitrate);
-            if ((ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &mjpgchn)) != 0)
+            HAL_INFO("gm_venc", "set_attr MJPEG ch=%d %dx%d fps=%d mode=%d bitrate=%d maxBitrate=%d quality=%d\n",
+                index, config->width, config->height, config->framerate,
+                (int)mjpgchn.mode, mjpgchn.bitrate, mjpgchn.maxBitrate, mjpgchn.quality);
+            ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &mjpgchn);
+            HAL_INFO("gm_venc", "set_attr MJPEG ch=%d -> ret=%#x (%s)\n",
+                index, ret, errstr(ret));
+            if (ret != 0)
                 return ret;
             break;
         } case HAL_VIDCODEC_H264: {
@@ -344,22 +350,38 @@ int gm_video_create(char index, hal_vidconfig *config)
 
             // GM / GK7205 firmwares are picky about optional knobs (preset/coding/ipOffset/ROI).
             // Best-effort: try as-is, and if NOT_SUPPORT -> retry with a minimal config.
+            HAL_INFO("gm_venc", "set_attr H264 ch=%d plus=%d %dx%d fps=%d gop=%d rateMode=%d bitrate=%d maxBitrate=%d qp=[%d..%d] profile=%d level=%d\n",
+                index, h264_plus ? 1 : 0, config->width, config->height, config->framerate,
+                h264chn.rate.gop, (int)h264chn.rate.mode,
+                h264chn.rate.bitrate, h264chn.rate.maxBitrate,
+                h264chn.rate.minQual, h264chn.rate.maxQual,
+                (int)h264chn.profile, (int)h264chn.level);
             ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            HAL_INFO("gm_venc", "set_attr H264 ch=%d -> ret=%#x (%s)\n", index, ret, errstr(ret));
             // On some Goke SDKs EVBR/ECBR are not supported even though headers expose them.
             // Fall back to plain VBR/CBR automatically so the stream can start.
             if (ret != 0 && (h264chn.rate.mode == GM_VENC_RATEMODE_EVBR ||
                              h264chn.rate.mode == GM_VENC_RATEMODE_ECBR)) {
                 h264chn.rate.mode = GM_VENC_RATEMODE_VBR;
+                HAL_WARNING("gm_venc", "set_attr H264 ch=%d retry with rateMode=VBR\n", index);
                 ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+                HAL_INFO("gm_venc", "set_attr H264 ch=%d retry(rateMode=VBR) -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
             }
             // Some firmwares reject High profile; try Main then Baseline.
             if (ret != 0 && h264chn.profile == GM_VENC_H264PROF_HIGH) {
                 h264chn.profile = GM_VENC_H264PROF_MAIN;
+                HAL_WARNING("gm_venc", "set_attr H264 ch=%d retry with profile=MAIN\n", index);
                 ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+                HAL_INFO("gm_venc", "set_attr H264 ch=%d retry(profile=MAIN) -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
             }
             if (ret != 0 && h264chn.profile == GM_VENC_H264PROF_MAIN) {
                 h264chn.profile = GM_VENC_H264PROF_BASELINE;
+                HAL_WARNING("gm_venc", "set_attr H264 ch=%d retry with profile=BASELINE\n", index);
                 ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+                HAL_INFO("gm_venc", "set_attr H264 ch=%d retry(profile=BASELINE) -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
             }
             if (ret != 0 && h264_plus) {
                 GM_DECLARE(gm_lib, base, gm_venc_h264_cnf, "gm_h264e_attr_t");
@@ -381,12 +403,19 @@ int gm_video_create(char index, hal_vidconfig *config)
                     case HAL_VIDPROFILE_HIGH: base.profile = GM_VENC_H264PROF_HIGH; break;
                 }
                 base.level = 41;
+                HAL_WARNING("gm_venc", "set_attr H264 ch=%d trying minimal config (rateMode=%d profile=%d)\n",
+                    index, (int)base.rate.mode, (int)base.profile);
                 ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &base);
+                HAL_INFO("gm_venc", "set_attr H264 ch=%d minimal -> ret=%#x (%s)\n",
+                    index, ret, errstr(ret));
                 // If minimal config still fails and we're in EVBR/ECBR, retry with plain VBR.
                 if (ret != 0 && (base.rate.mode == GM_VENC_RATEMODE_EVBR ||
                                  base.rate.mode == GM_VENC_RATEMODE_ECBR)) {
                     base.rate.mode = GM_VENC_RATEMODE_VBR;
+                    HAL_WARNING("gm_venc", "set_attr H264 ch=%d minimal retry with rateMode=VBR\n", index);
                     ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &base);
+                    HAL_INFO("gm_venc", "set_attr H264 ch=%d minimal retry(rateMode=VBR) -> ret=%#x (%s)\n",
+                        index, ret, errstr(ret));
                 }
             }
             if (ret != 0)
