@@ -37,20 +37,42 @@ ifeq ($(FLOATABI),unknown)
 endif
 OBJDIR ?= ../build/$(TOOLCHAIN)-$(FLOATABI)
 
-OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC) $(SMOL_SRC) $(FAAC_SRC))
+# Cache FAAC separately so switching/cleaning app objects doesn't rebuild it.
+FAAC_CACHEDIR ?= ../build/faac/$(TOOLCHAIN)-$(FLOATABI)
+FAAC_LIB = $(FAAC_CACHEDIR)/libfaac.a
+
+DIVINUS_OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC) $(SMOL_SRC))
+FAAC_OBJS = $(patsubst %.c,$(FAAC_CACHEDIR)/%.o,$(FAAC_SRC))
 
 # Default to an optimized release build unless OPT is provided by the caller.
 OPT ?= -O2 -pipe -s
 
-.PHONY: clean divinus
+.PHONY: clean distclean faac-clean divinus
 divinus: $(OBJ)
 
-$(OBJ): $(OBJS)
-	$(CC) $^ -rdynamic $(OPT) $(LDFLAGS) $(LDLIBS) -o $@
+$(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB)
+	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(LDLIBS) -o $@
 
 $(OBJDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
 
+AR ?= $(shell $(CC) -print-prog-name=ar 2>/dev/null || echo ar)
+RANLIB ?= $(shell $(CC) -print-prog-name=ranlib 2>/dev/null || echo ranlib)
+
+$(FAAC_CACHEDIR)/%.o: ../%.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
+
+$(FAAC_LIB): $(FAAC_OBJS)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+	$(RANLIB) $@ >/dev/null 2>&1 || true
+
 clean:
 	rm -rf $(OBJDIR) $(OBJ)
+
+faac-clean:
+	rm -rf $(FAAC_CACHEDIR)
+
+distclean: clean faac-clean
