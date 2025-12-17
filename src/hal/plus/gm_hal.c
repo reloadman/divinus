@@ -259,6 +259,7 @@ int gm_region_setbitmap(char handle, hal_bitmap *bitmap)
 
 int gm_video_create(char index, hal_vidconfig *config)
 {
+    int ret;
     _gm_venc_dev[index] = gm_lib.fnCreateDevice(GM_LIB_DEV_VIDENC);
 
     gm_venc_ratemode ratemode;
@@ -282,7 +283,9 @@ int gm_video_create(char index, hal_vidconfig *config)
         cap.channel = 0;
         cap.output = GM_CAP_OUT_SCALER1;
         cap.motionDataOn = 1;
-        gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap);
+        // Some SDK builds don't support motion metadata; ignore if it fails.
+        if (gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap) < 0)
+            _gm_motion_on = 0;
         gm_lib.fnRefreshGroup(_gm_cap_grp);
     }
 
@@ -297,7 +300,8 @@ int gm_video_create(char index, hal_vidconfig *config)
             mjpgchn.mode = ratemode;
             mjpgchn.bitrate = config->bitrate;
             mjpgchn.maxBitrate = MAX(config->bitrate, config->maxBitrate);
-            gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &mjpgchn);
+            if ((ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &mjpgchn)) != 0)
+                return ret;
             break;
         } case HAL_VIDCODEC_H264: {
             GM_DECLARE(gm_lib, h264chn, gm_venc_h264_cnf, "gm_h264e_attr_t");
@@ -327,28 +331,43 @@ int gm_video_create(char index, hal_vidconfig *config)
             switch (config->profile) {
                 case HAL_VIDPROFILE_BASELINE:
                     h264chn.profile = GM_VENC_H264PROF_BASELINE;
-                    h264chn.coding = GM_VENC_H264CODE_CAVLC;
                     break;
                 case HAL_VIDPROFILE_MAIN:
                     h264chn.profile = GM_VENC_H264PROF_MAIN;
-                    h264chn.coding = GM_VENC_H264CODE_CABAC;
                     break;
                 case HAL_VIDPROFILE_HIGH:
                     h264chn.profile = GM_VENC_H264PROF_HIGH;
-                    h264chn.coding = GM_VENC_H264CODE_CABAC;
                     break;    
             }
             h264chn.level = 41;
-            if (h264_plus) {
-                h264chn.preset = GM_VENC_H264PRES_QUALITY;
-                // Improve I-frames a bit relative to P-frames.
-                h264chn.ipOffset = -3;
-                // If ROI is configured by the driver, make it more effective.
-                h264chn.roiDeltaQp = -6;
-            } else {
-                h264chn.preset = GM_VENC_H264PRES_BALANCED;
+
+            // GM / GK7205 firmwares are picky about optional knobs (preset/coding/ipOffset/ROI).
+            // Best-effort: try as-is, and if NOT_SUPPORT -> retry with a minimal config.
+            ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            if (ret != 0 && h264_plus) {
+                GM_DECLARE(gm_lib, base, gm_venc_h264_cnf, "gm_h264e_attr_t");
+                base.dest.width = config->width;
+                base.dest.height = config->height;
+                base.framerate = config->framerate;
+                base.rate.mode = ratemode;          // strictly honor user's mode here
+                base.rate.gop = config->gop;
+                if (config->mode != HAL_VIDMODE_CBR) {
+                    base.rate.minQual = config->minQual;
+                    base.rate.maxQual = config->maxQual;
+                    base.rate.initQual = -1;
+                }
+                base.rate.bitrate = config->bitrate;
+                base.rate.maxBitrate = MAX(config->bitrate, config->maxBitrate);
+                switch (config->profile) {
+                    case HAL_VIDPROFILE_BASELINE: base.profile = GM_VENC_H264PROF_BASELINE; break;
+                    case HAL_VIDPROFILE_MAIN: base.profile = GM_VENC_H264PROF_MAIN; break;
+                    case HAL_VIDPROFILE_HIGH: base.profile = GM_VENC_H264PROF_HIGH; break;
+                }
+                base.level = 41;
+                ret = gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &base);
             }
-            gm_lib.fnSetDeviceConfig(_gm_venc_dev[index], &h264chn);
+            if (ret != 0)
+                return ret;
             break;
         } default: HAL_ERROR("gm_venc", "This codec is not supported by the hardware!");
     }
