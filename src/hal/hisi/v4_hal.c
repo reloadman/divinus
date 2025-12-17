@@ -7,7 +7,9 @@
 #include <stdbool.h>
 #include <strings.h>
 #include <pthread.h>
-#include "night.h"
+
+// Night mode state is implemented in src/night.c. We only need this one symbol here.
+extern bool night_mode_on(void);
 
 // For debug prints; avoids adding include dependency here.
 char *errstr(int error);
