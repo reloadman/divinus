@@ -66,6 +66,18 @@ typedef struct {
     int (*fnSetIspSharpenAttr)(int pipe, const void *attr);
 } v4_isp_impl;
 
+// Helper: resolve a symbol from multiple handles and multiple name variants.
+// Must be file-scope (C does not support nested function definitions).
+static inline void *v4_dlsym_multi(void *handles[], const char *names[]) {
+    for (int h = 0; handles[h]; h++) {
+        for (int n = 0; names[n]; n++) {
+            void *sym = dlsym(handles[h], names[n]);
+            if (sym) return sym;
+        }
+    }
+    return NULL;
+}
+
 static int v4_isp_load(v4_isp_impl *isp_lib) {
     isp_lib->handleCalcFlick = dlopen("lib_hicalcflicker.so", RTLD_LAZY | RTLD_GLOBAL);
     // Optional: some SDKs export HI_MPI_* symbols from libhi_mpi.so instead of lib*_isp.so.
@@ -171,15 +183,6 @@ loaded:
 
     // Optional symbols used for applying IQ profiles. These may be absent on some SDKs.
     // Prefer libhi_mpi.so when present, fallback to the ISP library handle.
-    static void *v4_dlsym_multi(void *handles[], const char *names[]) {
-        for (int h = 0; handles[h]; h++) {
-            for (int n = 0; names[n]; n++) {
-                void *sym = dlsym(handles[h], names[n]);
-                if (sym) return sym;
-            }
-        }
-        return NULL;
-    }
     void *handles_isp[] = { isp_lib->handleMpi, isp_lib->handle, NULL };
     void *handles_ae[]  = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAe, isp_lib->handleGokeAe, NULL };
     void *handles_awb[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAwb, isp_lib->handleGokeAwb, NULL };
