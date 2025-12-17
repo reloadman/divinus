@@ -272,34 +272,23 @@ int gm_video_create(char index, hal_vidconfig *config)
     switch (config->mode) {
         case HAL_VIDMODE_CBR: ratemode = GM_VENC_RATEMODE_CBR; break;
         case HAL_VIDMODE_VBR: ratemode = GM_VENC_RATEMODE_VBR; break;
-        case HAL_VIDMODE_ABR: ratemode = GM_VENC_RATEMODE_ECBR; break;
-        case HAL_VIDMODE_AVBR: ratemode = GM_VENC_RATEMODE_EVBR; break;
+        case HAL_VIDMODE_ABR:
+            // Some Goke SDKs expose ECBR in headers but reject it at runtime.
+            // Under H.264+ treat ABR as plain CBR to keep stream working.
+            ratemode = h264_plus ? GM_VENC_RATEMODE_CBR : GM_VENC_RATEMODE_ECBR;
+            break;
+        case HAL_VIDMODE_AVBR:
+            // Some Goke SDKs expose EVBR in headers but reject it at runtime.
+            // Under H.264+ treat AVBR as plain VBR to keep stream working.
+            ratemode = h264_plus ? GM_VENC_RATEMODE_VBR : GM_VENC_RATEMODE_EVBR;
+            break;
         // No dedicated QP mode in public GM headers; approximate with VBR + fixed window.
         case HAL_VIDMODE_QP: ratemode = GM_VENC_RATEMODE_VBR; break;
         default: HAL_ERROR("gm_venc", "Video encoder does not support this mode!");
     }
 
-    // On some GK/GM SDKs, trying to enable motion metadata can fail (NOT_SUPPORT) and may
-    // interfere with subsequent configuration attempts. Only try when we actually benefit
-    // from motion metadata (non-CBR modes), and probe support only once.
-    if (h264_plus && config->mode != HAL_VIDMODE_CBR && !_gm_motion_on && _gm_motion_supported != 0) {
-        // Try to enable capture motion metadata at runtime.
-        // Some GK/GM SDK builds return positive error codes (e.g. 0xa0088008),
-        // so treat any non-zero as failure and do NOT refresh the group.
-        GM_DECLARE(gm_lib, cap, gm_cap_cnf, "gm_cap_attr_t");
-        cap.channel = 0;
-        cap.output = GM_CAP_OUT_SCALER1;
-        cap.motionDataOn = 1;
-        ret = gm_lib.fnSetDeviceConfig(_gm_cap_dev, &cap);
-        if (ret == 0) {
-            _gm_motion_on = 1;
-            _gm_motion_supported = 1;
-            gm_lib.fnRefreshGroup(_gm_cap_grp);
-        } else {
-            _gm_motion_on = 0;
-            _gm_motion_supported = 0;
-        }
-    }
+    // NOTE(Goke/GK7205): motion metadata is optional, and on some firmwares enabling it
+    // returns NOT_SUPPORT and may break subsequent startup. We currently keep it disabled.
 
     switch (config->codec) {
         case HAL_VIDCODEC_JPG:
