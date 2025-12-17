@@ -1,6 +1,8 @@
 #if defined(__arm__) && !defined(__ARM_PCS_VFP)
 
 #include "v4_hal.h"
+#include <ctype.h>
+#include <stdbool.h>
 
 // For debug prints; avoids adding include dependency here.
 char *errstr(int error);
@@ -226,7 +228,431 @@ void *v4_image_thread(void)
     HAL_INFO("v4_isp", "Shutting down ISP thread...\n");
 }
 
-int v4_pipeline_create(void)
+// ---- IQ (scene_auto-style) INI loader (Goke/HiSilicon v4) ----
+typedef int HI_BOOL;
+typedef unsigned char HI_U8;
+typedef unsigned short HI_U16;
+typedef unsigned int HI_U32;
+
+#ifndef HI_TRUE
+#define HI_TRUE 1
+#endif
+#ifndef HI_FALSE
+#define HI_FALSE 0
+#endif
+
+typedef enum {
+    OP_TYPE_AUTO = 0,
+    OP_TYPE_MANUAL = 1
+} ISP_OP_TYPE_E;
+
+typedef enum {
+    LONG_FRAME = 0,
+    SHORT_FRAME = 1,
+    PRIOR_FRAME_BUTT
+} ISP_PRIOR_FRAME_E;
+
+typedef enum {
+    ISP_IRIS_F_NO_32_0 = 0,
+    ISP_IRIS_F_NO_22_0,
+    ISP_IRIS_F_NO_16_0,
+    ISP_IRIS_F_NO_11_0,
+    ISP_IRIS_F_NO_8_0,
+    ISP_IRIS_F_NO_5_6,
+    ISP_IRIS_F_NO_4_0,
+    ISP_IRIS_F_NO_2_8,
+    ISP_IRIS_F_NO_2_0,
+    ISP_IRIS_F_NO_1_4,
+    ISP_IRIS_F_NO_1_0,
+    ISP_IRIS_F_NO_BUTT,
+} ISP_IRIS_F_NO_E;
+
+typedef struct {
+    HI_U32 u32Max;
+    HI_U32 u32Min;
+} ISP_AE_RANGE_S;
+
+typedef struct {
+    HI_U16 u16BlackDelayFrame;
+    HI_U16 u16WhiteDelayFrame;
+} ISP_AE_DELAY_S;
+
+typedef enum {
+    AE_MODE_SLOW_SHUTTER = 0,
+    AE_MODE_FIX_FRAME_RATE = 1,
+    AE_MODE_BUTT
+} ISP_AE_MODE_E;
+
+typedef enum {
+    AE_EXP_HIGHLIGHT_PRIOR = 0,
+    AE_EXP_LOWLIGHT_PRIOR = 1,
+    AE_STRATEGY_MODE_BUTT
+} ISP_AE_STRATEGY_E;
+
+typedef enum {
+    ISP_ANTIFLICKER_NORMAL_MODE = 0x0,
+    ISP_ANTIFLICKER_AUTO_MODE = 0x1,
+    ISP_ANTIFLICKER_MODE_BUTT
+} ISP_ANTIFLICKER_MODE_E;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_U8 u8Frequency;
+    ISP_ANTIFLICKER_MODE_E enMode;
+} ISP_ANTIFLICKER_S;
+
+typedef struct {
+    HI_BOOL bEnable;
+    HI_U8 u8LumaDiff;
+} ISP_SUBFLICKER_S;
+
+typedef enum {
+    ISP_FSWDR_NORMAL_MODE = 0x0,
+    ISP_FSWDR_LONG_FRAME_MODE = 0x1,
+    ISP_FSWDR_AUTO_LONG_FRAME_MODE = 0x2,
+    ISP_FSWDR_MODE_BUTT
+} ISP_FSWDR_MODE_E;
+
+typedef struct {
+    ISP_AE_RANGE_S stExpTimeRange;
+    ISP_AE_RANGE_S stAGainRange;
+    ISP_AE_RANGE_S stDGainRange;
+    ISP_AE_RANGE_S stISPDGainRange;
+    ISP_AE_RANGE_S stSysGainRange;
+    HI_U32 u32GainThreshold;
+
+    HI_U8 u8Speed;
+    HI_U16 u16BlackSpeedBias;
+    HI_U8 u8Tolerance;
+    HI_U8 u8Compensation;
+    HI_U16 u16EVBias;
+    ISP_AE_STRATEGY_E enAEStrategyMode;
+    HI_U16 u16HistRatioSlope;
+    HI_U8 u8MaxHistOffset;
+
+    ISP_AE_MODE_E enAEMode;
+    ISP_ANTIFLICKER_S stAntiflicker;
+    ISP_SUBFLICKER_S stSubflicker;
+    ISP_AE_DELAY_S stAEDelayAttr;
+
+    HI_BOOL bManualExpValue;
+    HI_U32 u32ExpValue;
+
+    ISP_FSWDR_MODE_E enFSWDRMode;
+    HI_BOOL bWDRQuick;
+
+    HI_U16 u16ISOCalCoef;
+} ISP_AE_ATTR_S;
+
+typedef struct {
+    ISP_OP_TYPE_E enExpTimeOpType;
+    ISP_OP_TYPE_E enAGainOpType;
+    ISP_OP_TYPE_E enDGainOpType;
+    ISP_OP_TYPE_E enISPDGainOpType;
+
+    HI_U32 u32ExpTime;
+    HI_U32 u32AGain;
+    HI_U32 u32DGain;
+    HI_U32 u32ISPDGain;
+} ISP_ME_ATTR_S;
+
+typedef struct {
+    HI_BOOL bByPass;
+    ISP_OP_TYPE_E enOpType;
+    HI_U8 u8AERunInterval;
+    HI_BOOL bHistStatAdjust;
+    HI_BOOL bAERouteExValid;
+    ISP_ME_ATTR_S stManual;
+    ISP_AE_ATTR_S stAuto;
+    ISP_PRIOR_FRAME_E enPriorFrame;
+    HI_BOOL bAEGainSepCfg;
+} ISP_EXPOSURE_ATTR_S;
+
+#define ISP_AE_ROUTE_EX_MAX_NODES 16
+typedef struct {
+    HI_U32 u32IntTime;
+    HI_U32 u32Again;
+    HI_U32 u32Dgain;
+    HI_U32 u32IspDgain;
+    ISP_IRIS_F_NO_E enIrisFNO;
+    HI_U32 u32IrisFNOLin;
+} ISP_AE_ROUTE_EX_NODE_S;
+
+typedef struct {
+    HI_U32 u32TotalNum;
+    ISP_AE_ROUTE_EX_NODE_S astRouteExNode[ISP_AE_ROUTE_EX_MAX_NODES];
+} ISP_AE_ROUTE_EX_S;
+
+#define CCM_MATRIX_SIZE 9
+#define CCM_MATRIX_NUM 7
+typedef struct {
+    HI_BOOL bSatEn;
+    HI_U16 au16CCM[CCM_MATRIX_SIZE];
+} ISP_COLORMATRIX_MANUAL_S;
+
+typedef struct {
+    HI_U16 u16ColorTemp;
+    HI_U16 au16CCM[CCM_MATRIX_SIZE];
+} ISP_COLORMATRIX_PARAM_S;
+
+typedef struct {
+    HI_BOOL bISOActEn;
+    HI_BOOL bTempActEn;
+    HI_U16 u16CCMTabNum;
+    ISP_COLORMATRIX_PARAM_S astCCMTab[CCM_MATRIX_NUM];
+} ISP_COLORMATRIX_AUTO_S;
+
+typedef struct {
+    ISP_OP_TYPE_E enOpType;
+    ISP_COLORMATRIX_MANUAL_S stManual;
+    ISP_COLORMATRIX_AUTO_S stAuto;
+} ISP_COLORMATRIX_ATTR_S;
+
+#define ISP_AUTO_ISO_STRENGTH_NUM 16
+typedef struct {
+    HI_U8 u8Saturation;
+} ISP_SATURATION_MANUAL_S;
+
+typedef struct {
+    HI_U8 au8Sat[ISP_AUTO_ISO_STRENGTH_NUM];
+} ISP_SATURATION_AUTO_S;
+
+typedef struct {
+    ISP_OP_TYPE_E enOpType;
+    ISP_SATURATION_MANUAL_S stManual;
+    ISP_SATURATION_AUTO_S stAuto;
+} ISP_SATURATION_ATTR_S;
+
+static int v4_iq_parse_csv_u32(const char *s, HI_U32 *out, int max) {
+    int n = 0;
+    const char *p = s;
+    while (p && *p && n < max) {
+        while (*p && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (!*p) break;
+        char *end = NULL;
+        unsigned long v = strtoul(p, &end, 0);
+        if (end == p) break;
+        out[n++] = (HI_U32)v;
+        p = end;
+        while (*p && (isspace((unsigned char)*p) || *p == ',')) p++;
+    }
+    return n;
+}
+
+static int v4_iq_parse_csv_u16(const char *s, HI_U16 *out, int max) {
+    HI_U32 tmp[CCM_MATRIX_SIZE];
+    int n = v4_iq_parse_csv_u32(s, tmp, max);
+    for (int i = 0; i < n; i++)
+        out[i] = (HI_U16)tmp[i];
+    return n;
+}
+
+static int v4_iq_parse_csv_u8(const char *s, HI_U8 *out, int max) {
+    HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
+    int n = v4_iq_parse_csv_u32(s, tmp, max);
+    for (int i = 0; i < n; i++) {
+        HI_U32 v = tmp[i];
+        if (v > 255) v = 255;
+        out[i] = (HI_U8)v;
+    }
+    return n;
+}
+
+static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetExposureAttr || !v4_isp.fnSetExposureAttr)
+        return EXIT_SUCCESS;
+
+    ISP_EXPOSURE_ATTR_S exp;
+    memset(&exp, 0, sizeof(exp));
+    int ret = v4_isp.fnGetExposureAttr(pipe, &exp);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetExposureAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_ae", "AERunInterval", 1, 255, &val) == CONFIG_OK)
+        exp.u8AERunInterval = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AERouteExValid", 0, 1, &val) == CONFIG_OK)
+        exp.bAERouteExValid = (HI_BOOL)val;
+    if (parse_int(ini, "static_ae", "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+        exp.stAuto.stSysGainRange.u32Max = (HI_U32)val;
+    if (parse_int(ini, "static_ae", "AutoSpeed", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.u8Speed = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoTolerance", 0, 255, &val) == CONFIG_OK)
+        exp.stAuto.u8Tolerance = (HI_U8)val;
+    if (parse_int(ini, "static_ae", "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
+        exp.stAuto.stAEDelayAttr.u16BlackDelayFrame = (HI_U16)val;
+    if (parse_int(ini, "static_ae", "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
+        exp.stAuto.stAEDelayAttr.u16WhiteDelayFrame = (HI_U16)val;
+
+    ret = v4_isp.fnSetExposureAttr(pipe, &exp);
+    if (ret)
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetExposureAttr failed with %#x\n", ret);
+    return ret;
+}
+
+static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetAERouteAttrEx || !v4_isp.fnSetAERouteAttrEx)
+        return EXIT_SUCCESS;
+
+    ISP_AE_ROUTE_EX_S route;
+    memset(&route, 0, sizeof(route));
+    int ret = v4_isp.fnGetAERouteAttrEx(pipe, &route);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetAERouteAttrEx failed with %#x\n", ret);
+        return ret;
+    }
+
+    int total = 0;
+    if (parse_int(ini, "static_aerouteex", "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK)
+        return EXIT_SUCCESS;
+
+    char buf[1024];
+    HI_U32 ints[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
+    HI_U32 again[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
+    HI_U32 dgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
+    HI_U32 ispdgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
+
+    if (parse_param_value(ini, "static_aerouteex", "RouteEXIntTime", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u32(buf, ints, ISP_AE_ROUTE_EX_MAX_NODES);
+    if (parse_param_value(ini, "static_aerouteex", "RouteEXAGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u32(buf, again, ISP_AE_ROUTE_EX_MAX_NODES);
+    if (parse_param_value(ini, "static_aerouteex", "RouteEXDGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u32(buf, dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    if (parse_param_value(ini, "static_aerouteex", "RouteEXISPDGain", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u32(buf, ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
+
+    route.u32TotalNum = (HI_U32)total;
+    for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+        if (ints[i]) route.astRouteExNode[i].u32IntTime = ints[i];
+        if (again[i]) route.astRouteExNode[i].u32Again = again[i];
+        if (dgain[i]) route.astRouteExNode[i].u32Dgain = dgain[i];
+        if (ispdgain[i]) route.astRouteExNode[i].u32IspDgain = ispdgain[i];
+    }
+
+    ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
+    if (ret)
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x\n", ret);
+    return ret;
+}
+
+static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetCCMAttr || !v4_isp.fnSetCCMAttr)
+        return EXIT_SUCCESS;
+
+    ISP_COLORMATRIX_ATTR_S ccm;
+    memset(&ccm, 0, sizeof(ccm));
+    int ret = v4_isp.fnGetCCMAttr(pipe, &ccm);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetCCMAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    int val;
+    if (parse_int(ini, "static_ccm", "CCMOpType", 0, 1, &val) == CONFIG_OK)
+        ccm.enOpType = (ISP_OP_TYPE_E)val;
+    if (parse_int(ini, "static_ccm", "ISOActEn", 0, 1, &val) == CONFIG_OK)
+        ccm.stAuto.bISOActEn = (HI_BOOL)val;
+    if (parse_int(ini, "static_ccm", "TempActEn", 0, 1, &val) == CONFIG_OK)
+        ccm.stAuto.bTempActEn = (HI_BOOL)val;
+
+    // Manual CCM (optional)
+    char buf[1024];
+    if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u16(buf, ccm.stManual.au16CCM, CCM_MATRIX_SIZE);
+
+    // Auto CCM tables
+    int total = 0;
+    if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK) {
+        ccm.stAuto.u16CCMTabNum = (HI_U16)total;
+
+        if (parse_param_value(ini, "static_ccm", "AutoColorTemp", buf) == CONFIG_OK) {
+            HI_U32 temps[CCM_MATRIX_NUM] = {0};
+            int n = v4_iq_parse_csv_u32(buf, temps, CCM_MATRIX_NUM);
+            for (int i = 0; i < n && i < total; i++)
+                ccm.stAuto.astCCMTab[i].u16ColorTemp = (HI_U16)temps[i];
+        }
+
+        for (int i = 0; i < total && i < CCM_MATRIX_NUM; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "AutoCCMTable_%d", i);
+            if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK)
+                v4_iq_parse_csv_u16(buf, ccm.stAuto.astCCMTab[i].au16CCM, CCM_MATRIX_SIZE);
+        }
+    }
+
+    ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
+    if (ret)
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
+    return ret;
+}
+
+static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
+    if (!v4_isp.fnGetSaturationAttr || !v4_isp.fnSetSaturationAttr)
+        return EXIT_SUCCESS;
+
+    ISP_SATURATION_ATTR_S sat;
+    memset(&sat, 0, sizeof(sat));
+    int ret = v4_isp.fnGetSaturationAttr(pipe, &sat);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_GetSaturationAttr failed with %#x\n", ret);
+        return ret;
+    }
+
+    sat.enOpType = OP_TYPE_AUTO;
+    char buf[512];
+    if (parse_param_value(ini, "static_saturation", "AutoSat", buf) == CONFIG_OK)
+        v4_iq_parse_csv_u8(buf, sat.stAuto.au8Sat, ISP_AUTO_ISO_STRENGTH_NUM);
+
+    ret = v4_isp.fnSetSaturationAttr(pipe, &sat);
+    if (ret)
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetSaturationAttr failed with %#x\n", ret);
+    return ret;
+}
+
+static int v4_iq_apply(const char *path, int pipe) {
+    if (!path || !*path)
+        return EXIT_SUCCESS;
+    if (access(path, F_OK)) {
+        HAL_WARNING("v4_iq", "IQ config '%s' not found, skipping\n", path);
+        return EXIT_SUCCESS;
+    }
+
+    struct IniConfig ini;
+    memset(&ini, 0, sizeof(ini));
+    FILE *file = fopen(path, "r");
+    if (!open_config(&ini, &file))
+        return EXIT_FAILURE;
+    find_sections(&ini);
+
+    // Respect module_state toggles when present; default to "apply" if section/key missing.
+    bool doStaticAE = true, doStaticCCM = true, doStaticSat = true;
+    parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
+    parse_bool(&ini, "module_state", "bStaticCCM", &doStaticCCM);
+    parse_bool(&ini, "module_state", "bStaticSaturation", &doStaticSat);
+
+    int ret = EXIT_SUCCESS;
+    if (doStaticAE) {
+        int r = v4_iq_apply_static_ae(&ini, pipe);
+        if (r) ret = r;
+        r = v4_iq_apply_static_aerouteex(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticCCM) {
+        int r = v4_iq_apply_static_ccm(&ini, pipe);
+        if (r) ret = r;
+    }
+    if (doStaticSat) {
+        int r = v4_iq_apply_static_saturation(&ini, pipe);
+        if (r) ret = r;
+    }
+
+    free(ini.str);
+    return ret;
+}
+
+int v4_pipeline_create(const char *iqConfig)
 {
     int ret;
 
@@ -327,6 +753,9 @@ int v4_pipeline_create(void)
         return ret;
     if (ret = v4_isp.fnInit(_v4_vi_pipe))
         return ret;
+
+    // Apply optional IQ/scene profile before ISP Run thread starts.
+    v4_iq_apply(iqConfig, _v4_vi_pipe);
     
     {
         v4_vpss_grp group;

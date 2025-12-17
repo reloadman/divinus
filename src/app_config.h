@@ -14,6 +14,8 @@
 struct AppConfig {
     // [system]
     char sensor_config[128];
+    // Optional ISP/IQ profile INI (platform-specific; used by hisi/v4 goke as "scene_auto" IQ)
+    char iq_config[256];
     unsigned short web_port;
     char web_whitelist[4][256];
     bool web_enable_auth;

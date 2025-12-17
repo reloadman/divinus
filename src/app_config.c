@@ -77,6 +77,8 @@ int save_app_config(void) {
 
     fprintf(file, "system:\n");
     fprintf(file, "  sensor_config: %s\n", app_config.sensor_config);
+    if (!EMPTY(app_config.iq_config))
+        fprintf(file, "  iq_config: %s\n", app_config.iq_config);
     fprintf(file, "  web_port: %d\n", app_config.web_port);
     if (!EMPTY(*app_config.web_whitelist)) {
         fprintf(file, "  web_whitelist: ");
@@ -258,6 +260,7 @@ enum ConfigError parse_app_config(void) {
     *app_config.stream_dests[0] = '\0';
 
     app_config.sensor_config[0] = 0;
+    app_config.iq_config[0] = 0;
     app_config.audio_enable = false;
     app_config.audio_codec = HAL_AUDCODEC_MP3;
     app_config.audio_bitrate = 128;
@@ -309,6 +312,8 @@ enum ConfigError parse_app_config(void) {
              plat == HAL_PLATFORM_V3 || plat == HAL_PLATFORM_V4))
             goto RET_ERR;
     }
+    // Optional per-platform ISP/IQ config (e.g. Goke/HiSilicon v4 "scene_auto" IQ ini)
+    parse_param_value(&ini, "system", "iq_config", app_config.iq_config);
     int port, count;
     err = parse_int(&ini, "system", "web_port", 0, USHRT_MAX, &port);
     if (err != CONFIG_OK)

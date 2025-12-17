@@ -32,7 +32,7 @@ typedef struct {
 } v4_isp_dev;
 
 typedef struct {
-    void *handleCalcFlick, *handle, *handleAcs, *handleDehaze, *handleDrc, *handleLdci, *handleIrAuto, *handleAwb, 
+    void *handleCalcFlick, *handle, *handleMpi, *handleAcs, *handleDehaze, *handleDrc, *handleLdci, *handleIrAuto, *handleAwb, 
         *handleGokeAwb, *handleAe, *handleGokeAe,  *handleGoke;
 
     int (*fnExit)(int pipe);
@@ -46,10 +46,22 @@ typedef struct {
     int (*fnRegisterAWB)(int pipe, v4_isp_alg *library);
     int (*fnUnregisterAE)(int pipe, v4_isp_alg *library);
     int (*fnUnregisterAWB)(int pipe, v4_isp_alg *library);
+
+    // Optional ISP/IQ controls (not required for base pipeline)
+    int (*fnGetExposureAttr)(int pipe, void *attr);
+    int (*fnSetExposureAttr)(int pipe, const void *attr);
+    int (*fnGetAERouteAttrEx)(int pipe, void *attr);
+    int (*fnSetAERouteAttrEx)(int pipe, const void *attr);
+    int (*fnGetCCMAttr)(int pipe, void *attr);
+    int (*fnSetCCMAttr)(int pipe, const void *attr);
+    int (*fnGetSaturationAttr)(int pipe, void *attr);
+    int (*fnSetSaturationAttr)(int pipe, const void *attr);
 } v4_isp_impl;
 
 static int v4_isp_load(v4_isp_impl *isp_lib) {
     isp_lib->handleCalcFlick = dlopen("lib_hicalcflicker.so", RTLD_LAZY | RTLD_GLOBAL);
+    // Optional: some SDKs export HI_MPI_* symbols from libhi_mpi.so instead of lib*_isp.so.
+    isp_lib->handleMpi = dlopen("libhi_mpi.so", RTLD_LAZY | RTLD_GLOBAL);
 
     if ((isp_lib->handle = dlopen("libisp.so", RTLD_LAZY | RTLD_GLOBAL)) &&
         (isp_lib->handleAe = dlopen("lib_hiae.so", RTLD_LAZY | RTLD_GLOBAL)) &&
@@ -149,6 +161,37 @@ loaded:
         hal_symbol_load("v4_isp", isp_lib->handleAwb, "HI_MPI_AWB_UnRegister")))
         return EXIT_FAILURE;
 
+    // Optional symbols used for applying IQ profiles. These may be absent on some SDKs.
+    // Prefer libhi_mpi.so when present, fallback to the ISP library handle.
+    void *sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetExposureAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetExposureAttr");
+    isp_lib->fnGetExposureAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetExposureAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetExposureAttr");
+    isp_lib->fnSetExposureAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetAERouteAttrEx") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetAERouteAttrEx");
+    isp_lib->fnGetAERouteAttrEx = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetAERouteAttrEx") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetAERouteAttrEx");
+    isp_lib->fnSetAERouteAttrEx = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetCCMAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetCCMAttr");
+    isp_lib->fnGetCCMAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetCCMAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetCCMAttr");
+    isp_lib->fnSetCCMAttr = (int(*)(int, const void*))sym;
+
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_GetSaturationAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_GetSaturationAttr");
+    isp_lib->fnGetSaturationAttr = (int(*)(int, void*))sym;
+    sym = isp_lib->handleMpi ? dlsym(isp_lib->handleMpi, "HI_MPI_ISP_SetSaturationAttr") : NULL;
+    if (!sym) sym = dlsym(isp_lib->handle, "HI_MPI_ISP_SetSaturationAttr");
+    isp_lib->fnSetSaturationAttr = (int(*)(int, const void*))sym;
+
     return EXIT_SUCCESS;
 }
 
@@ -173,6 +216,8 @@ static void v4_isp_unload(v4_isp_impl *isp_lib) {
     isp_lib->handleDehaze = NULL;
     if (isp_lib->handleAcs) dlclose(isp_lib->handleAcs);
     isp_lib->handleAcs = NULL;
+    if (isp_lib->handleMpi) dlclose(isp_lib->handleMpi);
+    isp_lib->handleMpi = NULL;
     if (isp_lib->handle) dlclose(isp_lib->handle);
     isp_lib->handle = NULL;
     if (isp_lib->handleCalcFlick) dlclose(isp_lib->handleCalcFlick);

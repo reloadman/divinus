@@ -1187,7 +1187,7 @@ int start_sdk(void) {
         case HAL_PLATFORM_V1:  ret = v1_pipeline_create(); break;
         case HAL_PLATFORM_V2:  ret = v2_pipeline_create(); break;
         case HAL_PLATFORM_V3:  ret = v3_pipeline_create(); break;
-        case HAL_PLATFORM_V4:  ret = v4_pipeline_create(); break;
+        case HAL_PLATFORM_V4:  ret = v4_pipeline_create(app_config.iq_config); break;
 #elif defined(__mips__)
         case HAL_PLATFORM_T31: ret = t31_pipeline_create(app_config.mirror,
             app_config.flip, app_config.antiflicker, framerate); break;
