@@ -51,7 +51,7 @@ build_one() {
         return 1
     fi
 
-    make -C src clean
+    make -C src clean CC="$cc"
     make -j "$NPROC" -C src CC="$cc" OPT="$OPT"
 
     [ -x "$strip_bin" ] && "$strip_bin" divinus 2>/dev/null || true

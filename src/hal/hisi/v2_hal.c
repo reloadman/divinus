@@ -492,6 +492,8 @@ int v2_video_create(char index, hal_vidconfig *config)
     v2_venc_chn channel;
     v2_venc_attr_h26x *attrib;
     memset(&channel, 0, sizeof(channel));
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
 
     if (config->codec == HAL_VIDCODEC_JPG) {
         channel.attrib.codec = V2_VENC_CODEC_JPEG;
@@ -562,7 +564,10 @@ int v2_video_create(char index, hal_vidconfig *config)
     } else if (config->codec == HAL_VIDCODEC_H264) {
         channel.attrib.codec = V2_VENC_CODEC_H264;
         attrib = &channel.attrib.h264;
-        switch (config->mode) {
+        hal_vidmode mode = config->mode;
+        if (h264_plus && mode != HAL_VIDMODE_QP)
+            mode = HAL_VIDMODE_AVBR;
+        switch (mode) {
             case HAL_VIDMODE_CBR:
                 channel.rate.mode = V2_VENC_RATEMODE_H264CBR;
                 channel.rate.h264Cbr = (v2_venc_rate_h26xcbr){ .gop = config->gop,

@@ -124,9 +124,14 @@ int ak_video_create(char index, hal_vidconfig *config)
     char ratemode;
     ak_venc_prof profile;
 
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
+    // AK API exposes only a VBR toggle. Treat ABR/AVBR as VBR for H.264+.
     switch (config->mode) {
         case HAL_VIDMODE_CBR: ratemode = 0; break;
         case HAL_VIDMODE_VBR: ratemode = 1; break;
+        case HAL_VIDMODE_ABR:
+        case HAL_VIDMODE_AVBR: ratemode = 1; break;
         default: HAL_ERROR("ak_venc", "Video encoder does not support this mode!");
     }
     switch (config->codec) {
@@ -155,7 +160,8 @@ int ak_video_create(char index, hal_vidconfig *config)
             .maxQual = MIN(MAX(config->maxQual ? config->maxQual : 50, 20), 50), 
             .dstFps = config->framerate, .gop = config->gop, .maxBitrate = config->maxBitrate, 
             .profile = profile, .subChnOn = index, 
-            .output = index ? AK_VENC_OUT_SUBSTRM : AK_VENC_OUT_MAINSTRM, .vbrModeOn = ratemode};
+            .output = index ? AK_VENC_OUT_SUBSTRM : AK_VENC_OUT_MAINSTRM,
+            .vbrModeOn = (h264_plus ? 1 : ratemode)};
 
         if (!(_ak_venc_dev[index] = ak_venc.fnEnableChannel(&channel)))
             HAL_ERROR("ak_venc", "Creating channel %d failed with %#x!\n%s\n",

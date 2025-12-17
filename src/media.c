@@ -919,7 +919,7 @@ int enable_mjpeg(void) {
             index, ret, errstr(ret));
 
     {
-        hal_vidconfig config;
+        hal_vidconfig config = {0};
         config.width = app_config.mjpeg_width;
         config.height = app_config.mjpeg_height;
         config.codec = HAL_VIDCODEC_MJPG;
@@ -927,6 +927,9 @@ int enable_mjpeg(void) {
         config.framerate = app_config.mjpeg_fps;
         config.bitrate = app_config.mjpeg_bitrate;
         config.maxBitrate = app_config.mjpeg_bitrate * 5 / 4;
+        // Provide deterministic defaults (several HALs read these even in non-QP modes).
+        config.minQual = 70;
+        config.maxQual = 85;
 
         switch (plat) {
 #if defined(__ARM_PCS_VFP)
@@ -991,10 +994,10 @@ int enable_mp4(void) {
             index, ret, errstr(ret));
 
     {
-        hal_vidconfig config;
+        hal_vidconfig config = {0};
         config.width = app_config.mp4_width;
         config.height = app_config.mp4_height;
-        config.codec = app_config.mp4_codecH265 ? 
+        config.codec = app_config.mp4_codecH265 ?
             HAL_VIDCODEC_H265 : HAL_VIDCODEC_H264;
         config.mode = app_config.mp4_mode;
         config.profile = app_config.mp4_profile;
@@ -1002,6 +1005,18 @@ int enable_mp4(void) {
         config.framerate = app_config.mp4_fps;
         config.bitrate = app_config.mp4_bitrate;
         config.maxBitrate = app_config.mp4_bitrate * 5 / 4;
+        // Deterministic defaults + baseline for H.264+ logic in HAL.
+        config.minQual = 34;
+        config.maxQual = 48;
+        if (!app_config.mp4_codecH265 && app_config.mp4_h264_plus) {
+            // GM/Goke (libgm.so) firmwares can reject extended H.264 settings with NOT_SUPPORT.
+            // Keep "H.264+" as a best-effort feature: enable where supported, otherwise fall back.
+            if (plat == HAL_PLATFORM_GM) {
+                HAL_WARNING("media", "H.264+ requested, but GM platform may not support it; falling back to H.264.\n");
+            } else {
+                config.flags |= HAL_VIDOPT_H264_PLUS;
+            }
+        }
 
         switch (plat) {
 #if defined(__ARM_PCS_VFP)
