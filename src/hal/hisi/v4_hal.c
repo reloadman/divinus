@@ -2058,6 +2058,16 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
 
     // Don't fail full IQ apply because RouteEx isn't accepted on this SDK.
     if (ret) {
+        // If firmware can't accept route tables, ensure it doesn't try to use RouteEx.
+        if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+            ISP_EXPOSURE_ATTR_S exp;
+            memset(&exp, 0, sizeof(exp));
+            if (!v4_isp.fnGetExposureAttr(pipe, &exp) && exp.bAERouteExValid) {
+                exp.bAERouteExValid = HI_FALSE;
+                if (!v4_isp.fnSetExposureAttr(pipe, &exp))
+                    HAL_INFO("v4_iq", "AE route-ex: SDK rejected route; forced AERouteExValid=0\n");
+            }
+        }
         HAL_WARNING("v4_iq", "AE route-ex: skipping (SDK rejected), continuing\n");
         return EXIT_SUCCESS;
     }
