@@ -58,6 +58,8 @@ typedef struct {
     int (*fnSetSaturationAttr)(int pipe, const void *attr);
     int (*fnGetDRCAttr)(int pipe, void *attr);
     int (*fnSetDRCAttr)(int pipe, const void *attr);
+    int (*fnGetModuleControl)(int pipe, void *ctrl);
+    int (*fnSetModuleControl)(int pipe, const void *ctrl);
     int (*fnGetNRAttr)(int pipe, void *attr);
     int (*fnSetNRAttr)(int pipe, const void *attr);
     int (*fnGetGammaAttr)(int pipe, void *attr);
@@ -212,6 +214,10 @@ loaded:
         handles_isp, (const char*[]){ "HI_MPI_ISP_GetDRCAttr", "MPI_ISP_GetDRCAttr", "GK_API_ISP_GetDRCAttr", NULL });
     isp_lib->fnSetDRCAttr = (int(*)(int, const void*))v4_dlsym_multi(
         handles_isp, (const char*[]){ "HI_MPI_ISP_SetDRCAttr", "MPI_ISP_SetDRCAttr", "GK_API_ISP_SetDRCAttr", NULL });
+    isp_lib->fnGetModuleControl = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetModuleControl", "MPI_ISP_GetModuleControl", "GK_API_ISP_GetModuleControl", NULL });
+    isp_lib->fnSetModuleControl = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetModuleControl", "MPI_ISP_SetModuleControl", "GK_API_ISP_SetModuleControl", NULL });
     isp_lib->fnGetNRAttr = (int(*)(int, void*))v4_dlsym_multi(
         handles_isp, (const char*[]){ "HI_MPI_ISP_GetNRAttr", "MPI_ISP_GetNRAttr", "GK_API_ISP_GetNRAttr", NULL });
     isp_lib->fnSetNRAttr = (int(*)(int, const void*))v4_dlsym_multi(

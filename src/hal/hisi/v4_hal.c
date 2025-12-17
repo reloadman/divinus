@@ -463,6 +463,12 @@ typedef struct {
     ISP_SATURATION_AUTO_S stAuto;
 } ISP_SATURATION_ATTR_S;
 
+// Minimal ModuleControl union (we only need u64Key bitmask).
+// In Hi/GK SDK, bit 8 is bitBypassDRC.
+typedef union {
+    HI_U64 u64Key;
+} ISP_MODULE_CTRL_U;
+
 // ---- DRC ----
 #ifndef HI_ISP_DRC_CC_NODE_NUM
 #define HI_ISP_DRC_CC_NODE_NUM 33
@@ -1087,6 +1093,32 @@ static int v4_iq_apply_static_drc(struct IniConfig *ini, int pipe) {
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_GetDRCAttr failed with %#x\n", ret);
         return ret;
+    }
+
+    // Ensure DRC module is not bypassed (some firmwares default to bypass in linear mode).
+    if (v4_isp.fnGetModuleControl && v4_isp.fnSetModuleControl) {
+        ISP_MODULE_CTRL_U mc;
+        memset(&mc, 0, sizeof(mc));
+        int gr = v4_isp.fnGetModuleControl(pipe, &mc);
+        if (!gr) {
+            HI_U64 before = mc.u64Key;
+            mc.u64Key &= ~(1ULL << 8); // bitBypassDRC
+            int sr = v4_isp.fnSetModuleControl(pipe, &mc);
+            if (!sr) {
+                ISP_MODULE_CTRL_U mc2;
+                memset(&mc2, 0, sizeof(mc2));
+                if (!v4_isp.fnGetModuleControl(pipe, &mc2))
+                    HAL_INFO("v4_iq", "DRC: module control u64Key %#llx -> %#llx\n",
+                        (unsigned long long)before, (unsigned long long)mc2.u64Key);
+                else
+                    HAL_INFO("v4_iq", "DRC: module control u64Key %#llx -> (set ok)\n",
+                        (unsigned long long)before);
+            } else {
+                HAL_WARNING("v4_iq", "DRC: SetModuleControl failed with %#x\n", sr);
+            }
+        } else {
+            HAL_WARNING("v4_iq", "DRC: GetModuleControl failed with %#x\n", gr);
+        }
     }
 
     int val;
