@@ -52,6 +52,7 @@ typedef struct {
     int (*fnSetExposureAttr)(int pipe, const void *attr);
     int (*fnGetAERouteAttrEx)(int pipe, void *attr);
     int (*fnSetAERouteAttrEx)(int pipe, const void *attr);
+    int (*fnQueryExposureInfo)(int pipe, void *expInfo);
     int (*fnGetCCMAttr)(int pipe, void *attr);
     int (*fnSetCCMAttr)(int pipe, const void *attr);
     int (*fnGetSaturationAttr)(int pipe, void *attr);
@@ -199,6 +200,8 @@ loaded:
         handles_ae, (const char*[]){ "HI_MPI_ISP_GetExposureAttr", "MPI_ISP_GetExposureAttr", "GK_API_ISP_GetExposureAttr", NULL });
     isp_lib->fnSetExposureAttr = (int(*)(int, const void*))v4_dlsym_multi(
         handles_ae, (const char*[]){ "HI_MPI_ISP_SetExposureAttr", "MPI_ISP_SetExposureAttr", "GK_API_ISP_SetExposureAttr", NULL });
+    isp_lib->fnQueryExposureInfo = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_QueryExposureInfo", "MPI_ISP_QueryExposureInfo", "GK_API_ISP_QueryExposureInfo", NULL });
     isp_lib->fnGetAERouteAttrEx = (int(*)(int, void*))v4_dlsym_multi(
         handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttrEx", "MPI_ISP_GetAERouteAttrEx", "GK_API_ISP_GetAERouteAttrEx", NULL });
     isp_lib->fnSetAERouteAttrEx = (int(*)(int, const void*))v4_dlsym_multi(

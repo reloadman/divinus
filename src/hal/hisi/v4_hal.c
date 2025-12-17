@@ -2,6 +2,7 @@
 
 #include "v4_hal.h"
 #include <ctype.h>
+#include <stdint.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <strings.h>
@@ -42,6 +43,8 @@ static char _v4_iq_cfg_path[256] = {0};
 
 // Forward decl (used by delayed apply thread)
 static int v4_iq_apply(const char *path, int pipe);
+static void v4_iq_dyn_update_from_ini(struct IniConfig *ini, int pipe, bool enableDynDehaze, bool enableDynLinearDRC);
+static void v4_iq_dyn_maybe_start(int pipe);
 
 typedef struct {
     char path[256];
@@ -56,6 +59,377 @@ static void *v4_iq_delayed_apply_thread(void *arg) {
     free(ctx);
     return NULL;
 }
+
+#if 0
+// ---- Dynamic IQ (by ISO) ----
+#define V4_IQ_DYN_MAX_POINTS 32
+typedef struct {
+    bool enabled;
+    int n;                  // number of points
+    HI_U32 iso_thr[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  str[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_dyn_dehaze_cfg;
+
+typedef struct {
+    bool enabled;
+    int n;
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U8  localMixBrightMax[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixBrightMin[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixDarkMax[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixDarkMin[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  brightGainLmt[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  brightGainLmtStep[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  darkGainLmtY[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  darkGainLmtC[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  fltScaleCoarse[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  fltScaleFine[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  contrastControl[V4_IQ_DYN_MAX_POINTS];
+    HI_S8  detailAdjustFactor[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U8  asymmetry[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  secondPole[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  compress[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  stretch[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U16 strength[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_dyn_linear_drc_cfg;
+
+typedef struct {
+    pthread_mutex_t lock;
+    int pipe;
+    bool thread_started;
+    v4_iq_dyn_dehaze_cfg dehaze;
+    v4_iq_dyn_linear_drc_cfg linear_drc;
+
+    // last applied (for log/avoid redundant Set*)
+    HI_U32 last_iso;
+    HI_BOOL has_last;
+    HI_U16 last_drc_strength;
+    HI_U8  last_dehaze_strength;
+} v4_iq_dyn_state;
+
+static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static inline HI_U32 v4_iq_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U32 *yp, int n) {
+    if (n <= 1) return (n == 1) ? yp[0] : 0;
+    if (x <= xp[0]) return yp[0];
+    if (x >= xp[n - 1]) return yp[n - 1];
+    for (int i = 0; i < n - 1; i++) {
+        HI_U32 x0 = xp[i], x1 = xp[i + 1];
+        if (x >= x0 && x <= x1) {
+            HI_U32 y0 = yp[i], y1 = yp[i + 1];
+            if (x1 == x0) return y1;
+            // linear interpolation (integer)
+            return (HI_U32)(y0 + (HI_U64)(y1 - y0) * (x - x0) / (x1 - x0));
+        }
+    }
+    return yp[n - 1];
+}
+
+static inline HI_S32 v4_iq_interp_s32(HI_U32 x, const HI_U32 *xp, const HI_S32 *yp, int n) {
+    if (n <= 1) return (n == 1) ? yp[0] : 0;
+    if (x <= xp[0]) return yp[0];
+    if (x >= xp[n - 1]) return yp[n - 1];
+    for (int i = 0; i < n - 1; i++) {
+        HI_U32 x0 = xp[i], x1 = xp[i + 1];
+        if (x >= x0 && x <= x1) {
+            HI_S32 y0 = yp[i], y1 = yp[i + 1];
+            if (x1 == x0) return y1;
+            return (HI_S32)(y0 + (HI_S64)(y1 - y0) * (HI_S64)(x - x0) / (HI_S64)(x1 - x0));
+        }
+    }
+    return yp[n - 1];
+}
+
+static void v4_iq_dyn_load_dynamic_dehaze(struct IniConfig *ini) {
+    v4_iq_dyn_dehaze_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "dynamic_dehaze", &sec_s, &sec_e) != CONFIG_OK) {
+        // no section -> disable
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.dehaze.enabled = false;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+        return;
+    }
+
+    int en = 1;
+    parse_int(ini, "dynamic_dehaze", "Enable", 0, 1, &en); // optional
+    cfg.enabled = (en != 0);
+
+    char buf[2048];
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS] = {0};
+    HI_U32 str[V4_IQ_DYN_MAX_POINTS] = {0};
+    int nIso = 0, nStr = 0;
+
+    if (parse_param_value(ini, "dynamic_dehaze", "IsoThresh", buf) == CONFIG_OK)
+        nIso = v4_iq_parse_csv_u32(buf, iso, V4_IQ_DYN_MAX_POINTS);
+    if (parse_param_value(ini, "dynamic_dehaze", "AutoDehazeStr", buf) == CONFIG_OK)
+        nStr = v4_iq_parse_csv_u32(buf, str, V4_IQ_DYN_MAX_POINTS);
+
+    cfg.n = (nIso < nStr) ? nIso : nStr;
+    if (cfg.n > V4_IQ_DYN_MAX_POINTS) cfg.n = V4_IQ_DYN_MAX_POINTS;
+    for (int i = 0; i < cfg.n; i++) {
+        cfg.iso_thr[i] = iso[i];
+        HI_U32 v = str[i];
+        if (v > 255) v = 255;
+        cfg.str[i] = (HI_U8)v;
+    }
+
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    _v4_iq_dyn.dehaze = cfg;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+}
+
+static void v4_iq_dyn_load_dynamic_linear_drc(struct IniConfig *ini) {
+    v4_iq_dyn_linear_drc_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, "dynamic_linear_drc", &sec_s, &sec_e) != CONFIG_OK) {
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.linear_drc.enabled = false;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+        return;
+    }
+
+    int en = 1;
+    if (parse_int(ini, "dynamic_linear_drc", "Enable", 0, 1, &en) == CONFIG_OK)
+        cfg.enabled = (en != 0);
+    else
+        cfg.enabled = true;
+
+    int isoCnt = 0;
+    if (parse_int(ini, "dynamic_linear_drc", "IsoCnt", 1, V4_IQ_DYN_MAX_POINTS, &isoCnt) != CONFIG_OK)
+        isoCnt = 0;
+
+    char buf[4096];
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS] = {0};
+    int nIso = 0;
+    if (parse_param_value(ini, "dynamic_linear_drc", "IsoLevel", buf) == CONFIG_OK)
+        nIso = v4_iq_parse_csv_u32(buf, iso, V4_IQ_DYN_MAX_POINTS);
+    cfg.n = isoCnt > 0 ? isoCnt : nIso;
+    if (cfg.n > nIso) cfg.n = nIso;
+    if (cfg.n > V4_IQ_DYN_MAX_POINTS) cfg.n = V4_IQ_DYN_MAX_POINTS;
+    for (int i = 0; i < cfg.n; i++) cfg.iso[i] = iso[i];
+
+    // Helper to parse per-iso u8 arrays
+    HI_U32 tmp[V4_IQ_DYN_MAX_POINTS];
+    #define PARSE_U8(key, dst) \
+        do { \
+            if (parse_param_value(ini, "dynamic_linear_drc", (key), buf) == CONFIG_OK) { \
+                memset(tmp, 0, sizeof(tmp)); \
+                int nn = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS); \
+                if (nn < cfg.n) cfg.n = nn; \
+                for (int i = 0; i < cfg.n; i++) { \
+                    HI_U32 v = tmp[i]; if (v > 255) v = 255; \
+                    (dst)[i] = (HI_U8)v; \
+                } \
+            } \
+        } while (0)
+
+    PARSE_U8("LocalMixingBrightMax", cfg.localMixBrightMax);
+    PARSE_U8("LocalMixingBrightMin", cfg.localMixBrightMin);
+    PARSE_U8("LocalMixingDarkMax", cfg.localMixDarkMax);
+    PARSE_U8("LocalMixingDarkMin", cfg.localMixDarkMin);
+    PARSE_U8("BrightGainLmt", cfg.brightGainLmt);
+    PARSE_U8("BrightGainLmtStep", cfg.brightGainLmtStep);
+    PARSE_U8("DarkGainLmtY", cfg.darkGainLmtY);
+    PARSE_U8("DarkGainLmtC", cfg.darkGainLmtC);
+    PARSE_U8("FltScaleCoarse", cfg.fltScaleCoarse);
+    PARSE_U8("FltScaleFine", cfg.fltScaleFine);
+    PARSE_U8("ContrastControl", cfg.contrastControl);
+    PARSE_U8("Asymmetry", cfg.asymmetry);
+    PARSE_U8("SecondPole", cfg.secondPole);
+    PARSE_U8("Compress", cfg.compress);
+    PARSE_U8("Stretch", cfg.stretch);
+
+    // Signed (DetailAdjustFactor)
+    if (parse_param_value(ini, "dynamic_linear_drc", "DetailAdjustFactor", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int nn = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS);
+        if (nn < cfg.n) cfg.n = nn;
+        for (int i = 0; i < cfg.n; i++) {
+            HI_S32 v = (HI_S32)tmp[i];
+            if (v > 127) v = 127;
+            if (v < -128) v = -128;
+            cfg.detailAdjustFactor[i] = (HI_S8)v;
+        }
+    }
+
+    // Strength (u16)
+    if (parse_param_value(ini, "dynamic_linear_drc", "Strength", buf) == CONFIG_OK) {
+        memset(tmp, 0, sizeof(tmp));
+        int nn = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS);
+        if (nn < cfg.n) cfg.n = nn;
+        for (int i = 0; i < cfg.n; i++) {
+            HI_U32 v = tmp[i];
+            if (v > 65535) v = 65535;
+            cfg.strength[i] = (HI_U16)v;
+        }
+    }
+
+    #undef PARSE_U8
+
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    _v4_iq_dyn.linear_drc = cfg;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+}
+
+static void v4_iq_dyn_unbypass_modules(int pipe) {
+    if (!v4_isp.fnGetModuleControl || !v4_isp.fnSetModuleControl) return;
+    ISP_MODULE_CTRL_U mc;
+    memset(&mc, 0, sizeof(mc));
+    if (v4_isp.fnGetModuleControl(pipe, &mc)) return;
+    mc.u64Key &= ~(1ULL << 5);  // Dehaze
+    mc.u64Key &= ~(1ULL << 8);  // DRC
+    mc.u64Key &= ~(1ULL << 21); // LDCI (safe, if dynamic uses it later)
+    v4_isp.fnSetModuleControl(pipe, &mc);
+}
+
+static void *v4_iq_dynamic_thread(void *arg) {
+    int pipe = (int)(intptr_t)arg;
+    // Wait for ISP_Run to initialize internal state.
+    usleep(700 * 1000);
+
+    if (!v4_isp.fnQueryExposureInfo) {
+        HAL_INFO("v4_iq", "Dynamic IQ: QueryExposureInfo API not available, skipping dynamics\n");
+        return NULL;
+    }
+
+    v4_iq_dyn_unbypass_modules(pipe);
+
+    for (;;) {
+        // Snapshot current configs
+        v4_iq_dyn_dehaze_cfg deh;
+        v4_iq_dyn_linear_drc_cfg drc;
+        HI_BOOL has_last;
+        HI_U16 last_drc;
+        HI_U8 last_deh;
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        deh = _v4_iq_dyn.dehaze;
+        drc = _v4_iq_dyn.linear_drc;
+        has_last = _v4_iq_dyn.has_last;
+        last_drc = _v4_iq_dyn.last_drc_strength;
+        last_deh = _v4_iq_dyn.last_dehaze_strength;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+        if (!deh.enabled && !drc.enabled) {
+            // nothing to do
+            usleep(1000 * 1000);
+            continue;
+        }
+
+        ISP_EXP_INFO_S expi;
+        memset(&expi, 0, sizeof(expi));
+        int qr = v4_isp.fnQueryExposureInfo(pipe, &expi);
+        if (qr) {
+            usleep(500 * 1000);
+            continue;
+        }
+        HI_U32 iso = expi.u32ISO;
+
+        // ---- dynamic dehaze ----
+        if (deh.enabled && deh.n >= 2 && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
+            HI_U32 deh_u32[V4_IQ_DYN_MAX_POINTS];
+            for (int i = 0; i < deh.n; i++) deh_u32[i] = deh.str[i];
+            HI_U8 target = (HI_U8)v4_iq_interp_u32(iso, deh.iso_thr, deh_u32, deh.n);
+            if (!has_last || target != last_deh) {
+                ISP_DEHAZE_ATTR_S dh;
+                memset(&dh, 0, sizeof(dh));
+                if (!v4_isp.fnGetDehazeAttr(pipe, &dh)) {
+                    dh.bEnable = HI_TRUE;
+                    dh.enOpType = OP_TYPE_AUTO;
+                    dh.stAuto.u8strength = target;
+                    if (!v4_isp.fnSetDehazeAttr(pipe, &dh)) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_dehaze_strength = target;
+                        _v4_iq_dyn.last_iso = iso;
+                        _v4_iq_dyn.has_last = HI_TRUE;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "Dynamic Dehaze: iso=%u strength=%u\n", (unsigned)iso, (unsigned)target);
+                    }
+                }
+            }
+        }
+
+        // ---- dynamic linear drc ----
+        if (drc.enabled && drc.n >= 2 && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
+            // Interpolate all needed params
+            HI_U32 tmp_u32[V4_IQ_DYN_MAX_POINTS];
+            for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.strength[i];
+            HI_U16 targetStrength = (HI_U16)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+
+            if (!has_last || targetStrength != last_drc) {
+                ISP_DRC_ATTR_S da;
+                memset(&da, 0, sizeof(da));
+                if (!v4_isp.fnGetDRCAttr(pipe, &da)) {
+                    da.bEnable = HI_TRUE;
+                    da.enOpType = OP_TYPE_AUTO;
+                    da.enCurveSelect = DRC_CURVE_ASYMMETRY; // matches dynamic_linear_drc fields
+                    da.stAuto.u16Strength = targetStrength;
+
+                    // u8 fields
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.localMixBrightMax[i];
+                    da.u8LocalMixingBrightMax = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.localMixBrightMin[i];
+                    da.u8LocalMixingBrightMin = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.localMixDarkMax[i];
+                    da.u8LocalMixingDarkMax = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.localMixDarkMin[i];
+                    da.u8LocalMixingDarkMin = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.brightGainLmt[i];
+                    da.u8BrightGainLmt = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.brightGainLmtStep[i];
+                    da.u8BrightGainLmtStep = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.darkGainLmtY[i];
+                    da.u8DarkGainLmtY = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.darkGainLmtC[i];
+                    da.u8DarkGainLmtC = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.fltScaleCoarse[i];
+                    da.u8FltScaleCoarse = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.fltScaleFine[i];
+                    da.u8FltScaleFine = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.contrastControl[i];
+                    da.u8ContrastControl = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+
+                    // signed detail adjust
+                    HI_S32 svals[V4_IQ_DYN_MAX_POINTS];
+                    for (int i = 0; i < drc.n; i++) svals[i] = (HI_S32)drc.detailAdjustFactor[i];
+                    da.s8DetailAdjustFactor = (HI_S8)v4_iq_interp_s32(iso, drc.iso, svals, drc.n);
+
+                    // asymmetry curve params
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.asymmetry[i];
+                    da.stAsymmetryCurve.u8Asymmetry = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.secondPole[i];
+                    da.stAsymmetryCurve.u8SecondPole = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.stretch[i];
+                    da.stAsymmetryCurve.u8Stretch = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+                    for (int i = 0; i < drc.n; i++) tmp_u32[i] = drc.compress[i];
+                    da.stAsymmetryCurve.u8Compress = (HI_U8)v4_iq_interp_u32(iso, drc.iso, tmp_u32, drc.n);
+
+                    if (!v4_isp.fnSetDRCAttr(pipe, &da)) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_drc_strength = targetStrength;
+                        _v4_iq_dyn.last_iso = iso;
+                        _v4_iq_dyn.has_last = HI_TRUE;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u\n",
+                            (unsigned)iso, (unsigned)targetStrength);
+                    }
+                }
+            }
+        }
+
+        usleep(500 * 1000);
+    }
+    return NULL;
+}
+
+#endif
 
 void v4_hal_deinit(void)
 {
@@ -260,6 +634,10 @@ void *v4_image_thread(void)
         }
     }
 
+    // Start dynamic IQ thread (by ISO) if dynamic sections are present.
+    if (_v4_iq_cfg_path[0])
+        v4_iq_dyn_maybe_start(_v4_vi_pipe);
+
     if (ret = v4_isp.fnRun(_v4_isp_dev))
         HAL_DANGER("v4_isp", "Operation failed with %#x!\n", ret);
     HAL_INFO("v4_isp", "Shutting down ISP thread...\n");
@@ -271,6 +649,7 @@ typedef unsigned char HI_U8;
 typedef unsigned short HI_U16;
 typedef unsigned int HI_U32;
 typedef unsigned long long HI_U64;
+typedef long long HI_S64;
 typedef signed char HI_S8;
 typedef short HI_S16;
 typedef int HI_S32;
@@ -409,6 +788,23 @@ typedef struct {
     HI_BOOL bAEGainSepCfg;
 } ISP_EXPOSURE_ATTR_S;
 
+#ifndef HIST_NUM
+#define HIST_NUM 1024
+#endif
+
+#define ISP_AE_ROUTE_MAX_NODES 16
+typedef struct {
+    HI_U32 u32IntTime;
+    HI_U32 u32SysGain;
+    ISP_IRIS_F_NO_E enIrisFNO;
+    HI_U32 u32IrisFNOLin;
+} ISP_AE_ROUTE_NODE_S;
+
+typedef struct {
+    HI_U32 u32TotalNum;
+    ISP_AE_ROUTE_NODE_S astRouteNode[ISP_AE_ROUTE_MAX_NODES];
+} ISP_AE_ROUTE_S;
+
 #define ISP_AE_ROUTE_EX_MAX_NODES 16
 typedef struct {
     HI_U32 u32IntTime;
@@ -423,6 +819,37 @@ typedef struct {
     HI_U32 u32TotalNum;
     ISP_AE_ROUTE_EX_NODE_S astRouteExNode[ISP_AE_ROUTE_EX_MAX_NODES];
 } ISP_AE_ROUTE_EX_S;
+
+// Minimal-but-layout-safe exposure info used for dynamic IQ by ISO.
+// Keep the full struct (incl. HIST_NUM array) to avoid SDK overwriting stack.
+typedef struct {
+    HI_U32 u32ExpTime;
+    HI_U32 u32ShortExpTime;
+    HI_U32 u32MedianExpTime;
+    HI_U32 u32LongExpTime;
+    HI_U32 u32AGain;
+    HI_U32 u32DGain;
+    HI_U32 u32AGainSF;
+    HI_U32 u32DGainSF;
+    HI_U32 u32ISPDGain;
+    HI_U32 u32Exposure;
+    HI_BOOL bExposureIsMAX;
+    HI_S16 s16HistError;
+    HI_U32 au32AE_Hist1024Value[HIST_NUM];
+    HI_U8  u8AveLum;
+    HI_U32 u32LinesPer500ms;
+    HI_U32 u32PirisFNO;
+    HI_U32 u32Fps;
+    HI_U32 u32ISO;
+    HI_U32 u32ISOSF;
+    HI_U32 u32ISOCalibrate;
+    HI_U32 u32RefExpRatio;
+    HI_U32 u32FirstStableTime;
+    ISP_AE_ROUTE_S stAERoute;
+    ISP_AE_ROUTE_EX_S stAERouteEx;
+    ISP_AE_ROUTE_S stAERouteSF;
+    ISP_AE_ROUTE_EX_S stAERouteSFEx;
+} ISP_EXP_INFO_S;
 
 #define CCM_MATRIX_SIZE 9
 #define CCM_MATRIX_NUM 7
@@ -911,6 +1338,406 @@ static int v4_iq_parse_csv_u8(const char *s, HI_U8 *out, int max) {
         out[i] = (HI_U8)v;
     }
     return n;
+}
+
+// ---- Dynamic IQ (by ISO): [dynamic_dehaze], [dynamic_linear_drc] ----
+#define V4_IQ_DYN_MAX_POINTS 32
+
+typedef struct {
+    bool enabled;
+    int n;
+    HI_U32 iso_thr[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  str[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_dyn_dehaze_cfg;
+
+typedef struct {
+    bool enabled;
+    int n;
+    HI_U32 iso[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U8  localMixBrightMax[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixBrightMin[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixDarkMax[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  localMixDarkMin[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  brightGainLmt[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  brightGainLmtStep[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  darkGainLmtY[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  darkGainLmtC[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  fltScaleCoarse[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  fltScaleFine[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  contrastControl[V4_IQ_DYN_MAX_POINTS];
+    HI_S8  detailAdjustFactor[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U8  asymmetry[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  secondPole[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  compress[V4_IQ_DYN_MAX_POINTS];
+    HI_U8  stretch[V4_IQ_DYN_MAX_POINTS];
+
+    HI_U16 strength[V4_IQ_DYN_MAX_POINTS];
+} v4_iq_dyn_linear_drc_cfg;
+
+typedef struct {
+    HI_U16 strength;
+    HI_U8  localMixBrightMax, localMixBrightMin, localMixDarkMax, localMixDarkMin;
+    HI_U8  brightGainLmt, brightGainLmtStep, darkGainLmtY, darkGainLmtC;
+    HI_U8  fltScaleCoarse, fltScaleFine, contrastControl;
+    HI_S8  detailAdjustFactor;
+    HI_U8  asymmetry, secondPole, compress, stretch;
+} v4_iq_dyn_drc_sig;
+
+typedef struct {
+    pthread_mutex_t lock;
+    bool thread_started;
+    int pipe;
+    v4_iq_dyn_dehaze_cfg dehaze;
+    v4_iq_dyn_linear_drc_cfg linear_drc;
+
+    HI_BOOL have_last;
+    HI_U8  last_dehaze_strength;
+    v4_iq_dyn_drc_sig last_drc;
+} v4_iq_dyn_state;
+
+static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U32 *yp, int n) {
+    if (n <= 1) return (n == 1) ? yp[0] : 0;
+    if (x <= xp[0]) return yp[0];
+    if (x >= xp[n - 1]) return yp[n - 1];
+    for (int i = 0; i < n - 1; i++) {
+        HI_U32 x0 = xp[i], x1 = xp[i + 1];
+        if (x >= x0 && x <= x1) {
+            HI_U32 y0 = yp[i], y1 = yp[i + 1];
+            if (x1 == x0) return y1;
+            return (HI_U32)(y0 + (HI_U64)(y1 - y0) * (x - x0) / (x1 - x0));
+        }
+    }
+    return yp[n - 1];
+}
+
+static inline HI_S32 v4_iq_dyn_interp_s32(HI_U32 x, const HI_U32 *xp, const HI_S32 *yp, int n) {
+    if (n <= 1) return (n == 1) ? yp[0] : 0;
+    if (x <= xp[0]) return yp[0];
+    if (x >= xp[n - 1]) return yp[n - 1];
+    for (int i = 0; i < n - 1; i++) {
+        HI_U32 x0 = xp[i], x1 = xp[i + 1];
+        if (x >= x0 && x <= x1) {
+            HI_S32 y0 = yp[i], y1 = yp[i + 1];
+            if (x1 == x0) return y1;
+            return (HI_S32)(y0 + (HI_S64)(y1 - y0) * (HI_S64)(x - x0) / (HI_S64)(x1 - x0));
+        }
+    }
+    return yp[n - 1];
+}
+
+static void v4_iq_dyn_unbypass_modules(int pipe) {
+    if (!v4_isp.fnGetModuleControl || !v4_isp.fnSetModuleControl) return;
+    ISP_MODULE_CTRL_U mc;
+    memset(&mc, 0, sizeof(mc));
+    if (v4_isp.fnGetModuleControl(pipe, &mc)) return;
+    mc.u64Key &= ~(1ULL << 5);  // Dehaze
+    mc.u64Key &= ~(1ULL << 8);  // DRC
+    v4_isp.fnSetModuleControl(pipe, &mc);
+}
+
+static void v4_iq_dyn_parse_u8_list(struct IniConfig *ini, const char *section, const char *key, HI_U8 *out, int *ioN) {
+    char buf[4096];
+    HI_U32 tmp[V4_IQ_DYN_MAX_POINTS];
+    if (parse_param_value(ini, section, key, buf) != CONFIG_OK) return;
+    memset(tmp, 0, sizeof(tmp));
+    int n = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS);
+    if (*ioN == 0 || n < *ioN) *ioN = n;
+    for (int i = 0; i < *ioN; i++) {
+        HI_U32 v = tmp[i];
+        if (v > 255) v = 255;
+        out[i] = (HI_U8)v;
+    }
+}
+
+static void v4_iq_dyn_parse_u16_list(struct IniConfig *ini, const char *section, const char *key, HI_U16 *out, int *ioN) {
+    char buf[4096];
+    HI_U32 tmp[V4_IQ_DYN_MAX_POINTS];
+    if (parse_param_value(ini, section, key, buf) != CONFIG_OK) return;
+    memset(tmp, 0, sizeof(tmp));
+    int n = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS);
+    if (*ioN == 0 || n < *ioN) *ioN = n;
+    for (int i = 0; i < *ioN; i++) {
+        HI_U32 v = tmp[i];
+        if (v > 65535) v = 65535;
+        out[i] = (HI_U16)v;
+    }
+}
+
+static void v4_iq_dyn_parse_s8_list(struct IniConfig *ini, const char *section, const char *key, HI_S8 *out, int *ioN) {
+    char buf[4096];
+    HI_U32 tmp[V4_IQ_DYN_MAX_POINTS];
+    if (parse_param_value(ini, section, key, buf) != CONFIG_OK) return;
+    memset(tmp, 0, sizeof(tmp));
+    int n = v4_iq_parse_csv_u32(buf, tmp, V4_IQ_DYN_MAX_POINTS);
+    if (*ioN == 0 || n < *ioN) *ioN = n;
+    for (int i = 0; i < *ioN; i++) {
+        HI_S32 v = (HI_S32)tmp[i];
+        if (v > 127) v = 127;
+        if (v < -128) v = -128;
+        out[i] = (HI_S8)v;
+    }
+}
+
+static void v4_iq_dyn_parse_iso_list(struct IniConfig *ini, const char *section, const char *key, HI_U32 *out, int *ioN) {
+    char buf[4096];
+    if (parse_param_value(ini, section, key, buf) != CONFIG_OK) return;
+    int n = v4_iq_parse_csv_u32(buf, out, V4_IQ_DYN_MAX_POINTS);
+    if (*ioN == 0 || n < *ioN) *ioN = n;
+}
+
+static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze, bool enableDynLinearDRC) {
+    v4_iq_dyn_dehaze_cfg deh;
+    v4_iq_dyn_linear_drc_cfg drc;
+    memset(&deh, 0, sizeof(deh));
+    memset(&drc, 0, sizeof(drc));
+
+    // dynamic_dehaze
+    {
+        int sec_s = 0, sec_e = 0;
+        if (section_pos(ini, "dynamic_dehaze", &sec_s, &sec_e) == CONFIG_OK && enableDynDehaze) {
+            deh.enabled = true;
+            int en = 1;
+            if (parse_int(ini, "dynamic_dehaze", "Enable", 0, 1, &en) == CONFIG_OK)
+                deh.enabled = (en != 0);
+            int n = 0;
+            v4_iq_dyn_parse_iso_list(ini, "dynamic_dehaze", "IsoThresh", deh.iso_thr, &n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_dehaze", "AutoDehazeStr", deh.str, &n);
+            deh.n = n;
+            if (deh.n < 2) deh.enabled = false;
+        }
+    }
+
+    // dynamic_linear_drc
+    {
+        int sec_s = 0, sec_e = 0;
+        if (section_pos(ini, "dynamic_linear_drc", &sec_s, &sec_e) == CONFIG_OK && enableDynLinearDRC) {
+            drc.enabled = true;
+            int en = 1;
+            if (parse_int(ini, "dynamic_linear_drc", "Enable", 0, 1, &en) == CONFIG_OK)
+                drc.enabled = (en != 0);
+
+            int n = 0;
+            v4_iq_dyn_parse_iso_list(ini, "dynamic_linear_drc", "IsoLevel", drc.iso, &n);
+            drc.n = n;
+
+            // Per-ISO fields (shrink n to common length across lists)
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMax", drc.localMixBrightMax, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMin", drc.localMixBrightMin, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMax", drc.localMixDarkMax, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMin", drc.localMixDarkMin, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmt", drc.brightGainLmt, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmtStep", drc.brightGainLmtStep, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtY", drc.darkGainLmtY, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtC", drc.darkGainLmtC, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleCoarse", drc.fltScaleCoarse, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleFine", drc.fltScaleFine, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "ContrastControl", drc.contrastControl, &drc.n);
+            v4_iq_dyn_parse_s8_list(ini, "dynamic_linear_drc", "DetailAdjustFactor", drc.detailAdjustFactor, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Asymmetry", drc.asymmetry, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "SecondPole", drc.secondPole, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Compress", drc.compress, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Stretch", drc.stretch, &drc.n);
+            v4_iq_dyn_parse_u16_list(ini, "dynamic_linear_drc", "Strength", drc.strength, &drc.n);
+
+            if (drc.n < 2) drc.enabled = false;
+        }
+    }
+
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    _v4_iq_dyn.dehaze = deh;
+    _v4_iq_dyn.linear_drc = drc;
+    _v4_iq_dyn.have_last = HI_FALSE;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+    if (deh.enabled)
+        HAL_INFO("v4_iq", "Dynamic Dehaze: loaded (%d points)\n", deh.n);
+    if (drc.enabled)
+        HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded (%d points)\n", drc.n);
+}
+
+static void *v4_iq_dynamic_thread(void *arg) {
+    int pipe = (int)(intptr_t)arg;
+    usleep(700 * 1000);
+
+    if (!v4_isp.fnQueryExposureInfo) {
+        HAL_INFO("v4_iq", "Dynamic IQ: QueryExposureInfo API not available, skipping dynamics\n");
+        return NULL;
+    }
+
+    v4_iq_dyn_unbypass_modules(pipe);
+
+    for (;;) {
+        v4_iq_dyn_dehaze_cfg deh;
+        v4_iq_dyn_linear_drc_cfg drc;
+        HI_BOOL have_last;
+        HI_U8 last_deh;
+        v4_iq_dyn_drc_sig last_drc;
+
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        deh = _v4_iq_dyn.dehaze;
+        drc = _v4_iq_dyn.linear_drc;
+        have_last = _v4_iq_dyn.have_last;
+        last_deh = _v4_iq_dyn.last_dehaze_strength;
+        last_drc = _v4_iq_dyn.last_drc;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+        if (!deh.enabled && !drc.enabled) {
+            usleep(1000 * 1000);
+            continue;
+        }
+
+        ISP_EXP_INFO_S expi;
+        memset(&expi, 0, sizeof(expi));
+        if (v4_isp.fnQueryExposureInfo(pipe, &expi)) {
+            usleep(500 * 1000);
+            continue;
+        }
+        HI_U32 iso = expi.u32ISO;
+
+        // Dehaze by ISO
+        if (deh.enabled && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
+            HI_U32 str32[V4_IQ_DYN_MAX_POINTS];
+            for (int i = 0; i < deh.n; i++) str32[i] = deh.str[i];
+            HI_U8 target = (HI_U8)v4_iq_dyn_interp_u32(iso, deh.iso_thr, str32, deh.n);
+            if (!have_last || target != last_deh) {
+                ISP_DEHAZE_ATTR_S dh;
+                memset(&dh, 0, sizeof(dh));
+                if (!v4_isp.fnGetDehazeAttr(pipe, &dh)) {
+                    dh.bEnable = HI_TRUE;
+                    dh.enOpType = OP_TYPE_AUTO;
+                    dh.stAuto.u8strength = target;
+                    if (!v4_isp.fnSetDehazeAttr(pipe, &dh)) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_dehaze_strength = target;
+                        _v4_iq_dyn.have_last = HI_TRUE;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "Dynamic Dehaze: iso=%u strength=%u\n", (unsigned)iso, (unsigned)target);
+                    }
+                }
+            }
+        }
+
+        // Linear DRC by ISO
+        if (drc.enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
+            HI_U32 u16vals[V4_IQ_DYN_MAX_POINTS];
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.strength[i];
+            HI_U16 strength = (HI_U16)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+
+            // Compute full "signature" of applied values to avoid redundant sets.
+            v4_iq_dyn_drc_sig cur;
+            memset(&cur, 0, sizeof(cur));
+            cur.strength = strength;
+
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixBrightMax[i];
+            cur.localMixBrightMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixBrightMin[i];
+            cur.localMixBrightMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixDarkMax[i];
+            cur.localMixDarkMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixDarkMin[i];
+            cur.localMixDarkMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.brightGainLmt[i];
+            cur.brightGainLmt = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.brightGainLmtStep[i];
+            cur.brightGainLmtStep = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.darkGainLmtY[i];
+            cur.darkGainLmtY = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.darkGainLmtC[i];
+            cur.darkGainLmtC = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.fltScaleCoarse[i];
+            cur.fltScaleCoarse = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.fltScaleFine[i];
+            cur.fltScaleFine = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.contrastControl[i];
+            cur.contrastControl = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+
+            HI_S32 svals[V4_IQ_DYN_MAX_POINTS];
+            for (int i = 0; i < drc.n; i++) svals[i] = (HI_S32)drc.detailAdjustFactor[i];
+            cur.detailAdjustFactor = (HI_S8)v4_iq_dyn_interp_s32(iso, drc.iso, svals, drc.n);
+
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.asymmetry[i];
+            cur.asymmetry = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.secondPole[i];
+            cur.secondPole = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.compress[i];
+            cur.compress = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.stretch[i];
+            cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+
+            if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
+                ISP_DRC_ATTR_S da;
+                memset(&da, 0, sizeof(da));
+                if (!v4_isp.fnGetDRCAttr(pipe, &da)) {
+                    da.bEnable = HI_TRUE;
+                    da.enOpType = OP_TYPE_AUTO;
+                    da.enCurveSelect = DRC_CURVE_ASYMMETRY;
+                    da.stAuto.u16Strength = cur.strength;
+                    da.u8LocalMixingBrightMax = cur.localMixBrightMax;
+                    da.u8LocalMixingBrightMin = cur.localMixBrightMin;
+                    da.u8LocalMixingDarkMax = cur.localMixDarkMax;
+                    da.u8LocalMixingDarkMin = cur.localMixDarkMin;
+                    da.u8BrightGainLmt = cur.brightGainLmt;
+                    da.u8BrightGainLmtStep = cur.brightGainLmtStep;
+                    da.u8DarkGainLmtY = cur.darkGainLmtY;
+                    da.u8DarkGainLmtC = cur.darkGainLmtC;
+                    da.u8FltScaleCoarse = cur.fltScaleCoarse;
+                    da.u8FltScaleFine = cur.fltScaleFine;
+                    da.u8ContrastControl = cur.contrastControl;
+                    da.s8DetailAdjustFactor = cur.detailAdjustFactor;
+                    da.stAsymmetryCurve.u8Asymmetry = cur.asymmetry;
+                    da.stAsymmetryCurve.u8SecondPole = cur.secondPole;
+                    da.stAsymmetryCurve.u8Compress = cur.compress;
+                    da.stAsymmetryCurve.u8Stretch = cur.stretch;
+
+                    if (!v4_isp.fnSetDRCAttr(pipe, &da)) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_drc = cur;
+                        _v4_iq_dyn.have_last = HI_TRUE;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u contrast=%u\n",
+                            (unsigned)iso, (unsigned)cur.strength, (unsigned)cur.contrastControl);
+                    }
+                }
+            }
+        }
+
+        usleep(500 * 1000);
+    }
+    return NULL;
+}
+
+static void v4_iq_dyn_update_from_ini(struct IniConfig *ini, int pipe, bool enableDynDehaze, bool enableDynLinearDRC) {
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    _v4_iq_dyn.pipe = pipe;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+    v4_iq_dyn_load_from_ini(ini, enableDynDehaze, enableDynLinearDRC);
+}
+
+static void v4_iq_dyn_maybe_start(int pipe) {
+    bool need = false;
+    bool start = false;
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    need = (_v4_iq_dyn.dehaze.enabled || _v4_iq_dyn.linear_drc.enabled);
+    if (need && !_v4_iq_dyn.thread_started) {
+        _v4_iq_dyn.thread_started = true;
+        start = true;
+    }
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+    if (!start) return;
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, v4_iq_dynamic_thread, (void *)(intptr_t)pipe) == 0) {
+        pthread_detach(tid);
+    } else {
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.thread_started = false;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+    }
 }
 
 static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
@@ -1754,6 +2581,7 @@ static int v4_iq_apply(const char *path, int pipe) {
     bool doStaticLDCI = true, doStaticDehaze = true;
     bool doStaticDRC = true, doStaticNR = true, doStaticSharpen = true;
     bool doGamma = true;
+    bool doDynDehaze = true, doDynLinearDRC = true;
     parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
     parse_bool(&ini, "module_state", "bStaticCCM", &doStaticCCM);
     parse_bool(&ini, "module_state", "bStaticSaturation", &doStaticSat);
@@ -1764,6 +2592,12 @@ static int v4_iq_apply(const char *path, int pipe) {
     parse_bool(&ini, "module_state", "bStaticSharpen", &doStaticSharpen);
     // Gamma in this IQ is described under "dynamic_gamma"
     parse_bool(&ini, "module_state", "bDynamicGamma", &doGamma);
+    // Optional dynamic controls
+    parse_bool(&ini, "module_state", "bDynamicDehaze", &doDynDehaze);
+    parse_bool(&ini, "module_state", "bDynamicLinearDRC", &doDynLinearDRC);
+
+    // Parse dynamic sections now (used by background thread).
+    v4_iq_dyn_update_from_ini(&ini, pipe, doDynDehaze, doDynLinearDRC);
 
     int ret = EXIT_SUCCESS;
     HAL_INFO("v4_iq", "Loading IQ config '%s'\n", path);
