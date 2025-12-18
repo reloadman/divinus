@@ -1,6 +1,7 @@
 #include "rtsp_smol.h"
 
 #include "app_config.h"
+#include "hal/tools.h"
 #include "hal/types.h"
 #include "media.h"
 
@@ -37,6 +38,13 @@
 #define RTSP_TCP_MAX_BUFFER (256 * 1024)
 // When TCP buffer is full, drain oldest interleaved frames down to this size.
 #define RTSP_TCP_TRIM_TARGET (RTSP_TCP_MAX_BUFFER / 2)
+
+// NAL unit types (H.264 / H.265) used for SDP parameter collection.
+#define H264_NAL_TYPE_SPS 7
+#define H264_NAL_TYPE_PPS 8
+#define H265_NAL_TYPE_VPS 32
+#define H265_NAL_TYPE_SPS 33
+#define H265_NAL_TYPE_PPS 34
 
 typedef enum {
     TRACK_VIDEO,
@@ -98,6 +106,22 @@ typedef struct {
 } SmolRtspServer;
 
 static SmolRtspServer g_srv;
+
+// Latest codec parameter sets, collected from the live bitstream.
+// Used to populate SDP (sprop-parameter-sets) so ffplay can decode immediately.
+static char g_h264_sps_b64[2048];
+static char g_h264_pps_b64[2048];
+static int g_h264_have_sps = 0;
+static int g_h264_have_pps = 0;
+static uint8_t g_h264_profile_level_id[3] = {0}; // bytes 1..3 of SPS NAL (after NAL header)
+static int g_h264_have_profile = 0;
+
+static char g_h265_vps_b64[2048];
+static char g_h265_sps_b64[2048];
+static char g_h265_pps_b64[2048];
+static int g_h265_have_vps = 0;
+static int g_h265_have_sps = 0;
+static int g_h265_have_pps = 0;
 
 static uint64_t gen_session_id(void) {
     uint64_t hi = (uint64_t)rand();
@@ -351,7 +375,7 @@ static void Controller_options(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Requ
 static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)req;
 
-    char sdp[512] = {0};
+    char sdp[2048] = {0};
     SmolRTSP_Writer w = smolrtsp_string_writer(sdp);
     ssize_t ret = 0;
 
@@ -373,9 +397,75 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
     // H.264 uses RFC6184 packetization-mode. For H.265 (RFC7798) this parameter
     // is not defined; omitting fmtp keeps clients happy.
     if (!app_config.mp4_codecH265) {
-        SMOLRTSP_SDP_DESCRIBE(
-            ret, w,
-            (SMOLRTSP_SDP_ATTR, "fmtp:%d packetization-mode=1", VIDEO_PAYLOAD_TYPE));
+        // If we have SPS/PPS from the live stream, include them in SDP so new clients
+        // can decode immediately without waiting for in-band parameter sets.
+        int have_sprop = 0;
+        int have_plid = 0;
+        char plid[7] = {0};
+        char sps[sizeof(g_h264_sps_b64)];
+        char pps[sizeof(g_h264_pps_b64)];
+        sps[0] = '\0';
+        pps[0] = '\0';
+        pthread_mutex_lock(&g_srv.mtx);
+        have_sprop = g_h264_have_sps && g_h264_have_pps;
+        have_plid = g_h264_have_profile;
+        if (have_plid) {
+            snprintf(plid, sizeof(plid), "%02X%02X%02X",
+                g_h264_profile_level_id[0],
+                g_h264_profile_level_id[1],
+                g_h264_profile_level_id[2]);
+        }
+        // Copy under lock to avoid races while formatting SDP.
+        strncpy(sps, g_h264_sps_b64, sizeof(sps) - 1);
+        sps[sizeof(sps) - 1] = '\0';
+        strncpy(pps, g_h264_pps_b64, sizeof(pps) - 1);
+        pps[sizeof(pps) - 1] = '\0';
+        pthread_mutex_unlock(&g_srv.mtx);
+
+        if (have_sprop) {
+            if (have_plid) {
+                SMOLRTSP_SDP_DESCRIBE(
+                    ret, w,
+                    (SMOLRTSP_SDP_ATTR,
+                        "fmtp:%d packetization-mode=1;profile-level-id=%s;sprop-parameter-sets=%s,%s",
+                        VIDEO_PAYLOAD_TYPE, plid, sps, pps));
+            } else {
+                SMOLRTSP_SDP_DESCRIBE(
+                    ret, w,
+                    (SMOLRTSP_SDP_ATTR,
+                        "fmtp:%d packetization-mode=1;sprop-parameter-sets=%s,%s",
+                        VIDEO_PAYLOAD_TYPE, sps, pps));
+            }
+        } else {
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, w,
+                (SMOLRTSP_SDP_ATTR, "fmtp:%d packetization-mode=1", VIDEO_PAYLOAD_TYPE));
+        }
+    } else {
+        // Best-effort: if we have VPS/SPS/PPS for H.265, include them in SDP.
+        int have_sprop = 0;
+        char vps[sizeof(g_h265_vps_b64)];
+        char sps[sizeof(g_h265_sps_b64)];
+        char pps[sizeof(g_h265_pps_b64)];
+        vps[0] = '\0';
+        sps[0] = '\0';
+        pps[0] = '\0';
+        pthread_mutex_lock(&g_srv.mtx);
+        have_sprop = g_h265_have_vps && g_h265_have_sps && g_h265_have_pps;
+        strncpy(vps, g_h265_vps_b64, sizeof(vps) - 1);
+        vps[sizeof(vps) - 1] = '\0';
+        strncpy(sps, g_h265_sps_b64, sizeof(sps) - 1);
+        sps[sizeof(sps) - 1] = '\0';
+        strncpy(pps, g_h265_pps_b64, sizeof(pps) - 1);
+        pps[sizeof(pps) - 1] = '\0';
+        pthread_mutex_unlock(&g_srv.mtx);
+        if (have_sprop) {
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, w,
+                (SMOLRTSP_SDP_ATTR,
+                    "fmtp:%d sprop-vps=%s;sprop-sps=%s;sprop-pps=%s",
+                    VIDEO_PAYLOAD_TYPE, vps, sps, pps));
+        }
     }
 
     if (app_config.audio_enable && app_config.audio_bitrate) {
@@ -647,6 +737,74 @@ static inline uint64_t monotonic_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+static void update_sprop_h264_locked(const uint8_t *nal, size_t nal_len, uint8_t nal_type) {
+    if (!nal || nal_len < 2)
+        return;
+
+    if (nal_type == H264_NAL_TYPE_SPS) {
+        // Base64 encode full NAL unit (NAL header + payload), per common RTSP practice.
+        const int out_len = base64_encode_length((int)nal_len);
+        if (out_len <= 0 || (size_t)out_len >= sizeof(g_h264_sps_b64))
+            return;
+        const int enc = base64_encode(g_h264_sps_b64, (const char *)nal, (int)nal_len);
+        if (enc <= 0 || (size_t)enc >= sizeof(g_h264_sps_b64))
+            return;
+        g_h264_sps_b64[enc] = '\0';
+        g_h264_have_sps = 1;
+
+        // profile-level-id: 3 bytes from SPS after NAL header byte (if present).
+        if (nal_len >= 4) {
+            g_h264_profile_level_id[0] = nal[1];
+            g_h264_profile_level_id[1] = nal[2];
+            g_h264_profile_level_id[2] = nal[3];
+            g_h264_have_profile = 1;
+        }
+    } else if (nal_type == H264_NAL_TYPE_PPS) {
+        const int out_len = base64_encode_length((int)nal_len);
+        if (out_len <= 0 || (size_t)out_len >= sizeof(g_h264_pps_b64))
+            return;
+        const int enc = base64_encode(g_h264_pps_b64, (const char *)nal, (int)nal_len);
+        if (enc <= 0 || (size_t)enc >= sizeof(g_h264_pps_b64))
+            return;
+        g_h264_pps_b64[enc] = '\0';
+        g_h264_have_pps = 1;
+    }
+}
+
+static void update_sprop_h265_locked(const uint8_t *nal, size_t nal_len, uint8_t nal_type) {
+    if (!nal || nal_len < 3)
+        return;
+
+    if (nal_type == H265_NAL_TYPE_VPS) {
+        const int out_len = base64_encode_length((int)nal_len);
+        if (out_len <= 0 || (size_t)out_len >= sizeof(g_h265_vps_b64))
+            return;
+        const int enc = base64_encode(g_h265_vps_b64, (const char *)nal, (int)nal_len);
+        if (enc <= 0 || (size_t)enc >= sizeof(g_h265_vps_b64))
+            return;
+        g_h265_vps_b64[enc] = '\0';
+        g_h265_have_vps = 1;
+    } else if (nal_type == H265_NAL_TYPE_SPS) {
+        const int out_len = base64_encode_length((int)nal_len);
+        if (out_len <= 0 || (size_t)out_len >= sizeof(g_h265_sps_b64))
+            return;
+        const int enc = base64_encode(g_h265_sps_b64, (const char *)nal, (int)nal_len);
+        if (enc <= 0 || (size_t)enc >= sizeof(g_h265_sps_b64))
+            return;
+        g_h265_sps_b64[enc] = '\0';
+        g_h265_have_sps = 1;
+    } else if (nal_type == H265_NAL_TYPE_PPS) {
+        const int out_len = base64_encode_length((int)nal_len);
+        if (out_len <= 0 || (size_t)out_len >= sizeof(g_h265_pps_b64))
+            return;
+        const int enc = base64_encode(g_h265_pps_b64, (const char *)nal, (int)nal_len);
+        if (enc <= 0 || (size_t)enc >= sizeof(g_h265_pps_b64))
+            return;
+        g_h265_pps_b64[enc] = '\0';
+        g_h265_have_pps = 1;
+    }
+}
+
 static inline void reset_audio_ts(void) {
     g_audio_ts_us = 0;
     g_audio_ts_raw = 0;
@@ -817,6 +975,26 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
     size_t offset = skip_start_code(buf, len);
     if (offset >= len)
         return -1;
+
+    // Collect codec parameter sets for SDP (best-effort).
+    // This helps clients like ffplay decode immediately (avoids "non-existing PPS").
+    if (is_h265) {
+        if (len - offset >= 2) {
+            const uint8_t nal_type = (uint8_t)((buf[offset] >> 1) & 0x3F);
+            if (nal_type == H265_NAL_TYPE_VPS || nal_type == H265_NAL_TYPE_SPS || nal_type == H265_NAL_TYPE_PPS) {
+                pthread_mutex_lock(&g_srv.mtx);
+                update_sprop_h265_locked(buf + offset, len - offset, nal_type);
+                pthread_mutex_unlock(&g_srv.mtx);
+            }
+        }
+    } else {
+        const uint8_t nal_type = (uint8_t)(buf[offset] & 0x1F);
+        if (nal_type == H264_NAL_TYPE_SPS || nal_type == H264_NAL_TYPE_PPS) {
+            pthread_mutex_lock(&g_srv.mtx);
+            update_sprop_h264_locked(buf + offset, len - offset, nal_type);
+            pthread_mutex_unlock(&g_srv.mtx);
+        }
+    }
 
     SmolRTSP_NalUnit nalu;
     if (is_h265) {
