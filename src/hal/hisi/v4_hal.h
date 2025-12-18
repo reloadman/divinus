@@ -39,7 +39,7 @@ int v4_channel_unbind(char index);
 
 void *v4_image_thread(void);
 
-int v4_pipeline_create(void);
+int v4_pipeline_create(const char *iqConfig);
 void v4_pipeline_destroy(void);
 
 int v4_region_create(char handle, hal_rect rect, short opacity);

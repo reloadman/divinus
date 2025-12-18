@@ -32,7 +32,7 @@ typedef struct {
 } v4_isp_dev;
 
 typedef struct {
-    void *handleCalcFlick, *handle, *handleAcs, *handleDehaze, *handleDrc, *handleLdci, *handleIrAuto, *handleAwb, 
+    void *handleCalcFlick, *handle, *handleMpi, *handleAcs, *handleDehaze, *handleDrc, *handleLdci, *handleIrAuto, *handleAwb, 
         *handleGokeAwb, *handleAe, *handleGokeAe,  *handleGoke;
 
     int (*fnExit)(int pipe);
@@ -46,10 +46,54 @@ typedef struct {
     int (*fnRegisterAWB)(int pipe, v4_isp_alg *library);
     int (*fnUnregisterAE)(int pipe, v4_isp_alg *library);
     int (*fnUnregisterAWB)(int pipe, v4_isp_alg *library);
+
+    // Optional ISP/IQ controls (not required for base pipeline)
+    int (*fnGetExposureAttr)(int pipe, void *attr);
+    int (*fnSetExposureAttr)(int pipe, const void *attr);
+    int (*fnGetAERouteAttrEx)(int pipe, void *attr);
+    int (*fnSetAERouteAttrEx)(int pipe, const void *attr);
+    int (*fnGetAERouteAttr)(int pipe, void *attr);
+    int (*fnSetAERouteAttr)(int pipe, const void *attr);
+    int (*fnQueryExposureInfo)(int pipe, void *expInfo);
+    int (*fnGetCCMAttr)(int pipe, void *attr);
+    int (*fnSetCCMAttr)(int pipe, const void *attr);
+    int (*fnGetSaturationAttr)(int pipe, void *attr);
+    int (*fnSetSaturationAttr)(int pipe, const void *attr);
+    int (*fnGetDRCAttr)(int pipe, void *attr);
+    int (*fnSetDRCAttr)(int pipe, const void *attr);
+    int (*fnGetModuleControl)(int pipe, void *ctrl);
+    int (*fnSetModuleControl)(int pipe, const void *ctrl);
+    int (*fnGetDehazeAttr)(int pipe, void *attr);
+    int (*fnSetDehazeAttr)(int pipe, const void *attr);
+    int (*fnGetLDCIAttr)(int pipe, void *attr);
+    int (*fnSetLDCIAttr)(int pipe, const void *attr);
+    int (*fnGetNRAttr)(int pipe, void *attr);
+    int (*fnSetNRAttr)(int pipe, const void *attr);
+    int (*fnGetGammaAttr)(int pipe, void *attr);
+    int (*fnSetGammaAttr)(int pipe, const void *attr);
+    int (*fnGetIspSharpenAttr)(int pipe, void *attr);
+    int (*fnSetIspSharpenAttr)(int pipe, const void *attr);
+
+    int (*fnGetStatisticsConfig)(int pipe, void *cfg);
+    int (*fnSetStatisticsConfig)(int pipe, const void *cfg);
 } v4_isp_impl;
+
+// Helper: resolve a symbol from multiple handles and multiple name variants.
+// Must be file-scope (C does not support nested function definitions).
+static inline void *v4_dlsym_multi(void *handles[], const char *names[]) {
+    for (int h = 0; handles[h]; h++) {
+        for (int n = 0; names[n]; n++) {
+            void *sym = dlsym(handles[h], names[n]);
+            if (sym) return sym;
+        }
+    }
+    return NULL;
+}
 
 static int v4_isp_load(v4_isp_impl *isp_lib) {
     isp_lib->handleCalcFlick = dlopen("lib_hicalcflicker.so", RTLD_LAZY | RTLD_GLOBAL);
+    // Optional: some SDKs export HI_MPI_* symbols from libhi_mpi.so instead of lib*_isp.so.
+    isp_lib->handleMpi = dlopen("libhi_mpi.so", RTLD_LAZY | RTLD_GLOBAL);
 
     if ((isp_lib->handle = dlopen("libisp.so", RTLD_LAZY | RTLD_GLOBAL)) &&
         (isp_lib->handleAe = dlopen("lib_hiae.so", RTLD_LAZY | RTLD_GLOBAL)) &&
@@ -149,6 +193,75 @@ loaded:
         hal_symbol_load("v4_isp", isp_lib->handleAwb, "HI_MPI_AWB_UnRegister")))
         return EXIT_FAILURE;
 
+    // Optional symbols used for applying IQ profiles. These may be absent on some SDKs.
+    // Prefer libhi_mpi.so when present, fallback to the ISP library handle.
+    void *handles_isp[] = { isp_lib->handleMpi, isp_lib->handle, NULL };
+    void *handles_isp_ext[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleDehaze, isp_lib->handleLdci, NULL };
+    void *handles_ae[]  = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAe, isp_lib->handleGokeAe, NULL };
+    void *handles_awb[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAwb, isp_lib->handleGokeAwb, NULL };
+
+    // Exposure / AE route
+    isp_lib->fnGetExposureAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_GetExposureAttr", "MPI_ISP_GetExposureAttr", "GK_API_ISP_GetExposureAttr", NULL });
+    isp_lib->fnSetExposureAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_SetExposureAttr", "MPI_ISP_SetExposureAttr", "GK_API_ISP_SetExposureAttr", NULL });
+    isp_lib->fnQueryExposureInfo = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_QueryExposureInfo", "MPI_ISP_QueryExposureInfo", "GK_API_ISP_QueryExposureInfo", NULL });
+    isp_lib->fnGetAERouteAttrEx = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttrEx", "MPI_ISP_GetAERouteAttrEx", "GK_API_ISP_GetAERouteAttrEx", NULL });
+    isp_lib->fnSetAERouteAttrEx = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttrEx", "MPI_ISP_SetAERouteAttrEx", "GK_API_ISP_SetAERouteAttrEx", NULL });
+    isp_lib->fnGetAERouteAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttr", "MPI_ISP_GetAERouteAttr", "GK_API_ISP_GetAERouteAttr", NULL });
+    isp_lib->fnSetAERouteAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttr", "MPI_ISP_SetAERouteAttr", "GK_API_ISP_SetAERouteAttr", NULL });
+
+    // Statistics config (used for AE weight table)
+    isp_lib->fnGetStatisticsConfig = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetStatisticsConfig", "MPI_ISP_GetStatisticsConfig", "GK_API_ISP_GetStatisticsConfig", NULL });
+    isp_lib->fnSetStatisticsConfig = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetStatisticsConfig", "MPI_ISP_SetStatisticsConfig", "GK_API_ISP_SetStatisticsConfig", NULL });
+
+    // AWB/Color helpers (often exported from AWB libs)
+    isp_lib->fnGetCCMAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_awb, (const char*[]){ "HI_MPI_ISP_GetCCMAttr", "MPI_ISP_GetCCMAttr", "GK_API_ISP_GetCCMAttr", NULL });
+    isp_lib->fnSetCCMAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_awb, (const char*[]){ "HI_MPI_ISP_SetCCMAttr", "MPI_ISP_SetCCMAttr", "GK_API_ISP_SetCCMAttr", NULL });
+    isp_lib->fnGetSaturationAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_awb, (const char*[]){ "HI_MPI_ISP_GetSaturationAttr", "MPI_ISP_GetSaturationAttr", "GK_API_ISP_GetSaturationAttr", NULL });
+    isp_lib->fnSetSaturationAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_awb, (const char*[]){ "HI_MPI_ISP_SetSaturationAttr", "MPI_ISP_SetSaturationAttr", "GK_API_ISP_SetSaturationAttr", NULL });
+
+    // Core ISP attributes
+    isp_lib->fnGetDRCAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetDRCAttr", "MPI_ISP_GetDRCAttr", "GK_API_ISP_GetDRCAttr", NULL });
+    isp_lib->fnSetDRCAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetDRCAttr", "MPI_ISP_SetDRCAttr", "GK_API_ISP_SetDRCAttr", NULL });
+    isp_lib->fnGetModuleControl = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetModuleControl", "MPI_ISP_GetModuleControl", "GK_API_ISP_GetModuleControl", NULL });
+    isp_lib->fnSetModuleControl = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetModuleControl", "MPI_ISP_SetModuleControl", "GK_API_ISP_SetModuleControl", NULL });
+    isp_lib->fnGetDehazeAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_GetDehazeAttr", "MPI_ISP_GetDehazeAttr", "GK_API_ISP_GetDehazeAttr", NULL });
+    isp_lib->fnSetDehazeAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_SetDehazeAttr", "MPI_ISP_SetDehazeAttr", "GK_API_ISP_SetDehazeAttr", NULL });
+    isp_lib->fnGetLDCIAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_GetLDCIAttr", "MPI_ISP_GetLDCIAttr", "GK_API_ISP_GetLDCIAttr", NULL });
+    isp_lib->fnSetLDCIAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp_ext, (const char*[]){ "HI_MPI_ISP_SetLDCIAttr", "MPI_ISP_SetLDCIAttr", "GK_API_ISP_SetLDCIAttr", NULL });
+    isp_lib->fnGetNRAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetNRAttr", "MPI_ISP_GetNRAttr", "GK_API_ISP_GetNRAttr", NULL });
+    isp_lib->fnSetNRAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetNRAttr", "MPI_ISP_SetNRAttr", "GK_API_ISP_SetNRAttr", NULL });
+    isp_lib->fnGetGammaAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetGammaAttr", "MPI_ISP_GetGammaAttr", "GK_API_ISP_GetGammaAttr", NULL });
+    isp_lib->fnSetGammaAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetGammaAttr", "MPI_ISP_SetGammaAttr", "GK_API_ISP_SetGammaAttr", NULL });
+    isp_lib->fnGetIspSharpenAttr = (int(*)(int, void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_GetIspSharpenAttr", "MPI_ISP_GetIspSharpenAttr", "GK_API_ISP_GetIspSharpenAttr", NULL });
+    isp_lib->fnSetIspSharpenAttr = (int(*)(int, const void*))v4_dlsym_multi(
+        handles_isp, (const char*[]){ "HI_MPI_ISP_SetIspSharpenAttr", "MPI_ISP_SetIspSharpenAttr", "GK_API_ISP_SetIspSharpenAttr", NULL });
+
     return EXIT_SUCCESS;
 }
 
@@ -173,6 +286,8 @@ static void v4_isp_unload(v4_isp_impl *isp_lib) {
     isp_lib->handleDehaze = NULL;
     if (isp_lib->handleAcs) dlclose(isp_lib->handleAcs);
     isp_lib->handleAcs = NULL;
+    if (isp_lib->handleMpi) dlclose(isp_lib->handleMpi);
+    isp_lib->handleMpi = NULL;
     if (isp_lib->handle) dlclose(isp_lib->handle);
     isp_lib->handle = NULL;
     if (isp_lib->handleCalcFlick) dlclose(isp_lib->handleCalcFlick);

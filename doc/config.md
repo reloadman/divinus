@@ -5,6 +5,7 @@ This document describes the fields that can be found within a configuration file
 ## System section
 
 - **sensor_config**: Path to the sensor calibration or configuration file, if applicable (e.g., `/etc/sensors/imx415.bin`).
+- **iq_config**: Optional path to an ISP/IQ profile INI file (platform-specific; used on some HiSilicon/Goke v4 builds).
 - **web_port**: Port number for the web server (default: `80`).
 - **web_whitelist**: Array of up to 4 IP addresses or domains allowed to access the web server.
 - **web_enable_auth**: Boolean to enable authentication on the API, live stream and WebUI endpoints (default: `false`).

@@ -61,6 +61,10 @@ typedef struct {
     int (*fnDisableChannel)(int group, int channel);
     int (*fnEnableChannel)(int group, int channel);
     int (*fnSetChannelConfig)(int group, int channel, v4_vpss_chn *config);
+
+    // Optional NRX (3DNR) controls (not required for base pipeline)
+    int (*fnGetGrpNRXParam)(int group, void *param);
+    int (*fnSetGrpNRXParam)(int group, const void *param);
 } v4_vpss_impl;
 
 static int v4_vpss_load(v4_vpss_impl *vpss_lib) {
@@ -105,6 +109,19 @@ static int v4_vpss_load(v4_vpss_impl *vpss_lib) {
     if (!(vpss_lib->fnSetChannelConfig = (int(*)(int group, int channel, v4_vpss_chn *config))
         hal_symbol_load("v4_vpss", vpss_lib->handle, "HI_MPI_VPSS_SetChnAttr")))
         return EXIT_FAILURE;
+
+    // Optional NRX param (3DNR). Try multiple symbol variants.
+    vpss_lib->fnGetGrpNRXParam = (int(*)(int, void*))hal_symbol_load("v4_vpss", vpss_lib->handle, "HI_MPI_VPSS_GetGrpNRXParam");
+    if (!vpss_lib->fnGetGrpNRXParam)
+        vpss_lib->fnGetGrpNRXParam = (int(*)(int, void*))dlsym(vpss_lib->handle, "MPI_VPSS_GetGrpNRXParam");
+    if (!vpss_lib->fnGetGrpNRXParam)
+        vpss_lib->fnGetGrpNRXParam = (int(*)(int, void*))dlsym(vpss_lib->handle, "GK_API_VPSS_GetGrpNRXParam");
+
+    vpss_lib->fnSetGrpNRXParam = (int(*)(int, const void*))hal_symbol_load("v4_vpss", vpss_lib->handle, "HI_MPI_VPSS_SetGrpNRXParam");
+    if (!vpss_lib->fnSetGrpNRXParam)
+        vpss_lib->fnSetGrpNRXParam = (int(*)(int, const void*))dlsym(vpss_lib->handle, "MPI_VPSS_SetGrpNRXParam");
+    if (!vpss_lib->fnSetGrpNRXParam)
+        vpss_lib->fnSetGrpNRXParam = (int(*)(int, const void*))dlsym(vpss_lib->handle, "GK_API_VPSS_SetGrpNRXParam");
     
     return EXIT_SUCCESS;
 }
