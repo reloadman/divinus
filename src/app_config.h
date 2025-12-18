@@ -114,6 +114,7 @@ struct AppConfig {
     bool audio_speex_dereverb;
     // Number of PCM samples per channel per preprocess call.
     // Typical values: 160 @ 8kHz, 320 @ 16kHz, 960 @ 48kHz (20 ms).
+    // If 0, it's computed automatically as `audio_srate / 50` (20 ms).
     unsigned int audio_speex_frame_size;
     // Noise suppression (dB), typical -15..-30.
     int audio_speex_noise_suppress_db;

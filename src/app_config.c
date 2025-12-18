@@ -306,8 +306,8 @@ enum ConfigError parse_app_config(void) {
     app_config.audio_speex_agc = true;
     app_config.audio_speex_vad = true;
     app_config.audio_speex_dereverb = false; // heavy / experimental in upstream
-    // Default to 20 ms frames (less calls per second): frame_size = srate / 50.
-    app_config.audio_speex_frame_size = app_config.audio_srate / 50;
+    // 0 = auto (computed at runtime as srate/50 i.e. 20ms).
+    app_config.audio_speex_frame_size = 0;
     app_config.audio_speex_noise_suppress_db = -20;
     app_config.audio_speex_agc_level = 24000;
     app_config.audio_speex_agc_increment = 12;
@@ -585,10 +585,9 @@ enum ConfigError parse_app_config(void) {
         parse_bool(&ini, "audio", "speex_dereverb", &app_config.audio_speex_dereverb);
         {
             int fs = 0;
-            if (parse_int(&ini, "audio", "speex_frame_size", 80, 8192, &fs) == CONFIG_OK)
+            // 0 or missing = auto (srate/50). Values < 80 are clamped at runtime.
+            if (parse_int(&ini, "audio", "speex_frame_size", 0, 8192, &fs) == CONFIG_OK)
                 app_config.audio_speex_frame_size = (unsigned int)fs;
-            else
-                app_config.audio_speex_frame_size = app_config.audio_srate / 50; // 20 ms default
         }
         parse_int(&ini, "audio", "speex_noise_suppress_db", -60, 0, &app_config.audio_speex_noise_suppress_db);
         parse_int(&ini, "audio", "speex_agc_level", 1, 32768, &app_config.audio_speex_agc_level);

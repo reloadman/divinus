@@ -99,7 +99,7 @@ This document describes the fields that can be found within a configuration file
   - `160` @ `8000` Hz (20 ms)
   - `320` @ `16000` Hz (20 ms)
   - `960` @ `48000` Hz (20 ms)
-  Default: `srate / 50` (20 ms).
+  If set to `0` (or omitted), it is computed automatically as `srate / 50` (20 ms).
 - **speex_noise_suppress_db**: Noise suppression level in dB (negative), typical `-15..-30`.
 - **speex_agc_level**: AGC target level (SpeexDSP uses a float internally in floating-point builds), typical around `24000` (clamped to `1..32768`).
 - **speex_agc_increment**: AGC maximum increase rate (SpeexDSP units).
