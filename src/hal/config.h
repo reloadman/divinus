@@ -10,7 +10,9 @@
 #include "macros.h"
 #include "tools.h"
 
-#define MAX_SECTIONS 16
+// Many vendor IQ/scene INI files (e.g. HiSilicon scene_auto) contain lots of sections.
+// Keep this reasonably large to avoid silently missing sections when parsing.
+#define MAX_SECTIONS 256
 #define REG_SECTION "^([[:space:]]*\\[(\\w+)\\][[:space:]]|(\\w+):)"
 #define REG_PARAM "^[[:space:]]*%s[[:space:]]*[=:][[:space:]]*(.[^;#\n\r]*)"
 

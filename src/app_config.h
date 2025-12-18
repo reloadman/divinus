@@ -14,6 +14,8 @@
 struct AppConfig {
     // [system]
     char sensor_config[128];
+    // Optional ISP/IQ profile INI (platform-specific; used by hisi/v4 goke as "scene_auto" IQ)
+    char iq_config[256];
     unsigned short web_port;
     char web_whitelist[4][256];
     bool web_enable_auth;
@@ -28,6 +30,9 @@ struct AppConfig {
 
     // [night_mode]
     bool night_mode_enable;
+    // If true, enable encoder grayscale when switching to night (IR) mode.
+    // If false, stay in color when switching to night (IR) mode.
+    bool night_mode_grayscale;
     unsigned int ir_cut_pin1;
     unsigned int ir_cut_pin2;
     unsigned int ir_led_pin;
@@ -36,6 +41,17 @@ struct AppConfig {
     unsigned int pin_switch_delay_us;
     char adc_device[128];
     int adc_threshold;
+    // ISP-derived day/night trigger (hisi/v4 only). -1 means "unset/disabled".
+    int isp_lum_low;
+    int isp_lum_hi;
+    // ISP-derived day/night trigger by ISO (hisi/v4 only). -1 means "unset/disabled".
+    int isp_iso_low;
+    int isp_iso_hi;
+    // ISP-derived day/night trigger helper (hisi/v4 only). -1 means "unset/disabled".
+    // Used to decide when to attempt leaving IR mode (probe day): if exptime <= this value.
+    int isp_exptime_low;
+    // Minimum time (seconds) between mode switches to avoid oscillations.
+    unsigned int isp_switch_lockout_s;
 
     // [isp]
     bool mirror;
@@ -85,6 +101,7 @@ struct AppConfig {
     // [mp4]
     bool mp4_enable;
     bool mp4_codecH265;
+    bool mp4_h264_plus;
     unsigned int mp4_mode;
     unsigned int mp4_fps;
     unsigned int mp4_gop;

@@ -378,8 +378,13 @@ int t31_video_create(char index, hal_vidconfig *config)
     t31_venc_chn channel;
     t31_venc_prof profile;
     t31_venc_ratemode ratemode;
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
+    hal_vidmode mode = config->mode;
+    if (h264_plus && mode != HAL_VIDMODE_QP)
+        mode = HAL_VIDMODE_AVBR;
 
-    switch (config->mode) {
+    switch (mode) {
         case HAL_VIDMODE_CBR: ratemode = T31_VENC_RATEMODE_CBR; break;
         case HAL_VIDMODE_VBR: ratemode = T31_VENC_RATEMODE_VBR; break;
         case HAL_VIDMODE_QP: ratemode = T31_VENC_RATEMODE_QP; break;
@@ -413,6 +418,15 @@ int t31_video_create(char index, hal_vidconfig *config)
     }
     t31_venc.fnSetDefaults(&channel, profile, ratemode, config->width, config->height, 
         config->framerate, 1, config->gop, config->gop / config->framerate, -1, 0);
+
+    if (h264_plus) {
+        channel.gop.mode = T31_VENC_GOPMODE_SMARTP;
+        channel.gop.length = config->gop;
+        channel.gop.enableLT = 1;
+        channel.gop.freqLT = config->gop;
+        channel.gop.maxSameSenceCnt = config->framerate * 4;
+        channel.gop.LTRC = 1;
+    }
 
     switch (channel.rate.mode) {
         case T31_VENC_RATEMODE_CBR:

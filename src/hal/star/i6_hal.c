@@ -502,6 +502,9 @@ int i6_video_create(char index, hal_vidconfig *config)
     int ret;
     i6_venc_chn channel;
     i6_venc_attr_h26x *attrib;
+    memset(&channel, 0, sizeof(channel));
+    const int h264_plus =
+        (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
     
     if (config->codec == HAL_VIDCODEC_JPG || config->codec == HAL_VIDCODEC_MJPG) {
         channel.attrib.codec = I6_VENC_CODEC_MJPG;
@@ -572,9 +575,12 @@ int i6_video_create(char index, hal_vidconfig *config)
     } else if (config->codec == HAL_VIDCODEC_H264) {
         channel.attrib.codec = I6_VENC_CODEC_H264;
         attrib = &channel.attrib.h264;
-        if (series == 0xEF && config->mode == HAL_VIDMODE_ABR)
-            config->mode = -1;
-        switch (config->mode) {
+        hal_vidmode mode = config->mode;
+        if (h264_plus && mode != HAL_VIDMODE_QP)
+            mode = HAL_VIDMODE_AVBR;
+        if (series == 0xEF && mode == HAL_VIDMODE_ABR)
+            mode = (hal_vidmode)-1;
+        switch (mode) {
             case HAL_VIDMODE_CBR:
                 channel.rate.mode = series == 0xEF ? I6OG_VENC_RATEMODE_H264CBR :
                     I6_VENC_RATEMODE_H264CBR;

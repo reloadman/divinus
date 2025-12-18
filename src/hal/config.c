@@ -86,14 +86,16 @@ enum ConfigError parse_param_value(
         ini->str + start_pos + m[1].rm_so);
     param_value[res] = 0;
 
+    while (res > 0 && alt_isspace(param_value[res - 1]))
+        param_value[--res] = '\0';
+
+    // Strip surrounding quotes after trimming trailing whitespace.
+    // Some vendor configs use `"1"\t` which would otherwise fail numeric parsing.
     if (res >= 2 && param_value[0] == '"' && param_value[res - 1] == '"') {
         memmove(param_value, param_value + 1, res - 2);
         param_value[res - 2] = '\0';
         res -= 2;
     }
-
-    while (res > 0 && alt_isspace(param_value[res - 1]))
-        param_value[--res] = '\0';
 
     return CONFIG_OK;
 }

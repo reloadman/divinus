@@ -39,7 +39,15 @@ int v4_channel_unbind(char index);
 
 void *v4_image_thread(void);
 
-int v4_pipeline_create(void);
+// Returns 0 on success and writes 0..255 average luminance into *lum.
+int v4_get_isp_avelum(unsigned char *lum);
+
+// Returns 0 on success and writes ISP exposure info fields.
+int v4_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max);
+
+int v4_pipeline_create(const char *iqConfig);
 void v4_pipeline_destroy(void);
 
 int v4_region_create(char handle, hal_rect rect, short opacity);

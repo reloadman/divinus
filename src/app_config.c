@@ -1,4 +1,5 @@
 #include "app_config.h"
+#include <ctype.h>
 
 const char *appconf_paths[] = {"./divinus.yaml", "/etc/divinus.yaml"};
 
@@ -76,6 +77,8 @@ int save_app_config(void) {
 
     fprintf(file, "system:\n");
     fprintf(file, "  sensor_config: %s\n", app_config.sensor_config);
+    if (!EMPTY(app_config.iq_config))
+        fprintf(file, "  iq_config: %s\n", app_config.iq_config);
     fprintf(file, "  web_port: %d\n", app_config.web_port);
     if (!EMPTY(*app_config.web_whitelist)) {
         fprintf(file, "  web_whitelist: ");
@@ -97,10 +100,22 @@ int save_app_config(void) {
 
     fprintf(file, "night_mode:\n");
     fprintf(file, "  enable: %s\n", app_config.night_mode_enable ? "true" : "false");
+    fprintf(file, "  grayscale: %s\n", app_config.night_mode_grayscale ? "true" : "false");
     fprintf(file, "  ir_sensor_pin: %d\n", app_config.ir_sensor_pin);
     fprintf(file, "  check_interval_s: %d\n", app_config.check_interval_s);
     fprintf(file, "  ir_cut_pin1: %d\n", app_config.ir_cut_pin1);
     fprintf(file, "  ir_cut_pin2: %d\n", app_config.ir_cut_pin2);
+    if (app_config.isp_lum_low >= 0)
+        fprintf(file, "  isp_lum_low: %d\n", app_config.isp_lum_low);
+    if (app_config.isp_lum_hi >= 0)
+        fprintf(file, "  isp_lum_hi: %d\n", app_config.isp_lum_hi);
+    if (app_config.isp_iso_low >= 0)
+        fprintf(file, "  isp_iso_low: %d\n", app_config.isp_iso_low);
+    if (app_config.isp_iso_hi >= 0)
+        fprintf(file, "  isp_iso_hi: %d\n", app_config.isp_iso_hi);
+    if (app_config.isp_exptime_low >= 0)
+        fprintf(file, "  isp_exptime_low: %d\n", app_config.isp_exptime_low);
+    fprintf(file, "  isp_switch_lockout_s: %u\n", app_config.isp_switch_lockout_s);
     fprintf(file, "  ir_led_pin: %d\n", app_config.ir_led_pin);
     fprintf(file, "  pin_switch_delay_us: %d\n", app_config.pin_switch_delay_us);
     fprintf(file, "  adc_device: %s\n", app_config.adc_device);
@@ -156,7 +171,8 @@ int save_app_config(void) {
 
     fprintf(file, "mp4:\n");
     fprintf(file, "  enable: %s\n", app_config.mp4_enable ? "true" : "false");
-    fprintf(file, "  codec: %s\n", app_config.mp4_codecH265 ? "H.265" : "H.264");
+    fprintf(file, "  codec: %s\n", app_config.mp4_codecH265 ? "H.265" :
+        (app_config.mp4_h264_plus ? "H.264+" : "H.264"));
     fprintf(file, "  mode: %d\n", app_config.mp4_mode);
     fprintf(file, "  width: %d\n", app_config.mp4_width);
     fprintf(file, "  height: %d\n", app_config.mp4_height);
@@ -256,6 +272,7 @@ enum ConfigError parse_app_config(void) {
     *app_config.stream_dests[0] = '\0';
 
     app_config.sensor_config[0] = 0;
+    app_config.iq_config[0] = 0;
     app_config.audio_enable = false;
     app_config.audio_codec = HAL_AUDCODEC_MP3;
     app_config.audio_bitrate = 128;
@@ -277,6 +294,7 @@ enum ConfigError parse_app_config(void) {
     app_config.antiflicker = 0;
 
     app_config.night_mode_enable = false;
+    app_config.night_mode_grayscale = false;
     app_config.ir_sensor_pin = 999;
     app_config.ir_cut_pin1 = 999;
     app_config.ir_cut_pin2 = 999;
@@ -285,6 +303,12 @@ enum ConfigError parse_app_config(void) {
     app_config.check_interval_s = 10;
     app_config.adc_device[0] = 0;
     app_config.adc_threshold = 128;
+    app_config.isp_lum_low = -1;
+    app_config.isp_lum_hi = -1;
+    app_config.isp_iso_low = -1;
+    app_config.isp_iso_hi = -1;
+    app_config.isp_exptime_low = -1;
+    app_config.isp_switch_lockout_s = 15;
 
     struct IniConfig ini;
     memset(&ini, 0, sizeof(struct IniConfig));
@@ -307,6 +331,8 @@ enum ConfigError parse_app_config(void) {
              plat == HAL_PLATFORM_V3 || plat == HAL_PLATFORM_V4))
             goto RET_ERR;
     }
+    // Optional per-platform ISP/IQ config (e.g. Goke/HiSilicon v4 "scene_auto" IQ ini)
+    parse_param_value(&ini, "system", "iq_config", app_config.iq_config);
     int port, count;
     err = parse_int(&ini, "system", "web_port", 0, USHRT_MAX, &port);
     if (err != CONFIG_OK)
@@ -349,30 +375,47 @@ enum ConfigError parse_app_config(void) {
     err =
         parse_bool(&ini, "night_mode", "enable", &app_config.night_mode_enable);
     #define PIN_MAX 95
-    if (app_config.night_mode_enable) {
-        parse_int(
-            &ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX,
-            &app_config.ir_sensor_pin);
-        parse_int(
-            &ini, "night_mode", "check_interval_s", 0, 600,
-            &app_config.check_interval_s);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX,
-            &app_config.ir_cut_pin1);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX,
-            &app_config.ir_cut_pin2);
-        parse_int(
-            &ini, "night_mode", "ir_led_pin", 0, PIN_MAX,
-            &app_config.ir_led_pin);            
-        parse_int(
-            &ini, "night_mode", "pin_switch_delay_us", 0, 1000,
-            &app_config.pin_switch_delay_us);
-        parse_param_value(
-            &ini, "night_mode", "adc_device", app_config.adc_device);
-        parse_int(
-            &ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX,
-            &app_config.adc_threshold);
+    {
+        // Parse night_mode fields regardless of `enable`, because some features
+        // (e.g. IR-cut exercise on startup) need pin definitions even when the
+        // background night mode thread is disabled.
+        int lum;
+        parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
+        parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX, &app_config.ir_sensor_pin);
+        parse_int(&ini, "night_mode", "check_interval_s", 0, 600, &app_config.check_interval_s);
+        parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX, &app_config.ir_cut_pin1);
+        parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX, &app_config.ir_cut_pin2);
+        parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_MAX, &app_config.ir_led_pin);
+        parse_int(&ini, "night_mode", "pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
+        parse_param_value(&ini, "night_mode", "adc_device", app_config.adc_device);
+        parse_int(&ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);
+        // Optional ISP-derived day/night hysteresis thresholds (hisi/v4 only).
+        if (parse_int(&ini, "night_mode", "isp_lum_low", 0, 255, &lum) == CONFIG_OK)
+            app_config.isp_lum_low = lum;
+        if (parse_int(&ini, "night_mode", "isp_lum_hi", 0, 255, &lum) == CONFIG_OK)
+            app_config.isp_lum_hi = lum;
+        {
+            int v;
+            if (parse_int(&ini, "night_mode", "isp_iso_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_low = v;
+            if (parse_int(&ini, "night_mode", "isp_iso_hi", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_hi = v;
+            if (parse_int(&ini, "night_mode", "isp_exptime_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_exptime_low = v;
+        }
+        {
+            int lock_s = 0;
+            if (parse_int(&ini, "night_mode", "isp_switch_lockout_s", 0, 3600, &lock_s) == CONFIG_OK)
+                app_config.isp_switch_lockout_s = (unsigned int)lock_s;
+        }
+    }
+    // Only hisi/v4 supports ISP luminance source today.
+    if (plat != HAL_PLATFORM_V4) {
+        app_config.isp_lum_low = -1;
+        app_config.isp_lum_hi = -1;
+        app_config.isp_iso_low = -1;
+        app_config.isp_iso_hi = -1;
+        app_config.isp_exptime_low = -1;
     }
 
     err = parse_bool(&ini, "isp", "mirror", &app_config.mirror);
@@ -486,15 +529,39 @@ enum ConfigError parse_app_config(void) {
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);
     if (app_config.mp4_enable) {
         {
-            const char *possible_values[] = {"H.264", "H.265", "H264", "H265", "AVC", "HEVC"};
-            const int count = sizeof(possible_values) / sizeof(const char *);
-            int val = 0;
-            parse_enum(&ini, "mp4", "codec", (void *)&val,
-                possible_values, count, 0);
-            if (val % 2)
-                app_config.mp4_codecH265 = true;
-            else
+            // Accept: H.264/H264/AVC, H.265/H265/HEVC, and "+" variants: H.264+/H264+/AVC+.
+            // Do NOT rely on enum index parity (e.g. "H264+" used to map to H.265 by accident).
+            char codec_raw[32] = {0};
+            if (parse_param_value(&ini, "mp4", "codec", codec_raw) == CONFIG_OK) {
+                char norm[32] = {0};
+                int j = 0;
+                for (int i = 0; codec_raw[i] && j < (int)sizeof(norm) - 1; i++) {
+                    unsigned char c = (unsigned char)codec_raw[i];
+                    if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '.')
+                        continue;
+                    norm[j++] = (char)toupper(c);
+                }
+                norm[j] = '\0';
+
+                const bool plus = (strchr(norm, '+') != NULL);
+                const bool is_h265 = (CONTAINS(norm, "H265") || CONTAINS(norm, "HEVC") || CONTAINS(norm, "265"));
+                const bool is_h264 = (CONTAINS(norm, "H264") || CONTAINS(norm, "AVC") || CONTAINS(norm, "264"));
+
+                if (is_h265) {
+                    app_config.mp4_codecH265 = true;
+                } else if (is_h264) {
+                    app_config.mp4_codecH265 = false;
+                } else {
+                    // Default: H.264 (backwards compatible).
+                    app_config.mp4_codecH265 = false;
+                }
+
+                // "H.264+" is only meaningful for H.264 streams.
+                app_config.mp4_h264_plus = (plus && !app_config.mp4_codecH265);
+            } else {
                 app_config.mp4_codecH265 = false;
+                app_config.mp4_h264_plus = false;
+            }
         }
         {
             const char *possible_values[] = {"CBR", "VBR", "QP", "ABR", "AVBR"};

@@ -25,7 +25,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define MAX_CLIENTS 16
+#define MAX_CLIENTS 4
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
 // Use a dynamic payload type for MP3. Some clients (ffmpeg/ffplay) aggressively
@@ -35,7 +35,7 @@
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
 // Must match max_buffer passed to smolrtsp_transport_tcp(...) in setup_rtp_transport().
-#define RTSP_TCP_MAX_BUFFER (256 * 1024)
+#define RTSP_TCP_MAX_BUFFER (512 * 1024)
 // When TCP buffer is full, drain oldest interleaved frames down to this size.
 #define RTSP_TCP_TRIM_TARGET (RTSP_TCP_MAX_BUFFER / 2)
 
@@ -615,6 +615,7 @@ static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_le
     }
 
     size_t len = evbuffer_get_length(out);
+    const size_t len_before = len;
     if (len <= target_len) {
         bufferevent_unlock(bev);
         return 0;
@@ -627,6 +628,7 @@ static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_le
     }
 
     int drained_any = 0;
+    size_t drained_bytes = 0;
     while (len > target_len) {
         if (len < 4)
             break;
@@ -642,10 +644,16 @@ static int trim_tcp_interleaved_oldest(struct bufferevent *bev, size_t target_le
         }
         evbuffer_drain(out, frame_len);
         drained_any = 1;
+        drained_bytes += frame_len;
         len = evbuffer_get_length(out);
     }
 
+    const size_t len_after = len;
     bufferevent_unlock(bev);
+    if (drained_any) {
+        fprintf(stderr, "[rtsp] trim tcp output drained=%zu before=%zu after=%zu target=%zu\n",
+                drained_bytes, len_before, len_after, target_len);
+    }
     return drained_any ? 0 : -1;
 }
 
@@ -1030,6 +1038,14 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         // if output is congested, drop VIDEO packets (do not enqueue them).
         if (SmolRTSP_NalTransport_is_full(c->video_nal) ||
             bev_output_len(c->bev) > RTSP_TCP_TRIM_TARGET) {
+            static uint64_t last_log = 0;
+            uint64_t now = monotonic_us();
+            if (now - last_log > 1000 * 1000ULL) {
+                fprintf(stderr,
+                    "[rtsp] video drop: buffer full session=%llu len=%zu\n",
+                    (unsigned long long)c->session_id, bev_output_len(c->bev));
+                last_log = now;
+            }
             continue;
         }
         int ret = SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
@@ -1076,8 +1092,12 @@ int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
             continue;
         if (SmolRTSP_RtpTransport_is_full(c->audio_rtp)) {
             // Prefer freshest: drop oldest queued interleaved frames, then send new.
-            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0) {
+                fprintf(stderr,
+                    "[rtsp] audio drop: buffer full (no trim) session=%llu len=%zu\n",
+                    (unsigned long long)c->session_id, bev_output_len(c->bev));
                 continue; // can't trim safely -> drop newest
+            }
         }
         int ret = SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, payload_hdr, payload);
@@ -1123,8 +1143,12 @@ int smolrtsp_push_aac(const uint8_t *buf, size_t len, uint64_t ts_us) {
             continue;
         if (SmolRTSP_RtpTransport_is_full(c->audio_rtp)) {
             // Prefer freshest: drop oldest queued interleaved frames, then send new.
-            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0)
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0) {
+                fprintf(stderr,
+                    "[rtsp] audio drop: buffer full (no trim) session=%llu len=%zu\n",
+                    (unsigned long long)c->session_id, bev_output_len(c->bev));
                 continue; // can't trim safely -> drop newest
+            }
         }
         int ret = SmolRTSP_RtpTransport_send_packet(
             c->audio_rtp, ts, true, hdr, payload);

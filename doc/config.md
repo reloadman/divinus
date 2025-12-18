@@ -5,6 +5,7 @@ This document describes the fields that can be found within a configuration file
 ## System section
 
 - **sensor_config**: Path to the sensor calibration or configuration file, if applicable (e.g., `/etc/sensors/imx415.bin`).
+- **iq_config**: Optional path to an ISP/IQ profile INI file (platform-specific; used on some HiSilicon/Goke v4 builds).
 - **web_port**: Port number for the web server (default: `80`).
 - **web_whitelist**: Array of up to 4 IP addresses or domains allowed to access the web server.
 - **web_enable_auth**: Boolean to enable authentication on the API, live stream and WebUI endpoints (default: `false`).
@@ -20,6 +21,7 @@ This document describes the fields that can be found within a configuration file
 ## Night mode section
 
 - **enable**: Boolean to activate night mode support.
+- **grayscale**: Boolean to enable encoder grayscale when switching to night (IR) mode.
 - **ir_cut_pin1**: GPIO number for IR cut filter control (normal state pin).
 - **ir_cut_pin2**: GPIO number for IR cut filter control (inverted state pin).
 - **ir_led_pin**: GPIO number for IR LED control.
@@ -28,6 +30,12 @@ This document describes the fields that can be found within a configuration file
 - **pin_switch_delay_us**: Delay in microseconds before switching GPIO pins, must be used to protect cut filter coils from burning.
 - **adc_device**: Path to the ADC device used for night mode.
 - **adc_threshold**: Threshold raw value to trigger night mode, depends on the bitness of the given ADC device.
+- **isp_lum_low**: Low threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum <= isp_lum_low`, switch to night mode.
+- **isp_lum_hi**: High threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum >= isp_lum_hi`, switch back to day mode.
+- **isp_iso_low**: Low threshold for ISP-derived ISO (hisi/v4 only). Used as the "exit night" threshold when ISO-based switching is enabled.
+- **isp_iso_hi**: High threshold for ISP-derived ISO (hisi/v4 only). Used as the "enter night" threshold when ISO-based switching is enabled.
+- **isp_exptime_low**: Low threshold for ISP-derived exposure time (hisi/v4 only). When enabled, the app will only attempt leaving IR mode (probe day) when `u32ExpTime <= isp_exptime_low`.
+- **isp_switch_lockout_s**: Minimum time in seconds between automatic mode switches (hisi/v4 only). Helps prevent oscillations, especially when IR LEDs are very bright.
 
 ## ISP section
 
@@ -81,7 +89,9 @@ This document describes the fields that can be found within a configuration file
 ## MP4 section
 
 - **enable**: Boolean to activate MP4 output (required by live streams and RTSP).
-- **codec**: Codec used for encoding (H.264 or H.265).
+- **codec**: Codec used for encoding (`H.264`, `H.265`, or `H.264+`).
+- **codec = H.264+**: Enables "H.264+" style optimizations where supported by the current SoC/SDK
+  (e.g. AVBR/EVBR, smart GOP, wider QP window, better entropy/preset, motion metadata).
 - **mode**: Encoding mode.
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.
