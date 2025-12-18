@@ -22,6 +22,14 @@ static bool night_applied(void) {
 }
 static bool day_applied(void) { return (ircut && !irled) && !grayscale; }
 
+static void night_reset_state(void) {
+    // Reset our cached state so that a subsequent enable/restart won't suppress
+    // a needed transition due to stale booleans.
+    grayscale = false;
+    ircut = true;
+    irled = false;
+}
+
 void night_grayscale(bool enable) {
     set_grayscale(enable);
     grayscale = enable;
@@ -65,7 +73,7 @@ void *night_thread(void) {
     gpio_init();
     usleep(10000);
 
-    night_mode(night_mode_on());
+    // Sync state on startup based on the selected source (ISP/ADC/GPIO) when possible.
 
     if (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0) {
         if (app_config.isp_lum_hi <= app_config.isp_lum_low) {
@@ -77,6 +85,16 @@ void *night_thread(void) {
             HAL_INFO("night",
                 "Using ISP luminance source (u8AveLum): low=%d hi=%d interval=%us\n",
                 app_config.isp_lum_low, app_config.isp_lum_hi, app_config.check_interval_s);
+
+            // Apply immediately once at start (do not wait check_interval_s).
+            {
+                unsigned char lum = 0;
+                if (get_isp_avelum(&lum) == EXIT_SUCCESS && !manual) {
+                    if ((int)lum <= app_config.isp_lum_low) night_mode(true);
+                    else if ((int)lum >= app_config.isp_lum_hi) night_mode(false);
+                }
+            }
+
             while (keepRunning && nightOn) {
                 unsigned char lum = 0;
                 if (get_isp_avelum(&lum) == EXIT_SUCCESS) {
@@ -118,6 +136,12 @@ void *night_thread(void) {
     } else if (app_config.ir_sensor_pin == 999) {
         while (keepRunning && nightOn) sleep(1);
     } else {
+        // Apply immediately once at start (do not wait check_interval_s).
+        {
+            bool state = false;
+            if (gpio_read(app_config.ir_sensor_pin, &state) == EXIT_SUCCESS && !manual)
+                night_mode(state);
+        }
         while (keepRunning && nightOn) {
             bool state = false;
             if (gpio_read(app_config.ir_sensor_pin, &state) != EXIT_SUCCESS) {
@@ -139,6 +163,10 @@ int enable_night(void) {
     int ret = EXIT_SUCCESS;
 
     if (nightOn) return ret;
+
+    // Assume DAY state on (re)start to avoid suppressing transitions due to stale cached state.
+    // Hardware may already be in a different state; the first evaluation will reconcile it.
+    night_reset_state();
 
     pthread_attr_t thread_attr;
     pthread_attr_init(&thread_attr);
@@ -167,10 +195,12 @@ void disable_night(void) {
     // even if the thread is already stopped.
     if (!nightOn) {
         night_grayscale(false);
+        night_reset_state();
         return;
     }
 
     nightOn = 0;
     pthread_join(nightPid, NULL);
     night_grayscale(false);
+    night_reset_state();
 }
