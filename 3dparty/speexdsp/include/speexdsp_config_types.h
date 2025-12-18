@@ -1,11 +1,20 @@
 #ifndef __SPEEX_TYPES_H__
 #define __SPEEX_TYPES_H__
 
-// Compatibility shim for vendored SpeexDSP build without autotools.
-// Upstream `speexdsp_types.h` includes "speexdsp_config_types.h" (no "speex/" prefix),
-// so provide this header at include root and forward to the actual file.
+// Generated for Divinus vendored SpeexDSP build (no autotools).
+//
+// Upstream generates `include/speex/speexdsp_config_types.h` from
+// `include/speex/speexdsp_config_types.h.in`, but that generated header is
+// ignored by upstream `.gitignore`. We keep a stable, tracked version here
+// because `speex/speexdsp_types.h` includes "speexdsp_config_types.h" without
+// any prefix.
 
-#include "speex/speexdsp_config_types.h"
+#include <stdint.h>
+
+typedef int16_t spx_int16_t;
+typedef uint16_t spx_uint16_t;
+typedef int32_t spx_int32_t;
+typedef uint32_t spx_uint32_t;
 
 #endif
 
