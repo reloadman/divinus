@@ -4015,7 +4015,24 @@ int v4_video_create(char index, hal_vidconfig *config)
     const int h264_plus =
         (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
     channel.gop.mode = h264_plus ? V4_VENC_GOPMODE_ADVSMARTP : V4_VENC_GOPMODE_NORMALP;
-    if (config->codec == HAL_VIDCODEC_JPG || config->codec == HAL_VIDCODEC_MJPG) {
+    if (config->codec == HAL_VIDCODEC_JPG) {
+        // Dedicated JPEG snapshot channel.
+        // Some vendor SDKs validate the codec and attribute union strictly, so JPEG must
+        // use V4_VENC_CODEC_JPEG (not MJPG), and a sane buffer size.
+        channel.attrib.codec = V4_VENC_CODEC_JPEG;
+        channel.attrib.maxPic.width = config->width;
+        channel.attrib.maxPic.height = config->height;
+        channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
+        channel.attrib.byFrame = 1;
+        channel.attrib.pic.width = config->width;
+        channel.attrib.pic.height = config->height;
+        channel.attrib.jpg.dcfThumbs = 0;
+        channel.attrib.jpg.numThumbs = 0;
+        memset(channel.attrib.jpg.sizeThumbs, 0, sizeof(channel.attrib.jpg.sizeThumbs));
+        channel.attrib.jpg.multiReceiveOn = 0;
+        goto create;
+    } else if (config->codec == HAL_VIDCODEC_MJPG) {
+        // MJPEG stream channel (rate control still applies).
         channel.attrib.codec = V4_VENC_CODEC_MJPG;
         switch (config->mode) {
             case HAL_VIDMODE_CBR:
@@ -4024,8 +4041,8 @@ int v4_video_create(char index, hal_vidconfig *config)
                     .dstFps = config->framerate, .maxBitrate = config->bitrate }; break;
             case HAL_VIDMODE_VBR:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGVBR;
-                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1, 
-                    .srcFps = config->framerate, .dstFps = config->framerate, 
+                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1,
+                    .srcFps = config->framerate, .dstFps = config->framerate,
                     .maxBitrate = MAX(config->bitrate, config->maxBitrate) }; break;
             case HAL_VIDMODE_QP:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGQP;
@@ -4100,13 +4117,18 @@ int v4_video_create(char index, hal_vidconfig *config)
     } else HAL_ERROR("v4_venc", "This codec is not supported by the hardware!");
     channel.attrib.maxPic.width = config->width;
     channel.attrib.maxPic.height = config->height;
-    channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+    // NOTE: For MJPEG/JPEG many SDKs require at least aligned W*H (and often reject smaller).
+    if (channel.attrib.codec == V4_VENC_CODEC_MJPG || channel.attrib.codec == V4_VENC_CODEC_JPEG)
+        channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
+    else
+        channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
     if (channel.attrib.codec == V4_VENC_CODEC_H264)
         channel.attrib.profile = MAX(config->profile, 2);
     channel.attrib.byFrame = 1;
     channel.attrib.pic.width = config->width;
     channel.attrib.pic.height = config->height;
 
+create:
     // Debug: dump what we're asking the SDK to create.
     if (channel.attrib.codec == V4_VENC_CODEC_H264) {
         HAL_INFO("v4_venc", "CreateChannel ch=%d H264 plus=%d %dx%d fps=%d gop=%d gopMode=%d rateMode=%d bitrate=%d maxBitrate=%d qp=[%d..%d] profile=%u (cfgProfile=%d)\n",
@@ -4120,6 +4142,9 @@ int v4_video_create(char index, hal_vidconfig *config)
             index, config->width, config->height, config->framerate,
             (int)channel.rate.mode, config->bitrate, MAX(config->bitrate, config->maxBitrate),
             config->maxQual);
+    } else if (channel.attrib.codec == V4_VENC_CODEC_JPEG) {
+        HAL_INFO("v4_venc", "CreateChannel ch=%d JPEG %dx%d\n",
+            index, config->width, config->height);
     } else if (channel.attrib.codec == V4_VENC_CODEC_H265) {
         HAL_INFO("v4_venc", "CreateChannel ch=%d H265 %dx%d fps=%d gop=%d gopMode=%d rateMode=%d maxBitrate=%d\n",
             index, config->width, config->height, config->framerate, config->gop,
