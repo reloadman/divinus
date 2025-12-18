@@ -36,6 +36,22 @@ void night_grayscale(bool enable) {
 }
 
 void night_ircut(bool enable) {
+    if (app_config.ir_cut_pin1 == 999 || app_config.ir_cut_pin2 == 999) {
+        HAL_WARNING("night", "IR-cut pins not configured, skipping\n");
+        ircut = enable;
+        return;
+    }
+    if (app_config.ir_cut_pin1 == app_config.ir_cut_pin2) {
+        HAL_WARNING("night", "IR-cut pins invalid (pin1==pin2), skipping\n");
+        ircut = enable;
+        return;
+    }
+
+    HAL_INFO("night", "IR-cut -> %s (pin1=%u pin2=%u pulse=%uus)\n",
+        enable ? "ON(DAY)" : "OFF(IR)",
+        app_config.ir_cut_pin1, app_config.ir_cut_pin2,
+        app_config.pin_switch_delay_us * 100);
+
     gpio_write(app_config.ir_cut_pin1, !enable);
     gpio_write(app_config.ir_cut_pin2, enable);
     usleep(app_config.pin_switch_delay_us * 100);
@@ -45,6 +61,11 @@ void night_ircut(bool enable) {
 }
 
 void night_irled(bool enable) {
+    if (app_config.ir_led_pin == 999) {
+        HAL_WARNING("night", "IR LED pin not configured, skipping\n");
+        irled = enable;
+        return;
+    }
     gpio_write(app_config.ir_led_pin, enable);
     irled = enable;
 }
@@ -228,6 +249,9 @@ void disable_night(void) {
     // even if the thread is already stopped.
     if (!nightOn) {
         night_grayscale(false);
+        // Ensure we return to DAY hardware state when disabling night support.
+        night_irled(false);
+        night_ircut(true);
         night_reset_state();
         return;
     }
@@ -235,5 +259,7 @@ void disable_night(void) {
     nightOn = 0;
     pthread_join(nightPid, NULL);
     night_grayscale(false);
+    night_irled(false);
+    night_ircut(true);
     night_reset_state();
 }
