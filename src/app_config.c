@@ -609,9 +609,16 @@ enum ConfigError parse_app_config(void) {
     err = parse_bool(&ini, "jpeg", "enable", &app_config.jpeg_enable);
     if (err != CONFIG_OK)
         goto RET_ERR;
+    // Legacy alias: older configs used [mjpeg]. This section is optional.
+    // If it's missing, just treat it as disabled.
     err = parse_bool(&ini, "mjpeg", "enable", &legacy_mjpeg_enable);
-    if (err != CONFIG_OK)
-        goto RET_ERR;
+    if (err != CONFIG_OK) {
+        if (err == CONFIG_SECTION_NOT_FOUND || err == CONFIG_PARAM_NOT_FOUND) {
+            legacy_mjpeg_enable = false;
+        } else {
+            goto RET_ERR;
+        }
+    }
 
     const char *jpeg_sec = "jpeg";
     if (!app_config.jpeg_enable && legacy_mjpeg_enable) {
