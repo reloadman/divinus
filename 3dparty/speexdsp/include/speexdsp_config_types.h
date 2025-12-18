@@ -16,5 +16,18 @@ typedef uint16_t spx_uint16_t;
 typedef int32_t spx_int32_t;
 typedef uint32_t spx_uint32_t;
 
+/*
+ * Upstream SpeexDSP normally defines `EXPORT` in an autotools-generated
+ * `config.h` (see `configure.ac`). Our vendored build compiles the sources
+ * without that generated header, so provide a safe default here.
+ */
+#ifndef EXPORT
+#  if defined(__GNUC__) || defined(__clang__)
+#    define EXPORT __attribute__((visibility("default")))
+#  else
+#    define EXPORT
+#  endif
+#endif
+
 #endif
 
