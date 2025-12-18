@@ -69,6 +69,39 @@ void night_mode(bool enable) {
     else night_grayscale(false);
 }
 
+void night_ircut_exercise_startup(void) {
+    // Skip if pins are not configured.
+    if (app_config.ir_cut_pin1 == 999 || app_config.ir_cut_pin2 == 999) {
+        HAL_INFO("night", "IR-cut exercise skipped (pins not configured)\n");
+        return;
+    }
+    if (app_config.ir_cut_pin1 == app_config.ir_cut_pin2) {
+        HAL_WARNING("night", "IR-cut exercise skipped (ir_cut_pin1 == ir_cut_pin2)\n");
+        return;
+    }
+
+    HAL_INFO("night", "Exercising IR-cut (unstick): remove -> restore\n");
+    gpio_init();
+    usleep(10 * 1000);
+
+    // Remove IR-cut filter (IR mode)
+    night_ircut(false);
+    usleep(200 * 1000);
+    // Restore IR-cut filter (day mode)
+    night_ircut(true);
+    usleep(200 * 1000);
+
+    // Ensure we don't leave grayscale enabled from any previous state.
+    night_grayscale(false);
+    // Ensure IR LED is off if configured.
+    if (app_config.ir_led_pin != 999) night_irled(false);
+
+    gpio_deinit();
+
+    // Ensure our cached state is consistent: DAY.
+    night_reset_state();
+}
+
 void *night_thread(void) {
     gpio_init();
     usleep(10000);

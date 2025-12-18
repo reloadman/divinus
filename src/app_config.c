@@ -364,32 +364,20 @@ enum ConfigError parse_app_config(void) {
     err =
         parse_bool(&ini, "night_mode", "enable", &app_config.night_mode_enable);
     #define PIN_MAX 95
-    if (app_config.night_mode_enable) {
+    {
+        // Parse night_mode fields regardless of `enable`, because some features
+        // (e.g. IR-cut exercise on startup) need pin definitions even when the
+        // background night mode thread is disabled.
         int lum;
         parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
-        parse_int(
-            &ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX,
-            &app_config.ir_sensor_pin);
-        parse_int(
-            &ini, "night_mode", "check_interval_s", 0, 600,
-            &app_config.check_interval_s);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX,
-            &app_config.ir_cut_pin1);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX,
-            &app_config.ir_cut_pin2);
-        parse_int(
-            &ini, "night_mode", "ir_led_pin", 0, PIN_MAX,
-            &app_config.ir_led_pin);            
-        parse_int(
-            &ini, "night_mode", "pin_switch_delay_us", 0, 1000,
-            &app_config.pin_switch_delay_us);
-        parse_param_value(
-            &ini, "night_mode", "adc_device", app_config.adc_device);
-        parse_int(
-            &ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX,
-            &app_config.adc_threshold);
+        parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX, &app_config.ir_sensor_pin);
+        parse_int(&ini, "night_mode", "check_interval_s", 0, 600, &app_config.check_interval_s);
+        parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX, &app_config.ir_cut_pin1);
+        parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX, &app_config.ir_cut_pin2);
+        parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_MAX, &app_config.ir_led_pin);
+        parse_int(&ini, "night_mode", "pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
+        parse_param_value(&ini, "night_mode", "adc_device", app_config.adc_device);
+        parse_int(&ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);
         // Optional ISP-derived day/night hysteresis thresholds (hisi/v4 only).
         if (parse_int(&ini, "night_mode", "isp_lum_low", 0, 255, &lum) == CONFIG_OK)
             app_config.isp_lum_low = lum;
