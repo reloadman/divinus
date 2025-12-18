@@ -276,7 +276,10 @@ enum ConfigError parse_app_config(void) {
     app_config.audio_enable = false;
     app_config.audio_codec = HAL_AUDCODEC_MP3;
     app_config.audio_bitrate = 128;
-    app_config.audio_gain = 0;
+    // Default audio gain:
+    // - hisi/v4 uses 0..100 scale, where 50 is unity gain
+    // - other platforms interpret it as dB and use 0 as unity gain
+    app_config.audio_gain = (plat == HAL_PLATFORM_V4) ? 50 : 0;
     app_config.audio_srate = 48000;
     app_config.audio_channels = 1;
     // AAC (FAAC) advanced options (ignored unless codec=AAC)
