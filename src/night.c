@@ -147,12 +147,17 @@ int enable_night(void) {
     size_t new_stacksize = 16 * 1024;
     if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
         HAL_DANGER("night", "Error:  Can't set stack size %zu\n", new_stacksize);
-    pthread_create(&nightPid, &thread_attr, (void *(*)(void *))night_thread, NULL);
+    // Set the flag before starting the thread to avoid a race where the thread
+    // checks `while (keepRunning && nightOn)` before `nightOn` is set.
+    nightOn = 1;
+    if (pthread_create(&nightPid, &thread_attr, (void *(*)(void *))night_thread, NULL) != 0) {
+        nightOn = 0;
+        pthread_attr_destroy(&thread_attr);
+        return EXIT_FAILURE;
+    }
     if (pthread_attr_setstacksize(&thread_attr, stacksize))
         HAL_DANGER("night", "Error:  Can't set stack size %zu\n", stacksize);
     pthread_attr_destroy(&thread_attr);
-
-    nightOn = 1;
 
     return ret;
 }
