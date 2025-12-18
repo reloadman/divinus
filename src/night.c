@@ -14,6 +14,8 @@ bool night_manual_on(void) { return manual; }
 
 bool night_mode_on(void) { return grayscale && !ircut && irled; }
 
+static bool night_day_on(void) { return !grayscale && ircut && !irled; }
+
 void night_grayscale(bool enable) {
     set_grayscale(enable);
     grayscale = enable;
@@ -36,6 +38,14 @@ void night_irled(bool enable) {
 void night_manual(bool enable) { manual = enable; }
 
 void night_mode(bool enable) {
+    // Avoid log spam + avoid re-pulsing IR-cut coil / toggling encoder params
+    // when the requested mode is already applied.
+    if (enable) {
+        if (night_mode_on()) return;
+    } else {
+        if (night_day_on()) return;
+    }
+
     HAL_INFO("night", "Changing mode to %s\n", enable ? "NIGHT" : "DAY");
     night_grayscale(enable);
     night_ircut(!enable);
