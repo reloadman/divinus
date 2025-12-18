@@ -32,6 +32,9 @@ This document describes the fields that can be found within a configuration file
 - **adc_threshold**: Threshold raw value to trigger night mode, depends on the bitness of the given ADC device.
 - **isp_lum_low**: Low threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum <= isp_lum_low`, switch to night mode.
 - **isp_lum_hi**: High threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum >= isp_lum_hi`, switch back to day mode.
+- **isp_iso_low**: Low threshold for ISP-derived ISO (hisi/v4 only). Used as the "exit night" threshold when ISO-based switching is enabled.
+- **isp_iso_hi**: High threshold for ISP-derived ISO (hisi/v4 only). Used as the "enter night" threshold when ISO-based switching is enabled.
+- **isp_switch_lockout_s**: Minimum time in seconds between automatic mode switches (hisi/v4 only). Helps prevent oscillations, especially when IR LEDs are very bright.
 
 ## ISP section
 

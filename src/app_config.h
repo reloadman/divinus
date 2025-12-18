@@ -44,6 +44,11 @@ struct AppConfig {
     // ISP-derived day/night trigger (hisi/v4 only). -1 means "unset/disabled".
     int isp_lum_low;
     int isp_lum_hi;
+    // ISP-derived day/night trigger by ISO (hisi/v4 only). -1 means "unset/disabled".
+    int isp_iso_low;
+    int isp_iso_hi;
+    // Minimum time (seconds) between mode switches to avoid oscillations.
+    unsigned int isp_switch_lockout_s;
 
     // [isp]
     bool mirror;

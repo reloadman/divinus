@@ -109,6 +109,11 @@ int save_app_config(void) {
         fprintf(file, "  isp_lum_low: %d\n", app_config.isp_lum_low);
     if (app_config.isp_lum_hi >= 0)
         fprintf(file, "  isp_lum_hi: %d\n", app_config.isp_lum_hi);
+    if (app_config.isp_iso_low >= 0)
+        fprintf(file, "  isp_iso_low: %d\n", app_config.isp_iso_low);
+    if (app_config.isp_iso_hi >= 0)
+        fprintf(file, "  isp_iso_hi: %d\n", app_config.isp_iso_hi);
+    fprintf(file, "  isp_switch_lockout_s: %u\n", app_config.isp_switch_lockout_s);
     fprintf(file, "  ir_led_pin: %d\n", app_config.ir_led_pin);
     fprintf(file, "  pin_switch_delay_us: %d\n", app_config.pin_switch_delay_us);
     fprintf(file, "  adc_device: %s\n", app_config.adc_device);
@@ -298,6 +303,9 @@ enum ConfigError parse_app_config(void) {
     app_config.adc_threshold = 128;
     app_config.isp_lum_low = -1;
     app_config.isp_lum_hi = -1;
+    app_config.isp_iso_low = -1;
+    app_config.isp_iso_hi = -1;
+    app_config.isp_switch_lockout_s = 15;
 
     struct IniConfig ini;
     memset(&ini, 0, sizeof(struct IniConfig));
@@ -383,11 +391,25 @@ enum ConfigError parse_app_config(void) {
             app_config.isp_lum_low = lum;
         if (parse_int(&ini, "night_mode", "isp_lum_hi", 0, 255, &lum) == CONFIG_OK)
             app_config.isp_lum_hi = lum;
+        {
+            int v;
+            if (parse_int(&ini, "night_mode", "isp_iso_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_low = v;
+            if (parse_int(&ini, "night_mode", "isp_iso_hi", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_hi = v;
+        }
+        {
+            int lock_s = 0;
+            if (parse_int(&ini, "night_mode", "isp_switch_lockout_s", 0, 3600, &lock_s) == CONFIG_OK)
+                app_config.isp_switch_lockout_s = (unsigned int)lock_s;
+        }
     }
     // Only hisi/v4 supports ISP luminance source today.
     if (plat != HAL_PLATFORM_V4) {
         app_config.isp_lum_low = -1;
         app_config.isp_lum_hi = -1;
+        app_config.isp_iso_low = -1;
+        app_config.isp_iso_hi = -1;
     }
 
     err = parse_bool(&ini, "isp", "mirror", &app_config.mirror);

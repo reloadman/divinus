@@ -1,6 +1,7 @@
 #include "night.h"
 
 #include <errno.h>
+#include <time.h>
 #include <string.h>
 
 char nightOn = 0;
@@ -31,6 +32,12 @@ static void night_reset_state(void) {
     grayscale = false;
     ircut = true;
     irled = false;
+}
+
+static unsigned long long night_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
 }
 
 void night_grayscale(bool enable) {
@@ -141,7 +148,71 @@ void *night_thread(void) {
 
     // Sync state on startup based on the selected source (ISP/ADC/GPIO) when possible.
 
-    if (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0) {
+    // ISO-based ISP switching (preferred): uses hysteresis + "probe" to avoid IR LED brightness
+    // falsely triggering a switch back to DAY.
+    if (app_config.isp_iso_low >= 0 && app_config.isp_iso_hi >= 0) {
+        if (app_config.isp_iso_hi <= app_config.isp_iso_low) {
+            HAL_WARNING("night",
+                "ISP ISO thresholds invalid (isp_iso_low=%d isp_iso_hi=%d), ignoring\n",
+                app_config.isp_iso_low, app_config.isp_iso_hi);
+            while (keepRunning && nightOn) sleep(1);
+        } else {
+            const unsigned int lockout_s = app_config.isp_switch_lockout_s;
+            const unsigned int probe_settle_ms = 800; // allow AE to re-converge after toggling IR
+            HAL_INFO("night",
+                "Using ISP ISO source: low=%d hi=%d lockout=%us interval=%us\n",
+                app_config.isp_iso_low, app_config.isp_iso_hi, lockout_s, app_config.check_interval_s);
+
+            unsigned long long last_switch_ms = 0;
+
+            // Apply immediately once at start.
+            {
+                unsigned int iso=0, exptime=0, again=0, dgain=0, ispdgain=0; int ismax=0;
+                if (get_isp_exposure_info(&iso, &exptime, &again, &dgain, &ispdgain, &ismax) == EXIT_SUCCESS && !manual) {
+                    if ((int)iso >= app_config.isp_iso_hi) { night_mode(true); last_switch_ms = night_now_ms(); }
+                    else if ((int)iso <= app_config.isp_iso_low) { night_mode(false); last_switch_ms = night_now_ms(); }
+                }
+            }
+
+            while (keepRunning && nightOn) {
+                unsigned int iso=0, exptime=0, again=0, dgain=0, ispdgain=0; int ismax=0;
+                if (get_isp_exposure_info(&iso, &exptime, &again, &dgain, &ispdgain, &ismax) == EXIT_SUCCESS) {
+                    if (!manual) {
+                        unsigned long long now = night_now_ms();
+                        bool in_ir = night_mode_on();
+
+                        // Enter IR when in DAY and ISO rises above high threshold.
+                        if (!in_ir && (int)iso >= app_config.isp_iso_hi) {
+                            if (lockout_s == 0 || now - last_switch_ms >= (unsigned long long)lockout_s * 1000ull) {
+                                night_mode(true);
+                                last_switch_ms = now;
+                            }
+                        }
+
+                        // Exit IR: do a "probe" to measure ambient without IR.
+                        if (in_ir && (int)iso <= app_config.isp_iso_low) {
+                            if (lockout_s == 0 || now - last_switch_ms >= (unsigned long long)lockout_s * 1000ull) {
+                                // Probe DAY
+                                night_mode(false);
+                                usleep(probe_settle_ms * 1000);
+                                unsigned int iso2=0, exptime2=0, again2=0, dgain2=0, ispdgain2=0; int ismax2=0;
+                                if (get_isp_exposure_info(&iso2, &exptime2, &again2, &dgain2, &ispdgain2, &ismax2) == EXIT_SUCCESS) {
+                                    if ((int)iso2 >= app_config.isp_iso_hi) {
+                                        // Still dark without IR -> go back to IR
+                                        night_mode(true);
+                                    } else {
+                                        // Bright enough without IR -> stay DAY
+                                    }
+                                }
+                                last_switch_ms = night_now_ms();
+                            }
+                        }
+                    }
+                }
+                sleep(app_config.check_interval_s);
+            }
+        }
+    } else if (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0) {
         if (app_config.isp_lum_hi <= app_config.isp_lum_low) {
             HAL_WARNING("night",
                 "ISP luminance thresholds invalid (isp_lum_low=%d isp_lum_hi=%d), ignoring\n",
