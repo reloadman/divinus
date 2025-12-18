@@ -1,4 +1,5 @@
 #include "media.h"
+#include "hal/config.h"
 #include <faac.h>
 
 char audioOn = 0, udpOn = 0;
@@ -566,6 +567,33 @@ void set_grayscale(bool active) {
 #endif
     }
     pthread_mutex_unlock(&chnMtx);
+}
+
+int get_isp_avelum(unsigned char *lum) {
+    if (!lum) return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_isp_avelum(lum);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
+}
+
+int get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max) {
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_isp_exposure_info(iso, exp_time, again, dgain, ispdgain, exposure_is_max);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
 }
 
 int take_next_free_channel(bool mainLoop) {

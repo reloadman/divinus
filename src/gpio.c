@@ -284,6 +284,40 @@ static int gpio_cdev_write(int pin, bool value) {
     close(req.fd);
     return 0;
 }
+
+static int gpio_cdev_request_output_hold(int pin, bool value, int *out_fd) {
+    if (!out_fd) {
+        errno = EINVAL;
+        return -1;
+    }
+    *out_fd = -1;
+
+    int chip = 0, offset = 0;
+    if (gpio_map_global_to_chip(pin, &chip, &offset) < 0) return -1;
+
+    char dev[32];
+    snprintf(dev, sizeof(dev), "/dev/gpiochip%d", chip);
+    int chip_fd = open(dev, O_RDONLY);
+    if (chip_fd < 0) return -1;
+
+    struct gpiohandle_request req;
+    memset(&req, 0, sizeof(req));
+    req.lineoffsets[0] = (unsigned int)offset;
+    req.lines = 1;
+    req.flags = GPIOHANDLE_REQUEST_OUTPUT;
+    req.default_values[0] = value ? 1 : 0;
+
+    if (ioctl(chip_fd, GPIO_GET_LINEHANDLE_IOCTL, &req) < 0) {
+        int saved = errno;
+        close(chip_fd);
+        errno = saved;
+        return -1;
+    }
+    close(chip_fd);
+
+    *out_fd = req.fd; // caller must close
+    return 0;
+}
 #endif
 
 void gpio_deinit(void) {
@@ -353,4 +387,60 @@ int gpio_write(int pin, bool value) {
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;
+}
+
+int gpio_pulse_pair(int pin1, bool val1, int pin2, bool val2, unsigned int pulse_us) {
+    if (gpio_init() != EXIT_SUCCESS) return EXIT_FAILURE;
+
+    // Prefer sysfs for "global pin number" semantics when available.
+    // On some platforms (e.g. GK7205), cdev base mapping may not match the
+    // numbering used by other tools (majestic), while sysfs does.
+    if (path_exists("/sys/class/gpio/export")) {
+        // SYSFS: export both pins and keep them exported during the pulse.
+        if (gpio_sysfs_export(pin1) < 0) return EXIT_FAILURE;
+        if (gpio_sysfs_export(pin2) < 0) { (void)gpio_sysfs_unexport(pin1); return EXIT_FAILURE; }
+
+        if (gpio_sysfs_direction(pin1, "out") < 0) goto SYSFS_FAIL;
+        if (gpio_sysfs_direction(pin2, "out") < 0) goto SYSFS_FAIL;
+
+        if (gpio_sysfs_write_value(pin1, val1) < 0) goto SYSFS_FAIL;
+        if (gpio_sysfs_write_value(pin2, val2) < 0) goto SYSFS_FAIL;
+        usleep(pulse_us);
+        (void)gpio_sysfs_write_value(pin1, false);
+        (void)gpio_sysfs_write_value(pin2, false);
+
+        (void)gpio_sysfs_unexport(pin1);
+        (void)gpio_sysfs_unexport(pin2);
+        return EXIT_SUCCESS;
+
+SYSFS_FAIL:
+        (void)gpio_sysfs_write_value(pin1, false);
+        (void)gpio_sysfs_write_value(pin2, false);
+        (void)gpio_sysfs_unexport(pin1);
+        (void)gpio_sysfs_unexport(pin2);
+        return EXIT_FAILURE;
+    }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+    if (gpio_backend == GPIO_BACKEND_CDEV) {
+        // Hold both lines asserted for the duration of the pulse by keeping
+        // line handles open.
+        int fd1 = -1, fd2 = -1;
+        if (gpio_cdev_request_output_hold(pin1, val1, &fd1) != 0) return EXIT_FAILURE;
+        if (gpio_cdev_request_output_hold(pin2, val2, &fd2) != 0) { close(fd1); return EXIT_FAILURE; }
+
+        usleep(pulse_us);
+
+        struct gpiohandle_data data;
+        memset(&data, 0, sizeof(data));
+        data.values[0] = 0;
+        (void)ioctl(fd1, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
+        (void)ioctl(fd2, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
+        close(fd1);
+        close(fd2);
+        return EXIT_SUCCESS;
+    }
+#endif
+
+    return EXIT_FAILURE;
 }

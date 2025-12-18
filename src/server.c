@@ -1124,6 +1124,26 @@ void respond_request(http_request_t *req) {
 
     if (EQUALS(req->uri, "/api/night")) {
         if (!EMPTY(req->query)) {
+            // Track prior state to decide whether a night thread restart is needed.
+            const bool old_enable = app_config.night_mode_enable;
+            const int old_isp_lum_low = app_config.isp_lum_low;
+            const int old_isp_lum_hi = app_config.isp_lum_hi;
+            const int old_isp_iso_low = app_config.isp_iso_low;
+            const int old_isp_iso_hi = app_config.isp_iso_hi;
+            const int old_isp_exptime_low = app_config.isp_exptime_low;
+            const unsigned int old_ir_sensor_pin = app_config.ir_sensor_pin;
+            char old_adc_device[sizeof(app_config.adc_device)];
+            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
+
+            bool enable_seen = false;
+            bool enable_value = app_config.night_mode_enable;
+
+            bool manual_seen = false;
+            bool manual_value = night_manual_on();
+
+            bool set_grayscale = false, set_ircut = false, set_irled = false;
+            bool grayscale_value = false, ircut_value = false, irled_value = false;
+
             char *remain;
             while (req->query) {
                 char *value = split(&req->query, "&");
@@ -1132,26 +1152,60 @@ void respond_request(http_request_t *req) {
                 char *key = split(&value, "=");
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "enable")) {
+                    enable_seen = true;
                     if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        app_config.night_mode_enable = 1;
+                        app_config.night_mode_enable = enable_value = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.night_mode_enable = 0;
+                        app_config.night_mode_enable = enable_value = 0;
                 } else if (EQUALS(key, "adc_device")) {
                     strncpy(app_config.adc_device, value, sizeof(app_config.adc_device));
                 } else if (EQUALS(key, "adc_threshold")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         app_config.adc_threshold = result;
+                } else if (EQUALS(key, "isp_lum_low")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_lum_low = -1;
+                        else if (result <= 255) app_config.isp_lum_low = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_lum_hi")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_lum_hi = -1;
+                        else if (result <= 255) app_config.isp_lum_hi = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_iso_low")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_iso_low = -1;
+                        else app_config.isp_iso_low = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_iso_hi")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_iso_hi = -1;
+                        else app_config.isp_iso_hi = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_exptime_low")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_exptime_low = -1;
+                        else app_config.isp_exptime_low = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_switch_lockout_s")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) result = 0;
+                        if (result > 3600) result = 3600;
+                        app_config.isp_switch_lockout_s = (unsigned int)result;
+                    }
                 } else if (EQUALS(key, "grayscale")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_grayscale(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_grayscale(0);
+                    set_grayscale = true;
+                    grayscale_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "ircut")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_ircut(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_ircut(0);
+                    set_ircut = true;
+                    ircut_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "ircut_pin1")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1161,10 +1215,8 @@ void respond_request(http_request_t *req) {
                     if (remain != value)
                         app_config.ir_cut_pin2 = result;
                 } else if (EQUALS(key, "irled")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_irled(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_irled(0);
+                    set_irled = true;
+                    irled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1174,28 +1226,89 @@ void respond_request(http_request_t *req) {
                     if (remain != value)
                         app_config.ir_sensor_pin = result;
                 } else if (EQUALS(key, "manual")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_manual(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_manual(0);
+                    manual_seen = true;
+                    manual_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    night_manual(manual_value ? 1 : 0);
                 }
             }
 
-            disable_night();
-            if (app_config.night_mode_enable) enable_night();
+            const bool old_iso_mode = (old_isp_iso_low >= 0 && old_isp_iso_hi >= 0);
+            const bool new_iso_mode = (app_config.isp_iso_low >= 0 && app_config.isp_iso_hi >= 0);
+            const bool old_lum_mode = (old_isp_lum_low >= 0 && old_isp_lum_hi >= 0);
+            const bool new_lum_mode = (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0);
+
+            bool need_restart =
+                (old_enable != app_config.night_mode_enable) ||
+                (strcmp(old_adc_device, app_config.adc_device) != 0) ||
+                (old_ir_sensor_pin != app_config.ir_sensor_pin) ||
+                (old_iso_mode != new_iso_mode) ||
+                (old_lum_mode != new_lum_mode) ||
+                (old_isp_exptime_low != app_config.isp_exptime_low);
+
+            if (need_restart) {
+                disable_night();
+                if (app_config.night_mode_enable) enable_night();
+            } else {
+                // Ensure thread is running if enable was explicitly requested.
+                if (enable_seen && enable_value && app_config.night_mode_enable)
+                    enable_night();
+                if (enable_seen && !enable_value)
+                    disable_night();
+            }
+
+            // If user explicitly disabled night mode support, don't apply direct controls.
+            // If user explicitly set manual=false, force DAY first (like on startup),
+            // then allow auto logic to re-enter night if needed.
+            if (manual_seen && !manual_value) {
+                night_mode(false);
+                if (app_config.night_mode_enable)
+                    enable_night();
+            } else if (!(enable_seen && !enable_value)) {
+                if (set_ircut) night_ircut(ircut_value);
+                if (set_irled) night_irled(irled_value);
+                if (set_grayscale) night_grayscale(grayscale_value);
+            }
         }
+
+        int isp_lum = -1;
+        unsigned char lum;
+        if (get_isp_avelum(&lum) == EXIT_SUCCESS)
+            isp_lum = (int)lum;
+
+        int isp_exposure_is_max = -1;
+        int isp_iso = -1, isp_exptime = -1, isp_again = -1, isp_dgain = -1, isp_ispdgain = -1;
+        {
+            unsigned int iso = 0, exptime = 0, again = 0, dgain = 0, ispdgain = 0;
+            int ismax = 0;
+            if (get_isp_exposure_info(&iso, &exptime, &again, &dgain, &ispdgain, &ismax) == EXIT_SUCCESS) {
+                isp_iso = (int)iso;
+                isp_exptime = (int)exptime;
+                isp_again = (int)again;
+                isp_dgain = (int)dgain;
+                isp_ispdgain = (int)ispdgain;
+                isp_exposure_is_max = ismax;
+            }
+        }
+
         int respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
-            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d}",
+            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
+            "\"isp_lum\":%d,\"isp_lum_low\":%d,\"isp_lum_hi\":%d,"
+            "\"isp_iso_low\":%d,\"isp_iso_hi\":%d,\"isp_exptime_low\":%d,\"isp_switch_lockout_s\":%u,"
+            "\"isp_iso\":%d,\"isp_exptime\":%d,\"isp_again\":%d,\"isp_dgain\":%d,\"isp_ispdgain\":%d,"
+            "\"isp_exposure_is_max\":%d}",
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
             night_grayscale_on() ? "true" : "false",
             night_ircut_on() ? "true" : "false", app_config.ir_cut_pin1, app_config.ir_cut_pin2,
             night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
-            app_config.adc_device, app_config.adc_threshold);
+            app_config.adc_device, app_config.adc_threshold, isp_lum,
+            app_config.isp_lum_low, app_config.isp_lum_hi,
+            app_config.isp_iso_low, app_config.isp_iso_hi, app_config.isp_exptime_low, app_config.isp_switch_lockout_s,
+            isp_iso, isp_exptime, isp_again, isp_dgain, isp_ispdgain, isp_exposure_is_max);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

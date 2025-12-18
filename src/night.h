@@ -24,5 +24,9 @@ void night_irled(bool enable);
 void night_manual(bool enable);
 void night_mode(bool enable);
 
+// Exercise IR-cut coil on startup to unstick the filter:
+// remove IR-cut, then restore it back to daylight position.
+void night_ircut_exercise_startup(void);
+
 void disable_night(void);
 int enable_night(void);

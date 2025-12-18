@@ -100,10 +100,22 @@ int save_app_config(void) {
 
     fprintf(file, "night_mode:\n");
     fprintf(file, "  enable: %s\n", app_config.night_mode_enable ? "true" : "false");
+    fprintf(file, "  grayscale: %s\n", app_config.night_mode_grayscale ? "true" : "false");
     fprintf(file, "  ir_sensor_pin: %d\n", app_config.ir_sensor_pin);
     fprintf(file, "  check_interval_s: %d\n", app_config.check_interval_s);
     fprintf(file, "  ir_cut_pin1: %d\n", app_config.ir_cut_pin1);
     fprintf(file, "  ir_cut_pin2: %d\n", app_config.ir_cut_pin2);
+    if (app_config.isp_lum_low >= 0)
+        fprintf(file, "  isp_lum_low: %d\n", app_config.isp_lum_low);
+    if (app_config.isp_lum_hi >= 0)
+        fprintf(file, "  isp_lum_hi: %d\n", app_config.isp_lum_hi);
+    if (app_config.isp_iso_low >= 0)
+        fprintf(file, "  isp_iso_low: %d\n", app_config.isp_iso_low);
+    if (app_config.isp_iso_hi >= 0)
+        fprintf(file, "  isp_iso_hi: %d\n", app_config.isp_iso_hi);
+    if (app_config.isp_exptime_low >= 0)
+        fprintf(file, "  isp_exptime_low: %d\n", app_config.isp_exptime_low);
+    fprintf(file, "  isp_switch_lockout_s: %u\n", app_config.isp_switch_lockout_s);
     fprintf(file, "  ir_led_pin: %d\n", app_config.ir_led_pin);
     fprintf(file, "  pin_switch_delay_us: %d\n", app_config.pin_switch_delay_us);
     fprintf(file, "  adc_device: %s\n", app_config.adc_device);
@@ -282,6 +294,7 @@ enum ConfigError parse_app_config(void) {
     app_config.antiflicker = 0;
 
     app_config.night_mode_enable = false;
+    app_config.night_mode_grayscale = false;
     app_config.ir_sensor_pin = 999;
     app_config.ir_cut_pin1 = 999;
     app_config.ir_cut_pin2 = 999;
@@ -290,6 +303,12 @@ enum ConfigError parse_app_config(void) {
     app_config.check_interval_s = 10;
     app_config.adc_device[0] = 0;
     app_config.adc_threshold = 128;
+    app_config.isp_lum_low = -1;
+    app_config.isp_lum_hi = -1;
+    app_config.isp_iso_low = -1;
+    app_config.isp_iso_hi = -1;
+    app_config.isp_exptime_low = -1;
+    app_config.isp_switch_lockout_s = 15;
 
     struct IniConfig ini;
     memset(&ini, 0, sizeof(struct IniConfig));
@@ -356,30 +375,47 @@ enum ConfigError parse_app_config(void) {
     err =
         parse_bool(&ini, "night_mode", "enable", &app_config.night_mode_enable);
     #define PIN_MAX 95
-    if (app_config.night_mode_enable) {
-        parse_int(
-            &ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX,
-            &app_config.ir_sensor_pin);
-        parse_int(
-            &ini, "night_mode", "check_interval_s", 0, 600,
-            &app_config.check_interval_s);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX,
-            &app_config.ir_cut_pin1);
-        parse_int(
-            &ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX,
-            &app_config.ir_cut_pin2);
-        parse_int(
-            &ini, "night_mode", "ir_led_pin", 0, PIN_MAX,
-            &app_config.ir_led_pin);            
-        parse_int(
-            &ini, "night_mode", "pin_switch_delay_us", 0, 1000,
-            &app_config.pin_switch_delay_us);
-        parse_param_value(
-            &ini, "night_mode", "adc_device", app_config.adc_device);
-        parse_int(
-            &ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX,
-            &app_config.adc_threshold);
+    {
+        // Parse night_mode fields regardless of `enable`, because some features
+        // (e.g. IR-cut exercise on startup) need pin definitions even when the
+        // background night mode thread is disabled.
+        int lum;
+        parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
+        parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX, &app_config.ir_sensor_pin);
+        parse_int(&ini, "night_mode", "check_interval_s", 0, 600, &app_config.check_interval_s);
+        parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX, &app_config.ir_cut_pin1);
+        parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX, &app_config.ir_cut_pin2);
+        parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_MAX, &app_config.ir_led_pin);
+        parse_int(&ini, "night_mode", "pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
+        parse_param_value(&ini, "night_mode", "adc_device", app_config.adc_device);
+        parse_int(&ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);
+        // Optional ISP-derived day/night hysteresis thresholds (hisi/v4 only).
+        if (parse_int(&ini, "night_mode", "isp_lum_low", 0, 255, &lum) == CONFIG_OK)
+            app_config.isp_lum_low = lum;
+        if (parse_int(&ini, "night_mode", "isp_lum_hi", 0, 255, &lum) == CONFIG_OK)
+            app_config.isp_lum_hi = lum;
+        {
+            int v;
+            if (parse_int(&ini, "night_mode", "isp_iso_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_low = v;
+            if (parse_int(&ini, "night_mode", "isp_iso_hi", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_iso_hi = v;
+            if (parse_int(&ini, "night_mode", "isp_exptime_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_exptime_low = v;
+        }
+        {
+            int lock_s = 0;
+            if (parse_int(&ini, "night_mode", "isp_switch_lockout_s", 0, 3600, &lock_s) == CONFIG_OK)
+                app_config.isp_switch_lockout_s = (unsigned int)lock_s;
+        }
+    }
+    // Only hisi/v4 supports ISP luminance source today.
+    if (plat != HAL_PLATFORM_V4) {
+        app_config.isp_lum_low = -1;
+        app_config.isp_lum_hi = -1;
+        app_config.isp_iso_low = -1;
+        app_config.isp_iso_hi = -1;
+        app_config.isp_exptime_low = -1;
     }
 
     err = parse_bool(&ini, "isp", "mirror", &app_config.mirror);
