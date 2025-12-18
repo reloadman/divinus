@@ -192,6 +192,7 @@ Configures the night mode parameters.
 | GET    | `isp_lum_hi`   | High luminance threshold (hisi/v4 only) |
 | GET    | `isp_iso_low`  | Low ISO threshold (hisi/v4 only) |
 | GET    | `isp_iso_hi`   | High ISO threshold (hisi/v4 only) |
+| GET    | `isp_exptime_low` | Low exposure time threshold (hisi/v4 only), gate for leaving IR (probe day) |
 | GET    | `isp_switch_lockout_s` | Minimum seconds between automatic mode switches (hisi/v4 only) |
 | GET    | *(read-only)*  | `isp_lum` (0-255) average luminance from ISP when supported (hisi/v4); `-1` otherwise |
 | GET    | *(read-only)*  | `isp_iso`, `isp_exptime`, `isp_again`, `isp_dgain`, `isp_ispdgain`, `isp_exposure_is_max` from ISP when supported (hisi/v4); `-1` otherwise |
@@ -215,6 +216,7 @@ Configures the night mode parameters.
   "isp_lum_hi": 22,
   "isp_iso_low": 1500,
   "isp_iso_hi": 7000,
+  "isp_exptime_low": 15000,
   "isp_switch_lockout_s": 15,
   "isp_iso": 1600,
   "isp_exptime": 33333,

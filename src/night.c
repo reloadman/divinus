@@ -158,10 +158,12 @@ void *night_thread(void) {
             while (keepRunning && nightOn) sleep(1);
         } else {
             const unsigned int lockout_s = app_config.isp_switch_lockout_s;
-            const unsigned int probe_settle_ms = 800; // allow AE to re-converge after toggling IR
+            const unsigned int probe_settle_ms = 1200; // allow AE to re-converge after toggling IR
+            const int exptime_low = app_config.isp_exptime_low;
             HAL_INFO("night",
-                "Using ISP ISO source: low=%d hi=%d lockout=%us interval=%us\n",
-                app_config.isp_iso_low, app_config.isp_iso_hi, lockout_s, app_config.check_interval_s);
+                "Using ISP ISO source: low=%d hi=%d exptime_low=%d lockout=%us interval=%us\n",
+                app_config.isp_iso_low, app_config.isp_iso_hi, exptime_low,
+                lockout_s, app_config.check_interval_s);
 
             unsigned long long last_switch_ms = 0;
 
@@ -190,19 +192,25 @@ void *night_thread(void) {
                         }
 
                         // Exit IR: do a "probe" to measure ambient without IR.
-                        if (in_ir && (int)iso <= app_config.isp_iso_low) {
+                        // Gate probe by exposure time (AE settled and truly bright), because ISO
+                        // will often be very low in IR due to bright IR LEDs.
+                        if (in_ir && exptime_low >= 0 && (int)exptime <= exptime_low) {
                             if (lockout_s == 0 || now - last_switch_ms >= (unsigned long long)lockout_s * 1000ull) {
                                 // Probe DAY
                                 night_mode(false);
                                 usleep(probe_settle_ms * 1000);
-                                unsigned int iso2=0, exptime2=0, again2=0, dgain2=0, ispdgain2=0; int ismax2=0;
-                                if (get_isp_exposure_info(&iso2, &exptime2, &again2, &dgain2, &ispdgain2, &ismax2) == EXIT_SUCCESS) {
-                                    if ((int)iso2 >= app_config.isp_iso_hi) {
-                                        // Still dark without IR -> go back to IR
-                                        night_mode(true);
-                                    } else {
-                                        // Bright enough without IR -> stay DAY
+                                // Sample a few times without IR; if ISO stays above iso_low,
+                                // ambient is still dark -> revert to IR.
+                                int max_iso2 = -1;
+                                for (int i = 0; i < 3; i++) {
+                                    unsigned int iso2=0, exptime2=0, again2=0, dgain2=0, ispdgain2=0; int ismax2=0;
+                                    if (get_isp_exposure_info(&iso2, &exptime2, &again2, &dgain2, &ispdgain2, &ismax2) == EXIT_SUCCESS) {
+                                        if ((int)iso2 > max_iso2) max_iso2 = (int)iso2;
                                     }
+                                    usleep(200 * 1000);
+                                }
+                                if (max_iso2 >= 0 && max_iso2 > app_config.isp_iso_low) {
+                                    night_mode(true);
                                 }
                                 last_switch_ms = night_now_ms();
                             }

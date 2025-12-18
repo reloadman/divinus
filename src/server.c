@@ -1166,6 +1166,12 @@ void respond_request(http_request_t *req) {
                         if (result < 0) app_config.isp_iso_hi = -1;
                         else app_config.isp_iso_hi = (int)result;
                     }
+                } else if (EQUALS(key, "isp_exptime_low")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_exptime_low = -1;
+                        else app_config.isp_exptime_low = (int)result;
+                    }
                 } else if (EQUALS(key, "isp_switch_lockout_s")) {
                     long result = strtol(value, &remain, 10);
                     if (remain != value) {
@@ -1244,7 +1250,7 @@ void respond_request(http_request_t *req) {
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
             "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
             "\"isp_lum\":%d,\"isp_lum_low\":%d,\"isp_lum_hi\":%d,"
-            "\"isp_iso_low\":%d,\"isp_iso_hi\":%d,\"isp_switch_lockout_s\":%u,"
+            "\"isp_iso_low\":%d,\"isp_iso_hi\":%d,\"isp_exptime_low\":%d,\"isp_switch_lockout_s\":%u,"
             "\"isp_iso\":%d,\"isp_exptime\":%d,\"isp_again\":%d,\"isp_dgain\":%d,\"isp_ispdgain\":%d,"
             "\"isp_exposure_is_max\":%d}",
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
@@ -1253,7 +1259,7 @@ void respond_request(http_request_t *req) {
             night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
             app_config.adc_device, app_config.adc_threshold, isp_lum,
             app_config.isp_lum_low, app_config.isp_lum_hi,
-            app_config.isp_iso_low, app_config.isp_iso_hi, app_config.isp_switch_lockout_s,
+            app_config.isp_iso_low, app_config.isp_iso_hi, app_config.isp_exptime_low, app_config.isp_switch_lockout_s,
             isp_iso, isp_exptime, isp_again, isp_dgain, isp_ispdgain, isp_exposure_is_max);
         send_and_close(req->clntFd, response, respLen);
         return;

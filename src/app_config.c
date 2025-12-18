@@ -113,6 +113,8 @@ int save_app_config(void) {
         fprintf(file, "  isp_iso_low: %d\n", app_config.isp_iso_low);
     if (app_config.isp_iso_hi >= 0)
         fprintf(file, "  isp_iso_hi: %d\n", app_config.isp_iso_hi);
+    if (app_config.isp_exptime_low >= 0)
+        fprintf(file, "  isp_exptime_low: %d\n", app_config.isp_exptime_low);
     fprintf(file, "  isp_switch_lockout_s: %u\n", app_config.isp_switch_lockout_s);
     fprintf(file, "  ir_led_pin: %d\n", app_config.ir_led_pin);
     fprintf(file, "  pin_switch_delay_us: %d\n", app_config.pin_switch_delay_us);
@@ -305,6 +307,7 @@ enum ConfigError parse_app_config(void) {
     app_config.isp_lum_hi = -1;
     app_config.isp_iso_low = -1;
     app_config.isp_iso_hi = -1;
+    app_config.isp_exptime_low = -1;
     app_config.isp_switch_lockout_s = 15;
 
     struct IniConfig ini;
@@ -397,6 +400,8 @@ enum ConfigError parse_app_config(void) {
                 app_config.isp_iso_low = v;
             if (parse_int(&ini, "night_mode", "isp_iso_hi", 0, INT_MAX, &v) == CONFIG_OK)
                 app_config.isp_iso_hi = v;
+            if (parse_int(&ini, "night_mode", "isp_exptime_low", 0, INT_MAX, &v) == CONFIG_OK)
+                app_config.isp_exptime_low = v;
         }
         {
             int lock_s = 0;
@@ -410,6 +415,7 @@ enum ConfigError parse_app_config(void) {
         app_config.isp_lum_hi = -1;
         app_config.isp_iso_low = -1;
         app_config.isp_iso_hi = -1;
+        app_config.isp_exptime_low = -1;
     }
 
     err = parse_bool(&ini, "isp", "mirror", &app_config.mirror);

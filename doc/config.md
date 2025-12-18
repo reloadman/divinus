@@ -34,6 +34,7 @@ This document describes the fields that can be found within a configuration file
 - **isp_lum_hi**: High threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum >= isp_lum_hi`, switch back to day mode.
 - **isp_iso_low**: Low threshold for ISP-derived ISO (hisi/v4 only). Used as the "exit night" threshold when ISO-based switching is enabled.
 - **isp_iso_hi**: High threshold for ISP-derived ISO (hisi/v4 only). Used as the "enter night" threshold when ISO-based switching is enabled.
+- **isp_exptime_low**: Low threshold for ISP-derived exposure time (hisi/v4 only). When enabled, the app will only attempt leaving IR mode (probe day) when `u32ExpTime <= isp_exptime_low`.
 - **isp_switch_lockout_s**: Minimum time in seconds between automatic mode switches (hisi/v4 only). Helps prevent oscillations, especially when IR LEDs are very bright.
 
 ## ISP section
