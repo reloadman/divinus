@@ -1486,6 +1486,10 @@ typedef struct {
     HI_BOOL nr3d_disabled;
     HI_BOOL nr3d_probe_logged;
 
+    // Cache "not supported / rejected by SDK" to avoid repeating warnings every IQ apply.
+    HI_BOOL aerouteex_disabled;
+    HI_BOOL ccm_disabled;
+
     HI_BOOL have_last;
     HI_U8  last_dehaze_strength;
     v4_iq_dyn_drc_sig last_drc;
@@ -2344,6 +2348,13 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         exp.u8AERunInterval = (HI_U8)val;
     if (parse_int(ini, "static_ae", "AERouteExValid", 0, 1, &val) == CONFIG_OK)
         exp.bAERouteExValid = (HI_BOOL)val;
+    // If RouteEx table is known to be rejected by this SDK, don't let firmware try to use it.
+    if (exp.bAERouteExValid) {
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        HI_BOOL disabled = _v4_iq_dyn.aerouteex_disabled;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+        if (disabled) exp.bAERouteExValid = HI_FALSE;
+    }
     if (parse_int(ini, "static_ae", "PriorFrame", 0, 2, &val) == CONFIG_OK)
         exp.enPriorFrame = (ISP_PRIOR_FRAME_E)val;
     if (parse_int(ini, "static_ae", "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
@@ -2450,6 +2461,13 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
 static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     if (!v4_isp.fnGetAERouteAttrEx || !v4_isp.fnSetAERouteAttrEx) {
         HAL_INFO("v4_iq", "AE route-ex: API not available, skipping\n");
+        return EXIT_SUCCESS;
+    }
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    HI_BOOL disabled = _v4_iq_dyn.aerouteex_disabled;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+    if (disabled) {
+        HAL_INFO("v4_iq", "AE route-ex: disabled (previous SDK reject), skipping\n");
         return EXIT_SUCCESS;
     }
     int sec_s = 0, sec_e = 0;
@@ -2619,6 +2637,13 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
 
     // Don't fail full IQ apply because RouteEx isn't accepted on this SDK.
     if (ret) {
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        if (!_v4_iq_dyn.aerouteex_disabled) {
+            _v4_iq_dyn.aerouteex_disabled = HI_TRUE;
+            HAL_WARNING("v4_iq", "AE route-ex: disabling due to SDK rejection (%#x)\n", ret);
+        }
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
         // If firmware can't accept route tables, ensure it doesn't try to use RouteEx.
         if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
             ISP_EXPOSURE_ATTR_S exp;
@@ -2640,12 +2665,22 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "CCM: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    HI_BOOL ccm_disabled = _v4_iq_dyn.ccm_disabled;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+    if (ccm_disabled) {
+        HAL_INFO("v4_iq", "CCM: disabled (previous SDK reject), skipping\n");
+        return EXIT_SUCCESS;
+    }
 
     ISP_COLORMATRIX_ATTR_S ccm;
     memset(&ccm, 0, sizeof(ccm));
     int ret = v4_isp.fnGetCCMAttr(pipe, &ccm);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_GetCCMAttr failed with %#x\n", ret);
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.ccm_disabled = HI_TRUE;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
         HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
         return EXIT_SUCCESS;
     }
@@ -2686,6 +2721,9 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.ccm_disabled = HI_TRUE;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
         HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
     } else {
         ISP_COLORMATRIX_ATTR_S rb;
