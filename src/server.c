@@ -1138,6 +1138,9 @@ void respond_request(http_request_t *req) {
             bool enable_seen = false;
             bool enable_value = app_config.night_mode_enable;
 
+            bool manual_seen = false;
+            bool manual_value = night_manual_on();
+
             bool set_grayscale = false, set_ircut = false, set_irled = false;
             bool grayscale_value = false, ircut_value = false, irled_value = false;
 
@@ -1223,10 +1226,9 @@ void respond_request(http_request_t *req) {
                     if (remain != value)
                         app_config.ir_sensor_pin = result;
                 } else if (EQUALS(key, "manual")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_manual(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_manual(0);
+                    manual_seen = true;
+                    manual_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    night_manual(manual_value ? 1 : 0);
                 }
             }
 
@@ -1255,7 +1257,13 @@ void respond_request(http_request_t *req) {
             }
 
             // If user explicitly disabled night mode support, don't apply direct controls.
-            if (!(enable_seen && !enable_value)) {
+            // If user explicitly set manual=false, force DAY first (like on startup),
+            // then allow auto logic to re-enter night if needed.
+            if (manual_seen && !manual_value) {
+                night_mode(false);
+                if (app_config.night_mode_enable)
+                    enable_night();
+            } else if (!(enable_seen && !enable_value)) {
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
                 if (set_grayscale) night_grayscale(grayscale_value);
