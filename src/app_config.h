@@ -97,6 +97,13 @@ struct AppConfig {
     int audio_gain;
     unsigned int audio_srate;
     unsigned char audio_channels;
+    // AAC (FAAC) advanced tuning. These are ignored unless audio_codec == AAC.
+    // - aac_quantqual: if > 0 enables quality/VBR mode (FAAC quantqual) and disables `audio_bitrate`.
+    // - aac_bandwidth: encoder bandwidth in Hz (0 = auto).
+    // - aac_tns: enable Temporal Noise Shaping.
+    unsigned int audio_aac_quantqual;
+    unsigned int audio_aac_bandwidth;
+    bool audio_aac_tns;
 
     // [mp4]
     bool mp4_enable;

@@ -85,6 +85,9 @@ This document describes the fields that can be found within a configuration file
 - **gain**: Audio gain in decibels (e.g., `0` for no gain).
 - **srate**: Audio sampling rate in Hz (default `48000`).
 - **channels**: Number of channels (1 mono, 2 stereo). Default `1`.
+- **aac_quantqual**: FAAC quality setting (enables quality/VBR mode when `> 0`, range `10..5000` in this build). When set, FAAC ignores `bitrate` and uses `quantqual` instead.
+- **aac_bandwidth**: FAAC encoder bandwidth in Hz (`0` = auto).
+- **aac_tns**: Enable FAAC Temporal Noise Shaping (TNS) (`true/false`).
 
 ## MP4 section
 

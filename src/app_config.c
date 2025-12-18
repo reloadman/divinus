@@ -168,6 +168,10 @@ int save_app_config(void) {
     fprintf(file, "  gain: %d\n", app_config.audio_gain);
     fprintf(file, "  srate: %d\n", app_config.audio_srate);
     fprintf(file, "  channels: %d\n", app_config.audio_channels);
+    // AAC-only tuning (FAAC). Safe to keep in config even if codec=MP3.
+    fprintf(file, "  aac_quantqual: %u\n", app_config.audio_aac_quantqual);
+    fprintf(file, "  aac_bandwidth: %u\n", app_config.audio_aac_bandwidth);
+    fprintf(file, "  aac_tns: %s\n", app_config.audio_aac_tns ? "true" : "false");
 
     fprintf(file, "mp4:\n");
     fprintf(file, "  enable: %s\n", app_config.mp4_enable ? "true" : "false");
@@ -275,6 +279,10 @@ enum ConfigError parse_app_config(void) {
     app_config.audio_gain = 0;
     app_config.audio_srate = 48000;
     app_config.audio_channels = 1;
+    // AAC (FAAC) advanced options (ignored unless codec=AAC)
+    app_config.audio_aac_quantqual = 0;   // 0 = disabled (use bitrate mode)
+    app_config.audio_aac_bandwidth = 0;   // 0 = auto
+    app_config.audio_aac_tns = false;
     app_config.mp4_enable = false;
 
     // JPEG/MJPEG stream (multipart/x-mixed-replace). Snapshots use last MJPEG frame.
@@ -521,6 +529,15 @@ enum ConfigError parse_app_config(void) {
         if (err != CONFIG_OK)
             goto RET_ERR;
         parse_int(&ini, "audio", "channels", 1, 2, (int *)&app_config.audio_channels);
+
+        // AAC-only advanced options (FAAC).
+        // `aac_quantqual` enables quality/VBR mode when > 0 (range 10..5000 in our FAAC build).
+        // In this mode `bitrate` is ignored by FAAC (bitRate=0).
+        parse_int(&ini, "audio", "aac_quantqual", 0, 5000, (int *)&app_config.audio_aac_quantqual);
+        // Encoder bandwidth in Hz; 0 lets FAAC choose defaults.
+        parse_int(&ini, "audio", "aac_bandwidth", 0, 96000, (int *)&app_config.audio_aac_bandwidth);
+        // Temporal Noise Shaping (TNS).
+        parse_bool(&ini, "audio", "aac_tns", &app_config.audio_aac_tns);
     }
 
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);

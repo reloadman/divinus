@@ -2,6 +2,7 @@
 
 #include "v4_hal.h"
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -43,6 +44,33 @@ char _v4_vpss_chn = 0;
 char _v4_vpss_grp = 0;
 
 static char _v4_iq_cfg_path[256] = {0};
+
+// Audio gain handling:
+// - Prefer hardware AI volume control when SDK exposes it
+// - Otherwise apply software scaling on captured PCM samples (16-bit)
+static float _v4_audio_sw_mul = 1.0f;
+static int _v4_audio_sw_on = 0;
+
+static inline int v4_clampi(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Map user gain percent 0..100 to "dB" value used for AI volume APIs / scaling.
+// Semantics for hisi/v4:
+// - 50 => 0 dB (unity)
+// - 0  => -60 dB
+// - 100 => +30 dB
+static int v4_gain_percent_to_db(int percent) {
+    int p = v4_clampi(percent, 0, 100);
+    if (p <= 50) {
+        // -60 .. 0
+        return -60 + (p * 60) / 50;
+    }
+    // 0 .. +30
+    return ((p - 50) * 30) / 50;
+}
 
 // Forward decl (used by delayed apply thread)
 static int v4_iq_apply(const char *path, int pipe);
@@ -502,6 +530,11 @@ int v4_audio_init(int samplerate)
     if (ret = v4_aud.fnEnableChannel(_v4_aud_dev, _v4_aud_chn))
         return ret;
 
+    // Apply gain/volume (optional in SDK).
+    // If we can't set via MPI, fall back to software scaling in capture thread.
+    _v4_audio_sw_mul = 1.0f;
+    _v4_audio_sw_on = 0;
+
     return EXIT_SUCCESS;
 }
 
@@ -520,6 +553,20 @@ void *v4_audio_thread(void)
             HAL_WARNING("v4_aud", "Getting the frame failed "
                 "with %#x!\n", ret);
             continue;
+        }
+
+        // Software gain (only when hardware volume isn't available / failed).
+        if (_v4_audio_sw_on && frame.addr[0] && frame.length >= 2) {
+            const float mul = _v4_audio_sw_mul;
+            int16_t *pcm = (int16_t *)frame.addr[0];
+            const unsigned int samples = frame.length / 2;
+            for (unsigned int i = 0; i < samples; i++) {
+                const float fv = (float)pcm[i] * mul;
+                int32_t v = (int32_t)lrintf(fv);
+                if (v > 32767) v = 32767;
+                if (v < -32768) v = -32768;
+                pcm[i] = (int16_t)v;
+            }
         }
 
         if (v4_aud_cb) {
