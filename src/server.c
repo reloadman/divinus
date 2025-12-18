@@ -993,6 +993,13 @@ void respond_request(http_request_t *req) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         app_config.mjpeg_fps = result;
+                } else if (EQUALS(key, "qfactor")) {
+                    short result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 1) result = 1;
+                        if (result > 99) result = 99;
+                        app_config.mjpeg_qfactor = (unsigned int)result;
+                    }
                 } else if (EQUALS(key, "mode")) {
                     if (EQUALS_CASE(value, "CBR"))
                         app_config.mjpeg_mode = HAL_VIDMODE_CBR;
@@ -1000,8 +1007,14 @@ void respond_request(http_request_t *req) {
                         app_config.mjpeg_mode = HAL_VIDMODE_VBR;
                     else if (EQUALS_CASE(value, "QP"))
                         app_config.mjpeg_mode = HAL_VIDMODE_QP;
+                } else if (EQUALS(key, "bitrate")) {
+                    // Legacy parameter: MJPEG bitrate is no longer configurable/used.
+                    // Intentionally ignored for backwards compatibility.
                 }
             }
+
+            // MJPEG is quality (qfactor) driven now; force QP mode.
+            app_config.mjpeg_mode = HAL_VIDMODE_QP;
 
             disable_mjpeg();
             if (app_config.mjpeg_enable) enable_mjpeg();
@@ -1011,22 +1024,18 @@ void respond_request(http_request_t *req) {
             }
         }
 
-        char mode[5] = "\0";
-        switch (app_config.mjpeg_mode) {
-            case HAL_VIDMODE_CBR: strcpy(mode, "CBR"); break;
-            case HAL_VIDMODE_VBR: strcpy(mode, "VBR"); break;
-            case HAL_VIDMODE_QP: strcpy(mode, "QP"); break;
-        }
+        // Runtime forces QP for MJPEG.
+        char mode[5] = "QP";
         int respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "{\"enable\":%s,\"osd_enable\":%s,\"width\":%d,\"height\":%d,\"fps\":%d,\"mode\":\"%s\",\"bitrate\":%d}",
+            "{\"enable\":%s,\"osd_enable\":%s,\"width\":%d,\"height\":%d,\"fps\":%d,\"mode\":\"%s\",\"qfactor\":%d}",
             app_config.mjpeg_enable ? "true" : "false",
             app_config.mjpeg_osd_enable ? "true" : "false",
             app_config.mjpeg_width, app_config.mjpeg_height, app_config.mjpeg_fps, mode,
-            app_config.mjpeg_bitrate);
+            app_config.mjpeg_qfactor);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

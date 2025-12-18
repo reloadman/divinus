@@ -1,6 +1,7 @@
 /.vscode/settings.json
 /obj
 /build
+/build/*
 /.previous
 /src/**/*.o
 /toolchain

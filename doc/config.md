@@ -125,11 +125,11 @@ This document describes the fields that can be found within a configuration file
 
 - **enable**: Boolean to activate MJPEG output.
 - **osd_enable**: Boolean to enable/disable OSD for MJPEG stream only (default: `true`).
-- **mode**: Encoding mode.
+- **mode**: Encoding mode (kept for compatibility; MJPEG uses `QP` internally).
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.
 - **fps**: Frames per second.
-- **bitrate**: Bitrate in kbps.
+- **qfactor**: JPEG compression quality factor for the MJPEG stream.
 
 ## HTTP POST section
 

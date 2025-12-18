@@ -215,7 +215,7 @@ int save_app_config(void) {
     fprintf(file, "  width: %d\n", app_config.mjpeg_width);
     fprintf(file, "  height: %d\n", app_config.mjpeg_height);
     fprintf(file, "  fps: %d\n", app_config.mjpeg_fps);
-    fprintf(file, "  bitrate: %d\n", app_config.mjpeg_bitrate);
+    fprintf(file, "  qfactor: %d\n", app_config.mjpeg_qfactor);
 
     fprintf(file, "http_post:\n");
     fprintf(file, "  enable: %s\n", app_config.http_post_enable ? "true" : "false");
@@ -287,7 +287,8 @@ enum ConfigError parse_app_config(void) {
     app_config.mjpeg_fps = 15;
     app_config.mjpeg_width = 640;
     app_config.mjpeg_height = 480;
-    app_config.mjpeg_bitrate = 1024;
+    app_config.mjpeg_mode = HAL_VIDMODE_QP;
+    app_config.mjpeg_qfactor = 80;
 
     app_config.mirror = false;
     app_config.flip = false;
@@ -634,6 +635,8 @@ enum ConfigError parse_app_config(void) {
             int val = 0;
             parse_enum(&ini, "mjpeg", "mode", (void *)&val,
                 possible_values, count, 0);
+            // MJPEG is configured via JPEG quality factor (qfactor) now.
+            // Keep parsing `mode` for compatibility, but force QP in runtime.
             app_config.mjpeg_mode = val;
         }
         err = parse_int(
@@ -648,10 +651,20 @@ enum ConfigError parse_app_config(void) {
             parse_int(&ini, "mjpeg", "fps", 1, INT_MAX, &app_config.mjpeg_fps);
         if (err != CONFIG_OK)
             goto RET_ERR;
-        err = parse_int(
-            &ini, "mjpeg", "bitrate", 32, INT_MAX, &app_config.mjpeg_bitrate);
+        // Preferred MJPEG quality control.
+        err = parse_int(&ini, "mjpeg", "qfactor", 1, 99, &app_config.mjpeg_qfactor);
         if (err != CONFIG_OK)
             goto RET_ERR;
+
+        // Backwards compatibility: accept (but ignore) legacy `bitrate`.
+        // This intentionally does not affect MJPEG encoding anymore.
+        {
+            int legacy_bitrate = 0;
+            parse_int(&ini, "mjpeg", "bitrate", 0, INT_MAX, &legacy_bitrate);
+        }
+
+        // MJPEG bitrate control is deprecated; always operate in QP mode.
+        app_config.mjpeg_mode = HAL_VIDMODE_QP;
     }
 
     parse_bool(&ini, "http_post", "enable", &app_config.http_post_enable);

@@ -100,20 +100,23 @@ Configures the MJPEG stream.
 | Method | Parameters | Description                     |
 |--------|------------|---------------------------------|
 | GET    | `enable`   | Enable/disable MJPEG stream     |
+| GET    | `osd_enable` | Enable/disable OSD for MJPEG stream |
 | GET    | `width`    | Video width (px)                |
 | GET    | `height`   | Video height (px)               |
 | GET    | `fps`      | Frames per second               |
-| GET    | `mode`     | Compression mode (CBR, VBR, QP) |
+| GET    | `mode`     | Compression mode (legacy; MJPEG uses QP internally) |
+| GET    | `qfactor`  | JPEG quality factor (1-100%)    |
 
 **Response**
 ```json
 {
   "enable": true,
+  "osd_enable": true,
   "width": 640,
   "height": 480,
   "fps": 15,
-  "mode": "CBR",
-  "bitrate": 1000000
+  "mode": "QP",
+  "qfactor": 80
 }
 ```
 

@@ -951,13 +951,18 @@ int enable_mjpeg(void) {
         config.width = app_config.mjpeg_width;
         config.height = app_config.mjpeg_height;
         config.codec = HAL_VIDCODEC_MJPG;
-        config.mode = app_config.mjpeg_mode;
+        // MJPEG is controlled via JPEG quality factor (qfactor) now.
+        // We force QP mode, because bitrate-based modes are not exposed/used.
+        config.mode = HAL_VIDMODE_QP;
         config.framerate = app_config.mjpeg_fps;
-        config.bitrate = app_config.mjpeg_bitrate;
-        config.maxBitrate = app_config.mjpeg_bitrate * 5 / 4;
-        // Provide deterministic defaults (several HALs read these even in non-QP modes).
-        config.minQual = 70;
-        config.maxQual = 85;
+        // Some vendor HALs still read bitrate fields even in QP; keep safe defaults.
+        config.bitrate = 1024;
+        config.maxBitrate = 1024 * 5 / 4;
+        unsigned int q = app_config.mjpeg_qfactor;
+        if (q < 1) q = 1;
+        if (q > 99) q = 99;
+        config.minQual = (unsigned char)q;
+        config.maxQual = (unsigned char)q;
 
         switch (plat) {
 #if defined(__ARM_PCS_VFP)

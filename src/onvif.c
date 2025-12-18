@@ -291,7 +291,7 @@ void onvif_respond_mediaprofiles(char *response, int *respLen) {
             app_config.mjpeg_height, app_config.mjpeg_width,
             profileCnt + 1, profileCnt + 1,
             "JPEG", app_config.mjpeg_width, app_config.mjpeg_height,
-            app_config.mjpeg_fps, app_config.mjpeg_bitrate);
+            app_config.mjpeg_fps, 1024);
         profileCnt++;
     }
 
