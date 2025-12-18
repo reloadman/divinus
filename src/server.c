@@ -1124,6 +1124,23 @@ void respond_request(http_request_t *req) {
 
     if (EQUALS(req->uri, "/api/night")) {
         if (!EMPTY(req->query)) {
+            // Track prior state to decide whether a night thread restart is needed.
+            const bool old_enable = app_config.night_mode_enable;
+            const int old_isp_lum_low = app_config.isp_lum_low;
+            const int old_isp_lum_hi = app_config.isp_lum_hi;
+            const int old_isp_iso_low = app_config.isp_iso_low;
+            const int old_isp_iso_hi = app_config.isp_iso_hi;
+            const int old_isp_exptime_low = app_config.isp_exptime_low;
+            const unsigned int old_ir_sensor_pin = app_config.ir_sensor_pin;
+            char old_adc_device[sizeof(app_config.adc_device)];
+            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
+
+            bool enable_seen = false;
+            bool enable_value = app_config.night_mode_enable;
+
+            bool set_grayscale = false, set_ircut = false, set_irled = false;
+            bool grayscale_value = false, ircut_value = false, irled_value = false;
+
             char *remain;
             while (req->query) {
                 char *value = split(&req->query, "&");
@@ -1132,10 +1149,11 @@ void respond_request(http_request_t *req) {
                 char *key = split(&value, "=");
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "enable")) {
+                    enable_seen = true;
                     if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        app_config.night_mode_enable = 1;
+                        app_config.night_mode_enable = enable_value = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.night_mode_enable = 0;
+                        app_config.night_mode_enable = enable_value = 0;
                 } else if (EQUALS(key, "adc_device")) {
                     strncpy(app_config.adc_device, value, sizeof(app_config.adc_device));
                 } else if (EQUALS(key, "adc_threshold")) {
@@ -1180,15 +1198,11 @@ void respond_request(http_request_t *req) {
                         app_config.isp_switch_lockout_s = (unsigned int)result;
                     }
                 } else if (EQUALS(key, "grayscale")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_grayscale(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_grayscale(0);
+                    set_grayscale = true;
+                    grayscale_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "ircut")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_ircut(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_ircut(0);
+                    set_ircut = true;
+                    ircut_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "ircut_pin1")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1198,10 +1212,8 @@ void respond_request(http_request_t *req) {
                     if (remain != value)
                         app_config.ir_cut_pin2 = result;
                 } else if (EQUALS(key, "irled")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        night_irled(1);
-                    else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        night_irled(0);
+                    set_irled = true;
+                    irled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1218,8 +1230,36 @@ void respond_request(http_request_t *req) {
                 }
             }
 
-            disable_night();
-            if (app_config.night_mode_enable) enable_night();
+            const bool old_iso_mode = (old_isp_iso_low >= 0 && old_isp_iso_hi >= 0);
+            const bool new_iso_mode = (app_config.isp_iso_low >= 0 && app_config.isp_iso_hi >= 0);
+            const bool old_lum_mode = (old_isp_lum_low >= 0 && old_isp_lum_hi >= 0);
+            const bool new_lum_mode = (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0);
+
+            bool need_restart =
+                (old_enable != app_config.night_mode_enable) ||
+                (strcmp(old_adc_device, app_config.adc_device) != 0) ||
+                (old_ir_sensor_pin != app_config.ir_sensor_pin) ||
+                (old_iso_mode != new_iso_mode) ||
+                (old_lum_mode != new_lum_mode) ||
+                (old_isp_exptime_low != app_config.isp_exptime_low);
+
+            if (need_restart) {
+                disable_night();
+                if (app_config.night_mode_enable) enable_night();
+            } else {
+                // Ensure thread is running if enable was explicitly requested.
+                if (enable_seen && enable_value && app_config.night_mode_enable)
+                    enable_night();
+                if (enable_seen && !enable_value)
+                    disable_night();
+            }
+
+            // If user explicitly disabled night mode support, don't apply direct controls.
+            if (!(enable_seen && !enable_value)) {
+                if (set_ircut) night_ircut(ircut_value);
+                if (set_irled) night_irled(irled_value);
+                if (set_grayscale) night_grayscale(grayscale_value);
+            }
         }
 
         int isp_lum = -1;
