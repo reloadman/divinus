@@ -2646,7 +2646,8 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     int ret = v4_isp.fnGetCCMAttr(pipe, &ccm);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_GetCCMAttr failed with %#x\n", ret);
-        return ret;
+        HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
+        return EXIT_SUCCESS;
     }
 
     int val;
@@ -2685,6 +2686,7 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
+        HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
     } else {
         ISP_COLORMATRIX_ATTR_S rb;
         memset(&rb, 0, sizeof(rb));
@@ -2699,7 +2701,8 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
             HAL_INFO("v4_iq", "CCM: applied\n");
         }
     }
-    return ret;
+    // Don't fail full IQ apply because CCM isn't accepted on this SDK/build.
+    return EXIT_SUCCESS;
 }
 
 static int v4_iq_apply_static_saturation(struct IniConfig *ini, int pipe) {
