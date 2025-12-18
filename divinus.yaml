@@ -97,8 +97,8 @@ jpeg:
 mjpeg:
   enable: true
   osd_enable: true
-  mode: CBR
+  mode: QP
   width: 3840
   height: 2160
   fps: 20
-  bitrate: 1024
+  qfactor: 80

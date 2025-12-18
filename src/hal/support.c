@@ -19,7 +19,7 @@ float lastReadTemp = 0.0 / 0.0;
 
 bool hal_osd_is_allowed_for_channel(const hal_chnstate *st) {
     if (!st) return false;
-    if (st->payload == HAL_VIDCODEC_MJPG && !app_config.mjpeg_osd_enable)
+    if (st->payload == HAL_VIDCODEC_MJPG && !app_config.jpeg_osd_enable)
         return false;
     return true;
 }
