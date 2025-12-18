@@ -844,6 +844,11 @@ void respond_request(http_request_t *req) {
 
     if (EQUALS(req->uri, "/api/audio")) {
         if (!EMPTY(req->query)) {
+            const bool old_enable = app_config.audio_enable;
+            const unsigned int old_bitrate = app_config.audio_bitrate;
+            const int old_gain = app_config.audio_gain;
+            const unsigned int old_srate = app_config.audio_srate;
+
             char *remain;
             while (req->query) {
                 char *value = split(&req->query, "&");
@@ -871,8 +876,22 @@ void respond_request(http_request_t *req) {
                 }
             }
 
+            bool cfg_changed =
+                (old_enable != app_config.audio_enable) ||
+                (old_bitrate != app_config.audio_bitrate) ||
+                (old_gain != app_config.audio_gain) ||
+                (old_srate != app_config.audio_srate);
+
             disable_audio();
             if (app_config.audio_enable) enable_audio();
+
+            if (cfg_changed) {
+                int result = save_app_config();
+                if (!result)
+                    HAL_INFO("server", "Configuration saved!\n");
+                else
+                    HAL_WARNING("server", "Failed to save configuration!\n");
+            }
         }
 
         int respLen = sprintf(response,
@@ -1102,12 +1121,18 @@ void respond_request(http_request_t *req) {
         if (!EMPTY(req->query)) {
             // Track prior state to decide whether a night thread restart is needed.
             const bool old_enable = app_config.night_mode_enable;
+            const bool old_grayscale = app_config.night_mode_grayscale;
             const int old_isp_lum_low = app_config.isp_lum_low;
             const int old_isp_lum_hi = app_config.isp_lum_hi;
             const int old_isp_iso_low = app_config.isp_iso_low;
             const int old_isp_iso_hi = app_config.isp_iso_hi;
             const int old_isp_exptime_low = app_config.isp_exptime_low;
+            const unsigned int old_isp_switch_lockout_s = app_config.isp_switch_lockout_s;
+            const unsigned int old_ir_cut_pin1 = app_config.ir_cut_pin1;
+            const unsigned int old_ir_cut_pin2 = app_config.ir_cut_pin2;
+            const unsigned int old_ir_led_pin = app_config.ir_led_pin;
             const unsigned int old_ir_sensor_pin = app_config.ir_sensor_pin;
+            const int old_adc_threshold = app_config.adc_threshold;
             char old_adc_device[sizeof(app_config.adc_device)];
             strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
 
@@ -1179,6 +1204,8 @@ void respond_request(http_request_t *req) {
                 } else if (EQUALS(key, "grayscale")) {
                     set_grayscale = true;
                     grayscale_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    // Persist configured grayscale behavior for future NIGHT transitions.
+                    app_config.night_mode_grayscale = grayscale_value;
                 } else if (EQUALS(key, "ircut")) {
                     set_ircut = true;
                     ircut_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
@@ -1221,6 +1248,22 @@ void respond_request(http_request_t *req) {
                 (old_lum_mode != new_lum_mode) ||
                 (old_isp_exptime_low != app_config.isp_exptime_low);
 
+            bool cfg_changed =
+                (old_enable != app_config.night_mode_enable) ||
+                (old_grayscale != app_config.night_mode_grayscale) ||
+                (strcmp(old_adc_device, app_config.adc_device) != 0) ||
+                (old_adc_threshold != app_config.adc_threshold) ||
+                (old_ir_cut_pin1 != app_config.ir_cut_pin1) ||
+                (old_ir_cut_pin2 != app_config.ir_cut_pin2) ||
+                (old_ir_led_pin != app_config.ir_led_pin) ||
+                (old_ir_sensor_pin != app_config.ir_sensor_pin) ||
+                (old_isp_lum_low != app_config.isp_lum_low) ||
+                (old_isp_lum_hi != app_config.isp_lum_hi) ||
+                (old_isp_iso_low != app_config.isp_iso_low) ||
+                (old_isp_iso_hi != app_config.isp_iso_hi) ||
+                (old_isp_exptime_low != app_config.isp_exptime_low) ||
+                (old_isp_switch_lockout_s != app_config.isp_switch_lockout_s);
+
             if (need_restart) {
                 disable_night();
                 if (app_config.night_mode_enable) enable_night();
@@ -1243,6 +1286,14 @@ void respond_request(http_request_t *req) {
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
                 if (set_grayscale) night_grayscale(grayscale_value);
+            }
+
+            if (cfg_changed) {
+                int result = save_app_config();
+                if (!result)
+                    HAL_INFO("server", "Configuration saved!\n");
+                else
+                    HAL_WARNING("server", "Failed to save configuration!\n");
             }
         }
 
