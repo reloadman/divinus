@@ -24,7 +24,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define MAX_CLIENTS 16
+#define MAX_CLIENTS 4
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
 // Use a dynamic payload type for MP3. Some clients (ffmpeg/ffplay) aggressively
@@ -34,7 +34,7 @@
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
 // Must match max_buffer passed to smolrtsp_transport_tcp(...) in setup_rtp_transport().
-#define RTSP_TCP_MAX_BUFFER (256 * 1024)
+#define RTSP_TCP_MAX_BUFFER (512 * 1024)
 // When TCP buffer is full, drain oldest interleaved frames down to this size.
 #define RTSP_TCP_TRIM_TARGET (RTSP_TCP_MAX_BUFFER / 2)
 
