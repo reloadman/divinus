@@ -1482,6 +1482,9 @@ typedef struct {
     v4_iq_3dnr_cfg nr3d_ir;
     int last_nr3d_idx;
     HI_BOOL last_nr3d_is_ir;
+    int nr3d_fail_count;
+    HI_BOOL nr3d_disabled;
+    HI_BOOL nr3d_probe_logged;
 
     HI_BOOL have_last;
     HI_U8  last_dehaze_strength;
@@ -1744,6 +1747,71 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
     return EXIT_SUCCESS;
 }
 
+// Prefer VI pipe NRX (3DNR) API; fallback to VPSS group NRX API.
+static int v4_iq_apply_3dnr_nrc(int pipe, int grp, const v4_iq_3dnr_nrc *cfg) {
+    if (!cfg) return EXIT_SUCCESS;
+
+    // Probe VI NRX param layout once (helps identify enNRVersion/struct layout on GK).
+    if (v4_vi.fnGetPipeNRXParam) {
+        HI_BOOL do_log = HI_FALSE;
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        if (!_v4_iq_dyn.nr3d_probe_logged) {
+            _v4_iq_dyn.nr3d_probe_logged = HI_TRUE;
+            do_log = HI_TRUE;
+        }
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+        if (do_log) {
+            unsigned char blob[256];
+            memset(blob, 0, sizeof(blob));
+            int gr = v4_vi.fnGetPipeNRXParam(pipe, blob);
+            if (gr) {
+                HAL_WARNING("v4_iq", "3DNR probe: VI_GetPipeNRXParam failed with %#x\n", gr);
+            } else {
+                // Interpret first 4 bytes as little-endian int (commonly enNRVersion).
+                unsigned int ver = (unsigned int)blob[0] |
+                    ((unsigned int)blob[1] << 8) |
+                    ((unsigned int)blob[2] << 16) |
+                    ((unsigned int)blob[3] << 24);
+
+                char hex[3 * 64 + 1];
+                size_t w = 0;
+                for (int i = 0; i < 64; i++) {
+                    if (w + 3 >= sizeof(hex)) break;
+                    static const char *digits = "0123456789abcdef";
+                    unsigned char b = blob[i];
+                    hex[w++] = digits[(b >> 4) & 0xF];
+                    hex[w++] = digits[b & 0xF];
+                    hex[w++] = (i == 63) ? '\0' : ' ';
+                }
+                hex[sizeof(hex) - 1] = '\0';
+                HAL_INFO("v4_iq", "3DNR probe: VI_GetPipeNRXParam OK, header_u32(le)=%u, first64=[%s]\n",
+                    ver, hex);
+            }
+        }
+    }
+
+    if (v4_vi.fnGetPipeNRXParam && v4_vi.fnSetPipeNRXParam) {
+        // For GK, VI NRX param type layout can vary. Use a large buffer and only patch a few NRC fields
+        // by string signature is hard; instead try VPSS if VI isn't supported.
+        // Here we attempt VPSS first if VI returns unsupported.
+        HI_U8 blob[8192];
+        memset(blob, 0, sizeof(blob));
+        int gr = v4_vi.fnGetPipeNRXParam(pipe, blob);
+        if (!gr) {
+            // Try to interpret as VI_PIPE_NRX_PARAM_S V1 (starts with enNRVersion)
+            // We only support V1 fast-path when it matches expected offsets.
+            // If this is wrong, Set will fail and we will fallback to VPSS.
+            typedef struct { int enNRVersion; HI_U8 rest[1]; } vi_nrx_hdr;
+            vi_nrx_hdr *hdr = (vi_nrx_hdr *)blob;
+            (void)hdr;
+            // We can't safely patch without full struct here; use VPSS path instead for now.
+        }
+        // fall through to VPSS
+    }
+    return v4_iq_apply_vpss_3dnr_nrc(grp, cfg);
+}
+
 static int v4_iq_find_int_token(const char *txt, const char *tag, HI_S32 *out) {
     if (!txt || !tag || !out) return 0;
     // strcasestr() is a GNU extension and may be unavailable in some toolchains.
@@ -1979,6 +2047,8 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
     _v4_iq_dyn.dehaze = deh;
     _v4_iq_dyn.linear_drc = drc;
     _v4_iq_dyn.have_last = HI_FALSE;
+    _v4_iq_dyn.nr3d_fail_count = 0;
+    _v4_iq_dyn.nr3d_disabled = HI_FALSE;
     pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
     if (deh.enabled)
@@ -2005,6 +2075,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
         HI_U32 upIso = 0, downIso = 0;
         int last_nr_idx = -1;
         HI_BOOL last_nr_ir = HI_FALSE;
+        int nr3d_fail_count = 0;
+        HI_BOOL nr3d_disabled = HI_FALSE;
         HI_BOOL have_last;
         HI_U8 last_deh;
         v4_iq_dyn_drc_sig last_drc;
@@ -2018,6 +2090,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
         downIso = _v4_iq_dyn.downFrameIso;
         last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
         last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
+        nr3d_fail_count = _v4_iq_dyn.nr3d_fail_count;
+        nr3d_disabled = _v4_iq_dyn.nr3d_disabled;
         have_last = _v4_iq_dyn.have_last;
         last_deh = _v4_iq_dyn.last_dehaze_strength;
         last_drc = _v4_iq_dyn.last_drc;
@@ -2145,6 +2219,9 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
         // 3DNR (VPSS NRX) by ISO + night mode
         {
+            if (nr3d_disabled) {
+                // disabled due to repeated errors
+            } else {
             const bool is_ir = night_mode_on();
             const v4_iq_3dnr_cfg *cfg = NULL;
             if (is_ir && nr_ir.enabled) cfg = &nr_ir;
@@ -2171,18 +2248,33 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 }
 
                 if (allow && (desired != last_nr_idx || last_nr_ir != (is_ir ? HI_TRUE : HI_FALSE))) {
-                    int ar = v4_iq_apply_vpss_3dnr_nrc(_v4_vpss_grp, &cfg->nrc[desired]);
+                    int ar = v4_iq_apply_3dnr_nrc(_v4_vi_pipe, _v4_vpss_grp, &cfg->nrc[desired]);
                     if (!ar) {
                         pthread_mutex_lock(&_v4_iq_dyn.lock);
                         _v4_iq_dyn.last_nr3d_idx = desired;
                         _v4_iq_dyn.last_nr3d_is_ir = is_ir ? HI_TRUE : HI_FALSE;
+                        _v4_iq_dyn.nr3d_fail_count = 0;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq", "3DNR: %s idx=%d iso=%u (sfc=%d tfc=%d tpc=%d trc=%d)\n",
                             is_ir ? "IR" : "DAY", desired, (unsigned)iso,
                             (int)cfg->nrc[desired].sfc, (int)cfg->nrc[desired].tfc,
                             (int)cfg->nrc[desired].tpc, (int)cfg->nrc[desired].trc);
+                    } else {
+                        // Disable after a few failures to avoid log spam
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.nr3d_fail_count++;
+                        int fc = _v4_iq_dyn.nr3d_fail_count;
+                        if (fc == 1) {
+                            HAL_WARNING("v4_iq", "3DNR: apply failed with %#x (will retry a few times)\n", ar);
+                        }
+                        if (fc >= 3) {
+                            _v4_iq_dyn.nr3d_disabled = HI_TRUE;
+                            HAL_WARNING("v4_iq", "3DNR: disabling due to repeated failures (last=%#x)\n", ar);
+                        }
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
                     }
                 }
+            }
             }
         }
 

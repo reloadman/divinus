@@ -150,6 +150,10 @@ typedef struct {
     int (*fnDestroyPipe)(int pipe);
     int (*fnStartPipe)(int pipe);
     int (*fnStopPipe)(int pipe);
+
+    // Optional 3DNR (NRX) controls
+    int (*fnGetPipeNRXParam)(int pipe, void *param);
+    int (*fnSetPipeNRXParam)(int pipe, const void *param);
 } v4_vi_impl;
 
 static int v4_vi_load(v4_vi_impl *vi_lib) {
@@ -202,6 +206,19 @@ static int v4_vi_load(v4_vi_impl *vi_lib) {
     if (!(vi_lib->fnStopPipe = (int(*)(int pipe))
         hal_symbol_load("v4_vi", vi_lib->handle, "HI_MPI_VI_StopPipe")))
         return EXIT_FAILURE;
+
+    // Optional NRX param (3DNR)
+    vi_lib->fnGetPipeNRXParam = (int(*)(int, void*))dlsym(vi_lib->handle, "HI_MPI_VI_GetPipeNRXParam");
+    if (!vi_lib->fnGetPipeNRXParam)
+        vi_lib->fnGetPipeNRXParam = (int(*)(int, void*))dlsym(vi_lib->handle, "MPI_VI_GetPipeNRXParam");
+    if (!vi_lib->fnGetPipeNRXParam)
+        vi_lib->fnGetPipeNRXParam = (int(*)(int, void*))dlsym(vi_lib->handle, "GK_API_VI_GetPipeNRXParam");
+
+    vi_lib->fnSetPipeNRXParam = (int(*)(int, const void*))dlsym(vi_lib->handle, "HI_MPI_VI_SetPipeNRXParam");
+    if (!vi_lib->fnSetPipeNRXParam)
+        vi_lib->fnSetPipeNRXParam = (int(*)(int, const void*))dlsym(vi_lib->handle, "MPI_VI_SetPipeNRXParam");
+    if (!vi_lib->fnSetPipeNRXParam)
+        vi_lib->fnSetPipeNRXParam = (int(*)(int, const void*))dlsym(vi_lib->handle, "GK_API_VI_SetPipeNRXParam");
 
     return EXIT_SUCCESS;
 }
