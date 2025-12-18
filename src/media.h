@@ -31,6 +31,11 @@ void set_grayscale(bool active);
 // Returns 0 on success and writes 0..255 average luma into *lum.
 // Currently implemented only for hisi/v4; other platforms return non-zero.
 int get_isp_avelum(unsigned char *lum);
+// Returns 0 on success and writes ISP exposure info fields.
+// Currently implemented only for hisi/v4; other platforms return non-zero.
+int get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max);
 int take_next_free_channel(bool mainLoop);
 
 int create_channel(char index, short width, short height, char framerate, char jpeg);

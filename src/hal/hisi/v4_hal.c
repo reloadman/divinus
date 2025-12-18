@@ -879,6 +879,25 @@ int v4_get_isp_avelum(unsigned char *lum) {
     return EXIT_SUCCESS;
 }
 
+int v4_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max) {
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+    if (!v4_isp.fnQueryExposureInfo) return EXIT_FAILURE;
+    ISP_EXP_INFO_S expi;
+    memset(&expi, 0, sizeof(expi));
+    if (v4_isp.fnQueryExposureInfo(_v4_vi_pipe, &expi))
+        return EXIT_FAILURE;
+    *iso = (unsigned int)expi.u32ISO;
+    *exp_time = (unsigned int)expi.u32ExpTime;
+    *again = (unsigned int)expi.u32AGain;
+    *dgain = (unsigned int)expi.u32DGain;
+    *ispdgain = (unsigned int)expi.u32ISPDGain;
+    *exposure_is_max = (int)(expi.bExposureIsMAX ? 1 : 0);
+    return EXIT_SUCCESS;
+}
+
 #define CCM_MATRIX_SIZE 9
 #define CCM_MATRIX_NUM 7
 typedef struct {

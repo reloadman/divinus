@@ -191,6 +191,7 @@ Configures the night mode parameters.
 | GET    | `isp_lum_low`  | Low luminance threshold (hisi/v4 only) |
 | GET    | `isp_lum_hi`   | High luminance threshold (hisi/v4 only) |
 | GET    | *(read-only)*  | `isp_lum` (0-255) average luminance from ISP when supported (hisi/v4); `-1` otherwise |
+| GET    | *(read-only)*  | `isp_iso`, `isp_exptime`, `isp_again`, `isp_dgain`, `isp_ispdgain`, `isp_exposure_is_max` from ISP when supported (hisi/v4); `-1` otherwise |
 
 **Response**
 ```json
@@ -208,7 +209,13 @@ Configures the night mode parameters.
   "adc_threshold": 800,
   "isp_lum": 42,
   "isp_lum_low": 12,
-  "isp_lum_hi": 22
+  "isp_lum_hi": 22,
+  "isp_iso": 1600,
+  "isp_exptime": 33333,
+  "isp_again": 1024,
+  "isp_dgain": 1024,
+  "isp_ispdgain": 1024,
+  "isp_exposure_is_max": 0
 }
 ```
 
