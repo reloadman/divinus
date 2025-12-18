@@ -137,6 +137,10 @@ else
   SPEEXDSP_CFLAGS += -DFLOATING_POINT
 endif
 
+# SpeexDSP's `fftwrap.c` requires selecting an FFT backend.
+# We vendor `kiss_fft.c`/`kiss_fftr.c`, so use KISS FFT by default.
+SPEEXDSP_CFLAGS += -DUSE_KISS_FFT
+
 ifneq (,$(filter arm%,$(TOOLCHAIN)))
   ifeq ($(SPEEXDSP_ENABLE_NEON),1)
     # For AArch64, NEON is mandatory; don't force incompatible -mfpu/-march flags.

@@ -75,6 +75,24 @@ struct __time_stat_t {
     unsigned int ts_offset;
 };
 
+/* Per-track RTP/RTCP transport state. */
+struct rtsp_transport_t {
+    int server_rtcp_fd;
+    int server_rtp_fd;
+    unsigned int client_port_rtp;
+    unsigned int client_port_rtcp;
+    unsigned int server_port_rtp;
+    unsigned int server_port_rtcp;
+    unsigned int range_start;
+    unsigned int range_end;
+    unsigned int rtcp_octet;
+    unsigned int rtcp_packet_cnt;
+    int rtcp_tick;
+    int rtcp_tick_org;
+    unsigned short rtp_seq;
+    unsigned int rtp_timestamp;
+};
+
 struct connection_item_t {
     struct sockaddr_in addr;
     FILE *fp_tcp_read;
@@ -83,22 +101,7 @@ struct connection_item_t {
     int track_id;
     int cseq;
 
-    struct {
-        int server_rtcp_fd;
-        int server_rtp_fd;
-        unsigned int client_port_rtp;
-        unsigned int client_port_rtcp;
-        unsigned int server_port_rtp;
-        unsigned int server_port_rtcp;
-        unsigned int range_start;
-        unsigned int range_end;
-        unsigned int rtcp_octet;
-        unsigned int rtcp_packet_cnt;
-        int rtcp_tick;
-        int rtcp_tick_org;
-        unsigned short rtp_seq;
-        unsigned int rtp_timestamp;
-    } trans[2];
+    struct rtsp_transport_t trans[2];
 
     enum __connection_state_e con_state;
     enum __parser_state_e parser_state;
