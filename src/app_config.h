@@ -105,6 +105,29 @@ struct AppConfig {
     unsigned int audio_aac_bandwidth;
     bool audio_aac_tns;
 
+    // SpeexDSP (preprocess) for AAC PCM path (denoise/AGC/VAD/dereverb).
+    // NOTE: This is applied only when audio_codec == AAC and channels == 1.
+    bool audio_speex_enable;              // master switch (bypass everything when false)
+    bool audio_speex_denoise;
+    bool audio_speex_agc;
+    bool audio_speex_vad;
+    bool audio_speex_dereverb;
+    // Number of PCM samples per channel per preprocess call.
+    // Typical values: 160 @ 8kHz, 320 @ 16kHz, 960 @ 48kHz (20 ms).
+    unsigned int audio_speex_frame_size;
+    // Noise suppression (dB), typical -15..-30.
+    int audio_speex_noise_suppress_db;
+    // AGC target level (SpeexDSP expects float in floating-point builds).
+    // SpeexDSP clamps it to [1..32768].
+    int audio_speex_agc_level;
+    // AGC speed and limits (dB units expected by SpeexDSP ctl).
+    int audio_speex_agc_increment;
+    int audio_speex_agc_decrement;
+    int audio_speex_agc_max_gain_db;
+    // VAD thresholds as probabilities in percent [0..100].
+    int audio_speex_vad_prob_start;
+    int audio_speex_vad_prob_continue;
+
     // [mp4]
     bool mp4_enable;
     bool mp4_codecH265;

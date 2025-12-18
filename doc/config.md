@@ -90,6 +90,23 @@ This document describes the fields that can be found within a configuration file
 - **aac_quantqual**: FAAC quality setting (enables quality/VBR mode when `> 0`, range `10..5000` in this build). When set, FAAC ignores `bitrate` and uses `quantqual` instead.
 - **aac_bandwidth**: FAAC encoder bandwidth in Hz (`0` = auto).
 - **aac_tns**: Enable FAAC Temporal Noise Shaping (TNS) (`true/false`).
+- **speex_enable**: Master switch for SpeexDSP preprocess on the **AAC** PCM path (`true/false`). When `false`, PCM goes directly to the encoder (bypass SpeexDSP to save CPU/memory).
+- **speex_denoise**: Enable SpeexDSP denoiser (`true/false`).
+- **speex_agc**: Enable SpeexDSP Automatic Gain Control (`true/false`).
+- **speex_vad**: Enable SpeexDSP Voice Activity Detection (`true/false`).
+- **speex_dereverb**: Enable SpeexDSP dereverb (`true/false`). This is expensive and upstream notes it as experimental; default is recommended `false`.
+- **speex_frame_size**: PCM samples per channel per preprocess call. Typical values:
+  - `160` @ `8000` Hz (20 ms)
+  - `320` @ `16000` Hz (20 ms)
+  - `960` @ `48000` Hz (20 ms)
+  Default: `srate / 50` (20 ms).
+- **speex_noise_suppress_db**: Noise suppression level in dB (negative), typical `-15..-30`.
+- **speex_agc_level**: AGC target level (SpeexDSP uses a float internally in floating-point builds), typical around `24000` (clamped to `1..32768`).
+- **speex_agc_increment**: AGC maximum increase rate (SpeexDSP units).
+- **speex_agc_decrement**: AGC maximum decrease rate (SpeexDSP units).
+- **speex_agc_max_gain_db**: AGC maximum gain in dB.
+- **speex_vad_prob_start**: VAD probability threshold to start speech (percent `0..100`).
+- **speex_vad_prob_continue**: VAD probability threshold to continue speech (percent `0..100`).
 
 ## MP4 section
 

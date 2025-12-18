@@ -1,6 +1,9 @@
 #include "media.h"
 #include "hal/config.h"
 #include <faac.h>
+#if defined(DIVINUS_WITH_SPEEXDSP)
+#include <speex/speex_preprocess.h>
+#endif
 
 char audioOn = 0, udpOn = 0;
 pthread_mutex_t aencMtx, chnMtx, mp4Mtx;
@@ -109,6 +112,20 @@ int16_t *aacStash = NULL;    // stash of incoming PCM (16-bit LE samples)
 unsigned int aacStashLen = 0;
 uint64_t aacStashTsUs = 0;
 
+#if defined(DIVINUS_WITH_SPEEXDSP)
+// SpeexDSP preprocess state for AAC PCM path (optional).
+static struct {
+    SpeexPreprocessState *st;
+    unsigned int srate;
+    unsigned int channels;
+    unsigned int frame_size;      // samples per channel per preprocess run
+    int active;
+    int16_t *stash;               // input stash (interleaved, but we only support mono)
+    unsigned int stash_len;       // in samples (int16_t)
+    unsigned int stash_cap;       // in samples (int16_t)
+} speex_aac = {0};
+#endif
+
 // Temporary buffers to send an extracted encoded frame without holding aencMtx.
 static unsigned char *mp3_send_buf = NULL;
 static size_t mp3_send_cap = 0;
@@ -138,6 +155,172 @@ static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
 static int save_audio_stream_mp3(hal_audframe *frame);
 static int save_audio_stream_aac(hal_audframe *frame);
+
+static inline void aac_stash_append(const int16_t *pcm16, unsigned int total_samples) {
+    if (!aacStash || total_samples == 0)
+        return;
+    // Keep enough headroom for jitter/bursts (matches existing allocation).
+    unsigned int channels = aacChannels ? aacChannels : 1;
+    unsigned int max_stash = (unsigned int)aacInputSamples * channels * 4U;
+    if (aacStashLen + total_samples > max_stash) {
+        // If encoder can't keep up, drop accumulated samples and keep newest.
+        aacStashLen = 0;
+    }
+    if (aacStashLen + total_samples <= max_stash) {
+        memcpy(aacStash + aacStashLen, pcm16, total_samples * sizeof(int16_t));
+        aacStashLen += total_samples;
+    }
+}
+
+#if defined(DIVINUS_WITH_SPEEXDSP)
+static void speex_aac_reset(void) {
+    if (speex_aac.st) {
+        speex_preprocess_state_destroy(speex_aac.st);
+        speex_aac.st = NULL;
+    }
+    free(speex_aac.stash);
+    speex_aac.stash = NULL;
+    speex_aac.stash_len = 0;
+    speex_aac.stash_cap = 0;
+    speex_aac.srate = 0;
+    speex_aac.channels = 0;
+    speex_aac.frame_size = 0;
+    speex_aac.active = 0;
+}
+
+static void speex_aac_init_from_config(unsigned int srate, unsigned int channels) {
+    speex_aac_reset();
+
+    // Use SpeexDSP only for AAC and mono input (simple, predictable CPU).
+    if (!app_config.audio_speex_enable)
+        return;
+    if (channels != 1) {
+        HAL_WARNING("media", "SpeexDSP preprocess is enabled but channels=%u; only mono is supported, bypassing.\n",
+            channels);
+        return;
+    }
+
+    unsigned int frame_size = app_config.audio_speex_frame_size;
+    if (frame_size == 0)
+        frame_size = srate / 50U; // 20 ms fallback
+    if (frame_size < 80U)
+        frame_size = 80U;
+    if (frame_size > 8192U)
+        frame_size = 8192U;
+
+    SpeexPreprocessState *st = speex_preprocess_state_init((int)frame_size, (int)srate);
+    if (!st) {
+        HAL_ERROR("media", "SpeexDSP preprocess init failed (frame_size=%u srate=%u); bypassing.\n",
+            frame_size, srate);
+        return;
+    }
+
+    // Apply config. Most ctl() take spx_int32_t* in our fixed-point build.
+    spx_int32_t v = 0;
+    v = app_config.audio_speex_denoise ? 1 : 0;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &v);
+    v = app_config.audio_speex_agc ? 1 : 0;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_AGC, &v);
+    v = app_config.audio_speex_vad ? 1 : 0;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_VAD, &v);
+    v = app_config.audio_speex_dereverb ? 1 : 0;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DEREVERB, &v);
+
+    v = (spx_int32_t)app_config.audio_speex_noise_suppress_db;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &v);
+    {
+        // SpeexDSP expects float* for AGC_LEVEL in floating-point builds.
+        // Keep config type numeric and cast here.
+        float agc_level = (float)app_config.audio_speex_agc_level;
+        speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_AGC_LEVEL, &agc_level);
+    }
+    v = (spx_int32_t)app_config.audio_speex_agc_increment;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_AGC_INCREMENT, &v);
+    v = (spx_int32_t)app_config.audio_speex_agc_decrement;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_AGC_DECREMENT, &v);
+    v = (spx_int32_t)app_config.audio_speex_agc_max_gain_db;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_AGC_MAX_GAIN, &v);
+    v = (spx_int32_t)app_config.audio_speex_vad_prob_start;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_START, &v);
+    v = (spx_int32_t)app_config.audio_speex_vad_prob_continue;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &v);
+
+    // Allocate stash for incoming PCM. Keep a small multiple of frame size.
+    unsigned int cap = frame_size * 8U;
+    int16_t *stash = calloc(cap, sizeof(int16_t));
+    if (!stash) {
+        HAL_ERROR("media", "SpeexDSP stash allocation failed (%u samples); bypassing.\n", cap);
+        speex_preprocess_state_destroy(st);
+        return;
+    }
+
+    speex_aac.st = st;
+    speex_aac.srate = srate;
+    speex_aac.channels = channels;
+    speex_aac.frame_size = frame_size;
+    speex_aac.stash = stash;
+    speex_aac.stash_cap = cap;
+    speex_aac.stash_len = 0;
+    speex_aac.active = 1;
+
+    HAL_INFO("media", "SpeexDSP preprocess enabled for AAC: frame_size=%u srate=%u (denoise=%d agc=%d vad=%d dereverb=%d)\n",
+        frame_size, srate,
+        app_config.audio_speex_denoise ? 1 : 0,
+        app_config.audio_speex_agc ? 1 : 0,
+        app_config.audio_speex_vad ? 1 : 0,
+        app_config.audio_speex_dereverb ? 1 : 0);
+}
+
+static inline void speex_aac_push_pcm(const int16_t *pcm16, unsigned int total_samples) {
+    if (!speex_aac.active || !speex_aac.st || !speex_aac.stash || total_samples == 0) {
+        aac_stash_append(pcm16, total_samples);
+        return;
+    }
+
+    // Mono only in this integration.
+    const unsigned int frame_samples = speex_aac.frame_size;
+    if (frame_samples == 0) {
+        aac_stash_append(pcm16, total_samples);
+        return;
+    }
+
+    // Ensure stash can hold the incoming block; if not, drop buffered data.
+    if (total_samples > speex_aac.stash_cap) {
+        // Worst case: input chunk larger than our stash. Process in-place by chunks.
+        unsigned int pos = 0;
+        while (pos + frame_samples <= total_samples) {
+            // Copy into stash to run preprocess (needs mutable buffer).
+            memcpy(speex_aac.stash, pcm16 + pos, frame_samples * sizeof(int16_t));
+            speex_preprocess_run(speex_aac.st, (spx_int16_t *)speex_aac.stash);
+            aac_stash_append(speex_aac.stash, frame_samples);
+            pos += frame_samples;
+        }
+        if (pos < total_samples) {
+            aac_stash_append(pcm16 + pos, total_samples - pos);
+        }
+        return;
+    }
+
+    if (speex_aac.stash_len + total_samples > speex_aac.stash_cap) {
+        speex_aac.stash_len = 0;
+    }
+    if (speex_aac.stash_len + total_samples <= speex_aac.stash_cap) {
+        memcpy(speex_aac.stash + speex_aac.stash_len, pcm16, total_samples * sizeof(int16_t));
+        speex_aac.stash_len += total_samples;
+    }
+
+    while (speex_aac.stash_len >= frame_samples) {
+        // Run preprocess on the first frame in stash.
+        speex_preprocess_run(speex_aac.st, (spx_int16_t *)speex_aac.stash);
+        aac_stash_append(speex_aac.stash, frame_samples);
+
+        unsigned int remain = speex_aac.stash_len - frame_samples;
+        if (remain)
+            memmove(speex_aac.stash, speex_aac.stash + frame_samples, remain * sizeof(int16_t));
+        speex_aac.stash_len = remain;
+    }
+}
+#endif
 
 void *aenc_thread(void) {
     if (active_audio_codec == HAL_AUDCODEC_AAC)
@@ -385,17 +568,11 @@ static int save_audio_stream_aac(hal_audframe *frame) {
 
     // Append to stash (16-bit LE samples, interleaved).
     unsigned int total_samples = samples_per_ch * channels;
-    unsigned int max_stash = (unsigned int)aacInputSamples * channels * 4U;
-    if (aacStash) {
-        if (aacStashLen + total_samples > max_stash) {
-            // If encoder can't keep up, drop accumulated samples and keep newest.
-            aacStashLen = 0;
-        }
-        if (aacStashLen + total_samples <= max_stash) {
-            memcpy(aacStash + aacStashLen, pcm16, total_samples * sizeof(int16_t));
-            aacStashLen += total_samples;
-        }
-    }
+#if defined(DIVINUS_WITH_SPEEXDSP)
+    speex_aac_push_pcm(pcm16, total_samples);
+#else
+    aac_stash_append(pcm16, total_samples);
+#endif
 
     // Consume stash in blocks of aacInputSamples * channels (16-bit LE).
     while (aacStash && aacStashLen >= (unsigned int)aacInputSamples * channels) {
@@ -796,6 +973,9 @@ void disable_audio(void) {
     pthread_join(aencPid, NULL);
     pthread_join(audPid, NULL);
     if (active_audio_codec == HAL_AUDCODEC_AAC) {
+#if defined(DIVINUS_WITH_SPEEXDSP)
+        speex_aac_reset();
+#endif
         if (aacEnc)
             faacEncClose(aacEnc);
         free(aacPcm);
@@ -940,6 +1120,11 @@ int enable_audio(void) {
         }
         aacStashLen = 0;
         HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
+
+#if defined(DIVINUS_WITH_SPEEXDSP)
+        // Optional SpeexDSP preprocess for AAC PCM path (denoise/AGC/VAD).
+        speex_aac_init_from_config(app_config.audio_srate, aacChannels);
+#endif
     } else {
         mp3Buf.offset = 0;
         if (!mp3Buf.buf || mp3Buf.size != AUDIO_ENC_BUF_MAX) {
