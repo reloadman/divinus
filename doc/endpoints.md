@@ -188,6 +188,8 @@ Configures the night mode parameters.
 | GET    | `irsense_pin`  | GPIO pin for IR sensor    |
 | GET    | `adc_device`   | ADC device                |
 | GET    | `adc_threshold`| Activation threshold      |
+| GET    | `isp_lum_low`  | Low luminance threshold (hisi/v4 only) |
+| GET    | `isp_lum_hi`   | High luminance threshold (hisi/v4 only) |
 | GET    | *(read-only)*  | `isp_lum` (0-255) average luminance from ISP when supported (hisi/v4); `-1` otherwise |
 
 **Response**
@@ -204,7 +206,9 @@ Configures the night mode parameters.
   "irsense_pin": 21,
   "adc_device": "/dev/adc",
   "adc_threshold": 800,
-  "isp_lum": 42
+  "isp_lum": 42,
+  "isp_lum_low": 12,
+  "isp_lum_hi": 22
 }
 ```
 

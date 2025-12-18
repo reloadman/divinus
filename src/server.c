@@ -1142,6 +1142,18 @@ void respond_request(http_request_t *req) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         app_config.adc_threshold = result;
+                } else if (EQUALS(key, "isp_lum_low")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_lum_low = -1;
+                        else if (result <= 255) app_config.isp_lum_low = (int)result;
+                    }
+                } else if (EQUALS(key, "isp_lum_hi")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) app_config.isp_lum_hi = -1;
+                        else if (result <= 255) app_config.isp_lum_hi = (int)result;
+                    }
                 } else if (EQUALS(key, "grayscale")) {
                     if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
                         night_grayscale(1);
@@ -1197,12 +1209,13 @@ void respond_request(http_request_t *req) {
             "\r\n"
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
             "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
-            "\"isp_lum\":%d}",
+            "\"isp_lum\":%d,\"isp_lum_low\":%d,\"isp_lum_hi\":%d}",
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
             night_grayscale_on() ? "true" : "false",
             night_ircut_on() ? "true" : "false", app_config.ir_cut_pin1, app_config.ir_cut_pin2,
             night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
-            app_config.adc_device, app_config.adc_threshold, isp_lum);
+            app_config.adc_device, app_config.adc_threshold, isp_lum,
+            app_config.isp_lum_low, app_config.isp_lum_hi);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

@@ -100,6 +100,7 @@ int save_app_config(void) {
 
     fprintf(file, "night_mode:\n");
     fprintf(file, "  enable: %s\n", app_config.night_mode_enable ? "true" : "false");
+    fprintf(file, "  grayscale: %s\n", app_config.night_mode_grayscale ? "true" : "false");
     fprintf(file, "  ir_sensor_pin: %d\n", app_config.ir_sensor_pin);
     fprintf(file, "  check_interval_s: %d\n", app_config.check_interval_s);
     fprintf(file, "  ir_cut_pin1: %d\n", app_config.ir_cut_pin1);
@@ -286,6 +287,7 @@ enum ConfigError parse_app_config(void) {
     app_config.antiflicker = 0;
 
     app_config.night_mode_enable = false;
+    app_config.night_mode_grayscale = false;
     app_config.ir_sensor_pin = 999;
     app_config.ir_cut_pin1 = 999;
     app_config.ir_cut_pin2 = 999;
@@ -364,6 +366,7 @@ enum ConfigError parse_app_config(void) {
     #define PIN_MAX 95
     if (app_config.night_mode_enable) {
         int lum;
+        parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
         parse_int(
             &ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX,
             &app_config.ir_sensor_pin);

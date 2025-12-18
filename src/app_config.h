@@ -30,6 +30,9 @@ struct AppConfig {
 
     // [night_mode]
     bool night_mode_enable;
+    // If true, enable encoder grayscale when switching to night (IR) mode.
+    // If false, stay in color when switching to night (IR) mode.
+    bool night_mode_grayscale;
     unsigned int ir_cut_pin1;
     unsigned int ir_cut_pin2;
     unsigned int ir_led_pin;

@@ -21,6 +21,7 @@ This document describes the fields that can be found within a configuration file
 ## Night mode section
 
 - **enable**: Boolean to activate night mode support.
+- **grayscale**: Boolean to enable encoder grayscale when switching to night (IR) mode.
 - **ir_cut_pin1**: GPIO number for IR cut filter control (normal state pin).
 - **ir_cut_pin2**: GPIO number for IR cut filter control (inverted state pin).
 - **ir_led_pin**: GPIO number for IR LED control.

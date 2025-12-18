@@ -12,9 +12,15 @@ bool night_irled_on(void) { return irled; }
 
 bool night_manual_on(void) { return manual; }
 
-bool night_mode_on(void) { return grayscale && !ircut && irled; }
+// "Night mode" for other subsystems (e.g. ISP IQ) should mean "IR mode",
+// not "grayscale enabled". IR mode is active when IR-cut is removed and IR LED is on.
+bool night_mode_on(void) { return !ircut && irled; }
 
-static bool night_day_on(void) { return !grayscale && ircut && !irled; }
+static inline bool night_should_grayscale(void) { return app_config.night_mode_grayscale; }
+static bool night_applied(void) {
+    return (!ircut && irled) && (grayscale == night_should_grayscale());
+}
+static bool day_applied(void) { return (ircut && !irled) && !grayscale; }
 
 void night_grayscale(bool enable) {
     set_grayscale(enable);
@@ -41,15 +47,18 @@ void night_mode(bool enable) {
     // Avoid log spam + avoid re-pulsing IR-cut coil / toggling encoder params
     // when the requested mode is already applied.
     if (enable) {
-        if (night_mode_on()) return;
+        if (night_applied()) return;
     } else {
-        if (night_day_on()) return;
+        if (day_applied()) return;
     }
 
     HAL_INFO("night", "Changing mode to %s\n", enable ? "NIGHT" : "DAY");
-    night_grayscale(enable);
+    // Always switch IR hardware when entering/leaving night.
+    // Grayscale is applied only if configured at the moment of transition.
     night_ircut(!enable);
     night_irled(enable);
+    if (enable) night_grayscale(night_should_grayscale());
+    else night_grayscale(false);
 }
 
 void *night_thread(void) {
@@ -149,8 +158,14 @@ int enable_night(void) {
 }
 
 void disable_night(void) {
-    if (!nightOn) return;
+    // Always restore non-grayscale output when disabling night mode support,
+    // even if the thread is already stopped.
+    if (!nightOn) {
+        night_grayscale(false);
+        return;
+    }
 
     nightOn = 0;
     pthread_join(nightPid, NULL);
+    night_grayscale(false);
 }

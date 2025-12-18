@@ -1481,8 +1481,13 @@ typedef struct {
     pthread_mutex_t lock;
     bool thread_started;
     int pipe;
-    v4_iq_dyn_dehaze_cfg dehaze;
-    v4_iq_dyn_linear_drc_cfg linear_drc;
+    // Dynamic configs can have separate day/IR sections:
+    //   [dynamic_dehaze] / [ir_dynamic_dehaze]
+    //   [dynamic_linear_drc] / [ir_dynamic_linear_drc]
+    v4_iq_dyn_dehaze_cfg dehaze_day;
+    v4_iq_dyn_dehaze_cfg dehaze_ir;
+    v4_iq_dyn_linear_drc_cfg linear_drc_day;
+    v4_iq_dyn_linear_drc_cfg linear_drc_ir;
 
     // all_param hysteresis for ISO-driven profile switching
     HI_U32 upFrameIso;
@@ -1971,24 +1976,43 @@ static void v4_iq_dyn_parse_iso_list(struct IniConfig *ini, const char *section,
 }
 
 static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze, bool enableDynLinearDRC) {
-    v4_iq_dyn_dehaze_cfg deh;
-    v4_iq_dyn_linear_drc_cfg drc;
-    memset(&deh, 0, sizeof(deh));
-    memset(&drc, 0, sizeof(drc));
+    v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
+    v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
+    memset(&deh_day, 0, sizeof(deh_day));
+    memset(&deh_ir, 0, sizeof(deh_ir));
+    memset(&drc_day, 0, sizeof(drc_day));
+    memset(&drc_ir, 0, sizeof(drc_ir));
 
     // dynamic_dehaze
     {
         int sec_s = 0, sec_e = 0;
         if (section_pos(ini, "dynamic_dehaze", &sec_s, &sec_e) == CONFIG_OK && enableDynDehaze) {
-            deh.enabled = true;
+            deh_day.enabled = true;
             int en = 1;
             if (parse_int(ini, "dynamic_dehaze", "Enable", 0, 1, &en) == CONFIG_OK)
-                deh.enabled = (en != 0);
+                deh_day.enabled = (en != 0);
             int n = 0;
-            v4_iq_dyn_parse_iso_list(ini, "dynamic_dehaze", "IsoThresh", deh.iso_thr, &n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_dehaze", "AutoDehazeStr", deh.str, &n);
-            deh.n = n;
-            if (deh.n < 2) deh.enabled = false;
+            v4_iq_dyn_parse_iso_list(ini, "dynamic_dehaze", "IsoThresh", deh_day.iso_thr, &n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_dehaze", "AutoDehazeStr", deh_day.str, &n);
+            deh_day.n = n;
+            if (deh_day.n < 2) deh_day.enabled = false;
+        }
+    }
+    // Optional IR override: ir_dynamic_dehaze
+    deh_ir = deh_day;
+    {
+        int sec_s = 0, sec_e = 0;
+        if (section_pos(ini, "ir_dynamic_dehaze", &sec_s, &sec_e) == CONFIG_OK && enableDynDehaze) {
+            memset(&deh_ir, 0, sizeof(deh_ir));
+            deh_ir.enabled = true;
+            int en = 1;
+            if (parse_int(ini, "ir_dynamic_dehaze", "Enable", 0, 1, &en) == CONFIG_OK)
+                deh_ir.enabled = (en != 0);
+            int n = 0;
+            v4_iq_dyn_parse_iso_list(ini, "ir_dynamic_dehaze", "IsoThresh", deh_ir.iso_thr, &n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_dehaze", "AutoDehazeStr", deh_ir.str, &n);
+            deh_ir.n = n;
+            if (deh_ir.n < 2) deh_ir.enabled = false;
         }
     }
 
@@ -2028,50 +2052,92 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
     {
         int sec_s = 0, sec_e = 0;
         if (section_pos(ini, "dynamic_linear_drc", &sec_s, &sec_e) == CONFIG_OK && enableDynLinearDRC) {
-            drc.enabled = true;
+            drc_day.enabled = true;
             int en = 1;
             if (parse_int(ini, "dynamic_linear_drc", "Enable", 0, 1, &en) == CONFIG_OK)
-                drc.enabled = (en != 0);
+                drc_day.enabled = (en != 0);
 
             int n = 0;
-            v4_iq_dyn_parse_iso_list(ini, "dynamic_linear_drc", "IsoLevel", drc.iso, &n);
-            drc.n = n;
+            v4_iq_dyn_parse_iso_list(ini, "dynamic_linear_drc", "IsoLevel", drc_day.iso, &n);
+            drc_day.n = n;
 
             // Per-ISO fields (shrink n to common length across lists)
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMax", drc.localMixBrightMax, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMin", drc.localMixBrightMin, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMax", drc.localMixDarkMax, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMin", drc.localMixDarkMin, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmt", drc.brightGainLmt, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmtStep", drc.brightGainLmtStep, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtY", drc.darkGainLmtY, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtC", drc.darkGainLmtC, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleCoarse", drc.fltScaleCoarse, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleFine", drc.fltScaleFine, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "ContrastControl", drc.contrastControl, &drc.n);
-            v4_iq_dyn_parse_s8_list(ini, "dynamic_linear_drc", "DetailAdjustFactor", drc.detailAdjustFactor, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Asymmetry", drc.asymmetry, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "SecondPole", drc.secondPole, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Compress", drc.compress, &drc.n);
-            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Stretch", drc.stretch, &drc.n);
-            v4_iq_dyn_parse_u16_list(ini, "dynamic_linear_drc", "Strength", drc.strength, &drc.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMax", drc_day.localMixBrightMax, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingBrightMin", drc_day.localMixBrightMin, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMax", drc_day.localMixDarkMax, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "LocalMixingDarkMin", drc_day.localMixDarkMin, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmt", drc_day.brightGainLmt, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "BrightGainLmtStep", drc_day.brightGainLmtStep, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtY", drc_day.darkGainLmtY, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "DarkGainLmtC", drc_day.darkGainLmtC, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleCoarse", drc_day.fltScaleCoarse, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "FltScaleFine", drc_day.fltScaleFine, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "ContrastControl", drc_day.contrastControl, &drc_day.n);
+            v4_iq_dyn_parse_s8_list(ini, "dynamic_linear_drc", "DetailAdjustFactor", drc_day.detailAdjustFactor, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Asymmetry", drc_day.asymmetry, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "SecondPole", drc_day.secondPole, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Compress", drc_day.compress, &drc_day.n);
+            v4_iq_dyn_parse_u8_list(ini, "dynamic_linear_drc", "Stretch", drc_day.stretch, &drc_day.n);
+            v4_iq_dyn_parse_u16_list(ini, "dynamic_linear_drc", "Strength", drc_day.strength, &drc_day.n);
 
-            if (drc.n < 2) drc.enabled = false;
+            if (drc_day.n < 2) drc_day.enabled = false;
+        }
+    }
+    // Optional IR override: ir_dynamic_linear_drc
+    drc_ir = drc_day;
+    {
+        int sec_s = 0, sec_e = 0;
+        if (section_pos(ini, "ir_dynamic_linear_drc", &sec_s, &sec_e) == CONFIG_OK && enableDynLinearDRC) {
+            memset(&drc_ir, 0, sizeof(drc_ir));
+            drc_ir.enabled = true;
+            int en = 1;
+            if (parse_int(ini, "ir_dynamic_linear_drc", "Enable", 0, 1, &en) == CONFIG_OK)
+                drc_ir.enabled = (en != 0);
+
+            int n = 0;
+            v4_iq_dyn_parse_iso_list(ini, "ir_dynamic_linear_drc", "IsoLevel", drc_ir.iso, &n);
+            drc_ir.n = n;
+
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "LocalMixingBrightMax", drc_ir.localMixBrightMax, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "LocalMixingBrightMin", drc_ir.localMixBrightMin, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "LocalMixingDarkMax", drc_ir.localMixDarkMax, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "LocalMixingDarkMin", drc_ir.localMixDarkMin, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "BrightGainLmt", drc_ir.brightGainLmt, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "BrightGainLmtStep", drc_ir.brightGainLmtStep, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "DarkGainLmtY", drc_ir.darkGainLmtY, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "DarkGainLmtC", drc_ir.darkGainLmtC, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "FltScaleCoarse", drc_ir.fltScaleCoarse, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "FltScaleFine", drc_ir.fltScaleFine, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "ContrastControl", drc_ir.contrastControl, &drc_ir.n);
+            v4_iq_dyn_parse_s8_list(ini, "ir_dynamic_linear_drc", "DetailAdjustFactor", drc_ir.detailAdjustFactor, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "Asymmetry", drc_ir.asymmetry, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "SecondPole", drc_ir.secondPole, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "Compress", drc_ir.compress, &drc_ir.n);
+            v4_iq_dyn_parse_u8_list(ini, "ir_dynamic_linear_drc", "Stretch", drc_ir.stretch, &drc_ir.n);
+            v4_iq_dyn_parse_u16_list(ini, "ir_dynamic_linear_drc", "Strength", drc_ir.strength, &drc_ir.n);
+
+            if (drc_ir.n < 2) drc_ir.enabled = false;
         }
     }
 
     pthread_mutex_lock(&_v4_iq_dyn.lock);
-    _v4_iq_dyn.dehaze = deh;
-    _v4_iq_dyn.linear_drc = drc;
+    _v4_iq_dyn.dehaze_day = deh_day;
+    _v4_iq_dyn.dehaze_ir = deh_ir;
+    _v4_iq_dyn.linear_drc_day = drc_day;
+    _v4_iq_dyn.linear_drc_ir = drc_ir;
     _v4_iq_dyn.have_last = HI_FALSE;
     _v4_iq_dyn.nr3d_fail_count = 0;
     _v4_iq_dyn.nr3d_disabled = HI_FALSE;
     pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
-    if (deh.enabled)
-        HAL_INFO("v4_iq", "Dynamic Dehaze: loaded (%d points)\n", deh.n);
-    if (drc.enabled)
-        HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded (%d points)\n", drc.n);
+    if (deh_day.enabled)
+        HAL_INFO("v4_iq", "Dynamic Dehaze: loaded [dynamic_dehaze] (%d points)\n", deh_day.n);
+    if (deh_ir.enabled && memcmp(&deh_ir, &deh_day, sizeof(deh_day)) != 0)
+        HAL_INFO("v4_iq", "Dynamic Dehaze: loaded [ir_dynamic_dehaze] (%d points)\n", deh_ir.n);
+    if (drc_day.enabled)
+        HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded [dynamic_linear_drc] (%d points)\n", drc_day.n);
+    if (drc_ir.enabled && memcmp(&drc_ir, &drc_day, sizeof(drc_day)) != 0)
+        HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded [ir_dynamic_linear_drc] (%d points)\n", drc_ir.n);
 }
 
 static void *v4_iq_dynamic_thread(void *arg) {
@@ -2086,8 +2152,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
     v4_iq_dyn_unbypass_modules(pipe);
 
     for (;;) {
-        v4_iq_dyn_dehaze_cfg deh;
-        v4_iq_dyn_linear_drc_cfg drc;
+        v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
+        v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
         v4_iq_3dnr_cfg nr_day, nr_ir;
         HI_U32 upIso = 0, downIso = 0;
         int last_nr_idx = -1;
@@ -2099,8 +2165,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
         v4_iq_dyn_drc_sig last_drc;
 
         pthread_mutex_lock(&_v4_iq_dyn.lock);
-        deh = _v4_iq_dyn.dehaze;
-        drc = _v4_iq_dyn.linear_drc;
+        deh_day = _v4_iq_dyn.dehaze_day;
+        deh_ir = _v4_iq_dyn.dehaze_ir;
+        drc_day = _v4_iq_dyn.linear_drc_day;
+        drc_ir = _v4_iq_dyn.linear_drc_ir;
         nr_day = _v4_iq_dyn.nr3d_day;
         nr_ir = _v4_iq_dyn.nr3d_ir;
         upIso = _v4_iq_dyn.upFrameIso;
@@ -2114,7 +2182,9 @@ static void *v4_iq_dynamic_thread(void *arg) {
         last_drc = _v4_iq_dyn.last_drc;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
-        if (!deh.enabled && !drc.enabled && !nr_day.enabled && !nr_ir.enabled) {
+        if (!deh_day.enabled && !deh_ir.enabled &&
+            !drc_day.enabled && !drc_ir.enabled &&
+            !nr_day.enabled && !nr_ir.enabled) {
             usleep(1000 * 1000);
             continue;
         }
@@ -2127,11 +2197,15 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
         HI_U32 iso = expi.u32ISO;
 
+        const bool is_ir_mode = night_mode_on();
+        const v4_iq_dyn_dehaze_cfg *deh = is_ir_mode ? &deh_ir : &deh_day;
+        const v4_iq_dyn_linear_drc_cfg *drc = is_ir_mode ? &drc_ir : &drc_day;
+
         // Dehaze by ISO
-        if (deh.enabled && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
+        if (deh->enabled && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
             HI_U32 str32[V4_IQ_DYN_MAX_POINTS];
-            for (int i = 0; i < deh.n; i++) str32[i] = deh.str[i];
-            HI_U8 target = (HI_U8)v4_iq_dyn_interp_u32(iso, deh.iso_thr, str32, deh.n);
+            for (int i = 0; i < deh->n; i++) str32[i] = deh->str[i];
+            HI_U8 target = (HI_U8)v4_iq_dyn_interp_u32(iso, deh->iso_thr, str32, deh->n);
             if (!have_last || target != last_deh) {
                 ISP_DEHAZE_ATTR_S dh;
                 memset(&dh, 0, sizeof(dh));
@@ -2151,51 +2225,51 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
 
         // Linear DRC by ISO
-        if (drc.enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
+        if (drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
             HI_U32 u16vals[V4_IQ_DYN_MAX_POINTS];
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.strength[i];
-            HI_U16 strength = (HI_U16)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->strength[i];
+            HI_U16 strength = (HI_U16)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
 
             // Compute full "signature" of applied values to avoid redundant sets.
             v4_iq_dyn_drc_sig cur;
             memset(&cur, 0, sizeof(cur));
             cur.strength = strength;
 
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixBrightMax[i];
-            cur.localMixBrightMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixBrightMin[i];
-            cur.localMixBrightMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixDarkMax[i];
-            cur.localMixDarkMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.localMixDarkMin[i];
-            cur.localMixDarkMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.brightGainLmt[i];
-            cur.brightGainLmt = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.brightGainLmtStep[i];
-            cur.brightGainLmtStep = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.darkGainLmtY[i];
-            cur.darkGainLmtY = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.darkGainLmtC[i];
-            cur.darkGainLmtC = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.fltScaleCoarse[i];
-            cur.fltScaleCoarse = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.fltScaleFine[i];
-            cur.fltScaleFine = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.contrastControl[i];
-            cur.contrastControl = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->localMixBrightMax[i];
+            cur.localMixBrightMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->localMixBrightMin[i];
+            cur.localMixBrightMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->localMixDarkMax[i];
+            cur.localMixDarkMax = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->localMixDarkMin[i];
+            cur.localMixDarkMin = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->brightGainLmt[i];
+            cur.brightGainLmt = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->brightGainLmtStep[i];
+            cur.brightGainLmtStep = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->darkGainLmtY[i];
+            cur.darkGainLmtY = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->darkGainLmtC[i];
+            cur.darkGainLmtC = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->fltScaleCoarse[i];
+            cur.fltScaleCoarse = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->fltScaleFine[i];
+            cur.fltScaleFine = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->contrastControl[i];
+            cur.contrastControl = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
 
             HI_S32 svals[V4_IQ_DYN_MAX_POINTS];
-            for (int i = 0; i < drc.n; i++) svals[i] = (HI_S32)drc.detailAdjustFactor[i];
-            cur.detailAdjustFactor = (HI_S8)v4_iq_dyn_interp_s32(iso, drc.iso, svals, drc.n);
+            for (int i = 0; i < drc->n; i++) svals[i] = (HI_S32)drc->detailAdjustFactor[i];
+            cur.detailAdjustFactor = (HI_S8)v4_iq_dyn_interp_s32(iso, drc->iso, svals, drc->n);
 
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.asymmetry[i];
-            cur.asymmetry = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.secondPole[i];
-            cur.secondPole = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.compress[i];
-            cur.compress = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
-            for (int i = 0; i < drc.n; i++) u16vals[i] = drc.stretch[i];
-            cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc.iso, u16vals, drc.n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->asymmetry[i];
+            cur.asymmetry = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->secondPole[i];
+            cur.secondPole = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->compress[i];
+            cur.compress = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+            for (int i = 0; i < drc->n; i++) u16vals[i] = drc->stretch[i];
+            cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
 
             if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
                 ISP_DRC_ATTR_S da;
@@ -2239,7 +2313,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
             if (nr3d_disabled) {
                 // disabled due to repeated errors
             } else {
-            const bool is_ir = night_mode_on();
+            const bool is_ir = is_ir_mode;
             const v4_iq_3dnr_cfg *cfg = NULL;
             if (is_ir && nr_ir.enabled) cfg = &nr_ir;
             else if (nr_day.enabled) cfg = &nr_day;
@@ -2311,7 +2385,9 @@ static void v4_iq_dyn_maybe_start(int pipe) {
     bool need = false;
     bool start = false;
     pthread_mutex_lock(&_v4_iq_dyn.lock);
-    need = (_v4_iq_dyn.dehaze.enabled || _v4_iq_dyn.linear_drc.enabled);
+    need = (_v4_iq_dyn.dehaze_day.enabled || _v4_iq_dyn.dehaze_ir.enabled ||
+            _v4_iq_dyn.linear_drc_day.enabled || _v4_iq_dyn.linear_drc_ir.enabled ||
+            _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled);
     if (need && !_v4_iq_dyn.thread_started) {
         _v4_iq_dyn.thread_started = true;
         start = true;
