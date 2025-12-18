@@ -20,3 +20,7 @@ void gpio_deinit(void);
 int gpio_init(void);
 int gpio_read(int pin, bool *value);
 int gpio_write(int pin, bool value);
+
+// Applies a level to two GPIOs, holds it for `pulse_us`, then drives both low.
+// Returns EXIT_SUCCESS on success.
+int gpio_pulse_pair(int pin1, bool val1, int pin2, bool val2, unsigned int pulse_us);

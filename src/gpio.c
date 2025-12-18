@@ -354,3 +354,45 @@ int gpio_write(int pin, bool value) {
     }
     return EXIT_SUCCESS;
 }
+
+int gpio_pulse_pair(int pin1, bool val1, int pin2, bool val2, unsigned int pulse_us) {
+    if (gpio_init() != EXIT_SUCCESS) return EXIT_FAILURE;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+    if (gpio_backend == GPIO_BACKEND_CDEV) {
+        // Best-effort on cdev backend: set both lines, wait, then clear.
+        // (Lines are released between writes in gpio_cdev_write; sysfs path below is
+        // more reliable for "hold" semantics when available.)
+        if (gpio_cdev_write(pin1, val1) != 0) return EXIT_FAILURE;
+        if (gpio_cdev_write(pin2, val2) != 0) return EXIT_FAILURE;
+        usleep(pulse_us);
+        (void)gpio_cdev_write(pin1, false);
+        (void)gpio_cdev_write(pin2, false);
+        return EXIT_SUCCESS;
+    }
+#endif
+
+    // SYSFS: export both pins and keep them exported during the pulse.
+    if (gpio_sysfs_export(pin1) < 0) return EXIT_FAILURE;
+    if (gpio_sysfs_export(pin2) < 0) { (void)gpio_sysfs_unexport(pin1); return EXIT_FAILURE; }
+
+    if (gpio_sysfs_direction(pin1, "out") < 0) goto SYSFS_FAIL;
+    if (gpio_sysfs_direction(pin2, "out") < 0) goto SYSFS_FAIL;
+
+    if (gpio_sysfs_write_value(pin1, val1) < 0) goto SYSFS_FAIL;
+    if (gpio_sysfs_write_value(pin2, val2) < 0) goto SYSFS_FAIL;
+    usleep(pulse_us);
+    (void)gpio_sysfs_write_value(pin1, false);
+    (void)gpio_sysfs_write_value(pin2, false);
+
+    (void)gpio_sysfs_unexport(pin1);
+    (void)gpio_sysfs_unexport(pin2);
+    return EXIT_SUCCESS;
+
+SYSFS_FAIL:
+    (void)gpio_sysfs_write_value(pin1, false);
+    (void)gpio_sysfs_write_value(pin2, false);
+    (void)gpio_sysfs_unexport(pin1);
+    (void)gpio_sysfs_unexport(pin2);
+    return EXIT_FAILURE;
+}

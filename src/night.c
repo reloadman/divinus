@@ -1,5 +1,8 @@
 #include "night.h"
 
+#include <errno.h>
+#include <string.h>
+
 char nightOn = 0;
 static bool grayscale = false, ircut = true, irled = false, manual = false;
 pthread_t nightPid = 0;
@@ -52,35 +55,14 @@ void night_ircut(bool enable) {
         app_config.ir_cut_pin1, app_config.ir_cut_pin2,
         app_config.pin_switch_delay_us * 100);
 
-    int r1 = gpio_write(app_config.ir_cut_pin1, !enable);
-    if (r1 != EXIT_SUCCESS)
-        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.ir_cut_pin1, !enable, errno, strerror(errno));
-    else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin1, !enable);
-
-    int r2 = gpio_write(app_config.ir_cut_pin2, enable);
-    if (r2 != EXIT_SUCCESS)
-        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.ir_cut_pin2, enable, errno, strerror(errno));
-    else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin2, enable);
-
-    usleep(app_config.pin_switch_delay_us * 100);
-
-    int r3 = gpio_write(app_config.ir_cut_pin1, false);
-    if (r3 != EXIT_SUCCESS)
-        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.ir_cut_pin1, 0, errno, strerror(errno));
-    else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin1, 0);
-
-    int r4 = gpio_write(app_config.ir_cut_pin2, false);
-    if (r4 != EXIT_SUCCESS)
-        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.ir_cut_pin2, 0, errno, strerror(errno));
-    else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin2, 0);
+    unsigned int pulse_us = app_config.pin_switch_delay_us * 100;
+    int r = gpio_pulse_pair(app_config.ir_cut_pin1, !enable, app_config.ir_cut_pin2, enable, pulse_us);
+    if (r != EXIT_SUCCESS) {
+        HAL_WARNING("night", "GPIO pulse failed: (pin1=%u val1=%d) (pin2=%u val2=%d) errno=%d (%s)\n",
+            app_config.ir_cut_pin1, !enable, app_config.ir_cut_pin2, enable, errno, strerror(errno));
+    } else {
+        HAL_INFO("night", "GPIO pulse ok\n");
+    }
 
     ircut = enable;
 }
