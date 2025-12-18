@@ -1184,18 +1184,25 @@ void respond_request(http_request_t *req) {
             disable_night();
             if (app_config.night_mode_enable) enable_night();
         }
+
+        int isp_lum = -1;
+        unsigned char lum;
+        if (get_isp_avelum(&lum) == EXIT_SUCCESS)
+            isp_lum = (int)lum;
+
         int respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
-            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d}",
+            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
+            "\"isp_lum\":%d}",
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
             night_grayscale_on() ? "true" : "false",
             night_ircut_on() ? "true" : "false", app_config.ir_cut_pin1, app_config.ir_cut_pin2,
             night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
-            app_config.adc_device, app_config.adc_threshold);
+            app_config.adc_device, app_config.adc_threshold, isp_lum);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

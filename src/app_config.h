@@ -38,6 +38,9 @@ struct AppConfig {
     unsigned int pin_switch_delay_us;
     char adc_device[128];
     int adc_threshold;
+    // ISP-derived day/night trigger (hisi/v4 only). -1 means "unset/disabled".
+    int isp_lum_low;
+    int isp_lum_hi;
 
     // [isp]
     bool mirror;

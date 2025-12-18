@@ -39,6 +39,9 @@ int v4_channel_unbind(char index);
 
 void *v4_image_thread(void);
 
+// Returns 0 on success and writes 0..255 average luminance into *lum.
+int v4_get_isp_avelum(unsigned char *lum);
+
 int v4_pipeline_create(const char *iqConfig);
 void v4_pipeline_destroy(void);
 

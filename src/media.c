@@ -568,6 +568,18 @@ void set_grayscale(bool active) {
     pthread_mutex_unlock(&chnMtx);
 }
 
+int get_isp_avelum(unsigned char *lum) {
+    if (!lum) return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_isp_avelum(lum);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
+}
+
 int take_next_free_channel(bool mainLoop) {
     pthread_mutex_lock(&chnMtx);
     for (int i = 0; i < chnCount; i++) {

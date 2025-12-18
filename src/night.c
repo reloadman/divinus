@@ -48,7 +48,32 @@ void *night_thread(void) {
 
     night_mode(night_mode_on());
 
-    if (app_config.adc_device[0]) {
+    if (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0) {
+        if (app_config.isp_lum_hi <= app_config.isp_lum_low) {
+            HAL_WARNING("night",
+                "ISP luminance thresholds invalid (isp_lum_low=%d isp_lum_hi=%d), ignoring\n",
+                app_config.isp_lum_low, app_config.isp_lum_hi);
+            while (keepRunning && nightOn) sleep(1);
+        } else {
+            HAL_INFO("night",
+                "Using ISP luminance source (u8AveLum): low=%d hi=%d interval=%us\n",
+                app_config.isp_lum_low, app_config.isp_lum_hi, app_config.check_interval_s);
+            while (keepRunning && nightOn) {
+                unsigned char lum = 0;
+                if (get_isp_avelum(&lum) == EXIT_SUCCESS) {
+                    if (!manual) {
+                        // Hysteresis:
+                        // lum <= low  => NIGHT
+                        // lum >= hi   => DAY
+                        // otherwise   => keep current
+                        if ((int)lum <= app_config.isp_lum_low) night_mode(true);
+                        else if ((int)lum >= app_config.isp_lum_hi) night_mode(false);
+                    }
+                }
+                sleep(app_config.check_interval_s);
+            }
+        }
+    } else if (app_config.adc_device[0]) {
         int adc_fd = -1;
         fd_set adc_fds;
         int cnt = 0, tmp = 0, val;
@@ -72,9 +97,9 @@ void *night_thread(void) {
         }
         if (adc_fd) close(adc_fd);
     } else if (app_config.ir_sensor_pin == 999) {
-        while (keepRunning) sleep(1);
+        while (keepRunning && nightOn) sleep(1);
     } else {
-        while (keepRunning) {
+        while (keepRunning && nightOn) {
             bool state = false;
             if (gpio_read(app_config.ir_sensor_pin, &state) != EXIT_SUCCESS) {
                 sleep(app_config.check_interval_s);

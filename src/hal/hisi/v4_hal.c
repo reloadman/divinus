@@ -868,6 +868,17 @@ typedef struct {
     ISP_AE_ROUTE_EX_S stAERouteSFEx;
 } ISP_EXP_INFO_S;
 
+int v4_get_isp_avelum(unsigned char *lum) {
+    if (!lum) return EXIT_FAILURE;
+    if (!v4_isp.fnQueryExposureInfo) return EXIT_FAILURE;
+    ISP_EXP_INFO_S expi;
+    memset(&expi, 0, sizeof(expi));
+    if (v4_isp.fnQueryExposureInfo(_v4_vi_pipe, &expi))
+        return EXIT_FAILURE;
+    *lum = (unsigned char)expi.u8AveLum;
+    return EXIT_SUCCESS;
+}
+
 #define CCM_MATRIX_SIZE 9
 #define CCM_MATRIX_NUM 7
 typedef struct {

@@ -29,6 +29,8 @@ This document describes the fields that can be found within a configuration file
 - **pin_switch_delay_us**: Delay in microseconds before switching GPIO pins, must be used to protect cut filter coils from burning.
 - **adc_device**: Path to the ADC device used for night mode.
 - **adc_threshold**: Threshold raw value to trigger night mode, depends on the bitness of the given ADC device.
+- **isp_lum_low**: Low threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum <= isp_lum_low`, switch to night mode.
+- **isp_lum_hi**: High threshold (0-255) for ISP-derived average luminance (hisi/v4 only). When `u8AveLum >= isp_lum_hi`, switch back to day mode.
 
 ## ISP section
 
