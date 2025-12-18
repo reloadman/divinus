@@ -52,11 +52,36 @@ void night_ircut(bool enable) {
         app_config.ir_cut_pin1, app_config.ir_cut_pin2,
         app_config.pin_switch_delay_us * 100);
 
-    gpio_write(app_config.ir_cut_pin1, !enable);
-    gpio_write(app_config.ir_cut_pin2, enable);
+    int r1 = gpio_write(app_config.ir_cut_pin1, !enable);
+    if (r1 != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.ir_cut_pin1, !enable, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin1, !enable);
+
+    int r2 = gpio_write(app_config.ir_cut_pin2, enable);
+    if (r2 != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.ir_cut_pin2, enable, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin2, enable);
+
     usleep(app_config.pin_switch_delay_us * 100);
-    gpio_write(app_config.ir_cut_pin1, false);
-    gpio_write(app_config.ir_cut_pin2, false);
+
+    int r3 = gpio_write(app_config.ir_cut_pin1, false);
+    if (r3 != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.ir_cut_pin1, 0, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin1, 0);
+
+    int r4 = gpio_write(app_config.ir_cut_pin2, false);
+    if (r4 != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.ir_cut_pin2, 0, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_cut_pin2, 0);
+
     ircut = enable;
 }
 
@@ -66,7 +91,12 @@ void night_irled(bool enable) {
         irled = enable;
         return;
     }
-    gpio_write(app_config.ir_led_pin, enable);
+    int r = gpio_write(app_config.ir_led_pin, enable);
+    if (r != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.ir_led_pin, enable, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_led_pin, enable);
     irled = enable;
 }
 
