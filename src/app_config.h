@@ -112,18 +112,12 @@ struct AppConfig {
 
     // [jpeg]
     bool jpeg_enable;
+    bool jpeg_osd_enable;
+    unsigned int jpeg_mode;
+    unsigned int jpeg_fps;
     unsigned int jpeg_width;
     unsigned int jpeg_height;
     unsigned int jpeg_qfactor;
-
-    // [mjpeg]
-    bool mjpeg_enable;
-    bool mjpeg_osd_enable;
-    unsigned int mjpeg_mode;
-    unsigned int mjpeg_fps;
-    unsigned int mjpeg_width;
-    unsigned int mjpeg_height;
-    unsigned int mjpeg_qfactor;
 
     // [http_post]
     bool http_post_enable;

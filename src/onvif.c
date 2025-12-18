@@ -284,14 +284,14 @@ void onvif_respond_mediaprofiles(char *response, int *respLen) {
         profileCnt++;
     }
 
-    if (app_config.mjpeg_enable) {
+    if (app_config.jpeg_enable) {
         profileLen += sprintf(&profile[profileLen], mediaprofilexml,
             "SubStream", "profile_2",
             profileCnt + 1, profileCnt + 1,
-            app_config.mjpeg_height, app_config.mjpeg_width,
+            app_config.jpeg_height, app_config.jpeg_width,
             profileCnt + 1, profileCnt + 1,
-            "JPEG", app_config.mjpeg_width, app_config.mjpeg_height,
-            app_config.mjpeg_fps, 1024);
+            "JPEG", app_config.jpeg_width, app_config.jpeg_height,
+            app_config.jpeg_fps, 1024);
         profileCnt++;
     }
 
@@ -381,11 +381,11 @@ void onvif_respond_videosources(char *response, int *respLen) {
     if (!response || !respLen) return;
 
     int width = app_config.mp4_enable ?
-        app_config.mp4_width : app_config.mjpeg_width;
+        app_config.mp4_width : app_config.jpeg_width;
     int height = app_config.mp4_enable ?
-        app_config.mp4_height : app_config.mjpeg_height;
+        app_config.mp4_height : app_config.jpeg_height;
     int framerate = app_config.mp4_enable ?
-        app_config.mp4_fps : app_config.mjpeg_fps;
+        app_config.mp4_fps : app_config.jpeg_fps;
 
     int maxLen = *respLen;
     int headerLen = strlen(onvifgood);

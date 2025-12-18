@@ -202,20 +202,16 @@ int save_app_config(void) {
         fprintf(file, "    reg%d_thick: %.1f\n", i, osds[i].thick);
     }
 
+    // NOTE: "jpeg" section represents the MJPEG (multipart JPEG) stream.
+    // Snapshots (/image.jpg) are served from the last MJPEG frame.
     fprintf(file, "jpeg:\n");
     fprintf(file, "  enable: %s\n", app_config.jpeg_enable ? "true" : "false");
+    fprintf(file, "  osd_enable: %s\n", app_config.jpeg_osd_enable ? "true" : "false");
+    fprintf(file, "  mode: %d\n", app_config.jpeg_mode);
     fprintf(file, "  width: %d\n", app_config.jpeg_width);
     fprintf(file, "  height: %d\n", app_config.jpeg_height);
+    fprintf(file, "  fps: %d\n", app_config.jpeg_fps);
     fprintf(file, "  qfactor: %d\n", app_config.jpeg_qfactor);
-
-    fprintf(file, "mjpeg:\n");
-    fprintf(file, "  enable: %s\n", app_config.mjpeg_enable ? "true" : "false");
-    fprintf(file, "  osd_enable: %s\n", app_config.mjpeg_osd_enable ? "true" : "false");
-    fprintf(file, "  mode: %d\n", app_config.mjpeg_mode);
-    fprintf(file, "  width: %d\n", app_config.mjpeg_width);
-    fprintf(file, "  height: %d\n", app_config.mjpeg_height);
-    fprintf(file, "  fps: %d\n", app_config.mjpeg_fps);
-    fprintf(file, "  qfactor: %d\n", app_config.mjpeg_qfactor);
 
     fprintf(file, "http_post:\n");
     fprintf(file, "  enable: %s\n", app_config.http_post_enable ? "true" : "false");
@@ -279,16 +275,16 @@ enum ConfigError parse_app_config(void) {
     app_config.audio_gain = 0;
     app_config.audio_srate = 48000;
     app_config.audio_channels = 1;
-    app_config.jpeg_enable = false;
     app_config.mp4_enable = false;
 
-    app_config.mjpeg_enable = false;
-    app_config.mjpeg_osd_enable = true;
-    app_config.mjpeg_fps = 15;
-    app_config.mjpeg_width = 640;
-    app_config.mjpeg_height = 480;
-    app_config.mjpeg_mode = HAL_VIDMODE_QP;
-    app_config.mjpeg_qfactor = 80;
+    // JPEG/MJPEG stream (multipart/x-mixed-replace). Snapshots use last MJPEG frame.
+    app_config.jpeg_enable = false;
+    app_config.jpeg_osd_enable = true;
+    app_config.jpeg_fps = 15;
+    app_config.jpeg_width = 640;
+    app_config.jpeg_height = 480;
+    app_config.jpeg_mode = HAL_VIDMODE_QP;
+    app_config.jpeg_qfactor = 80;
 
     app_config.mirror = false;
     app_config.flip = false;
@@ -605,54 +601,56 @@ enum ConfigError parse_app_config(void) {
             goto RET_ERR;
     }
 
+    // JPEG section represents MJPEG (multipart JPEG) stream.
+    // Accept legacy section name "mjpeg" as an alias.
+    bool legacy_mjpeg_enable = false;
+    bool jpeg_from_legacy = false;
+
     err = parse_bool(&ini, "jpeg", "enable", &app_config.jpeg_enable);
     if (err != CONFIG_OK)
         goto RET_ERR;
-    if (app_config.jpeg_enable) {
-        err = parse_int(
-            &ini, "jpeg", "width", 160, INT_MAX, &app_config.jpeg_width);
-        if (err != CONFIG_OK)
-            goto RET_ERR;
-        err = parse_int(
-            &ini, "jpeg", "height", 120, INT_MAX, &app_config.jpeg_height);
-        if (err != CONFIG_OK)
-            goto RET_ERR;
-        err =
-            parse_int(&ini, "jpeg", "qfactor", 1, 99, &app_config.jpeg_qfactor);
-        if (err != CONFIG_OK)
-            goto RET_ERR;
-    }
-
-    err = parse_bool(&ini, "mjpeg", "enable", &app_config.mjpeg_enable);
+    err = parse_bool(&ini, "mjpeg", "enable", &legacy_mjpeg_enable);
     if (err != CONFIG_OK)
         goto RET_ERR;
-    // Per-stream OSD control for MJPEG (default: true).
-    parse_bool(&ini, "mjpeg", "osd_enable", &app_config.mjpeg_osd_enable);
-    if (app_config.mjpeg_enable) {
+
+    const char *jpeg_sec = "jpeg";
+    if (!app_config.jpeg_enable && legacy_mjpeg_enable) {
+        app_config.jpeg_enable = true;
+        jpeg_from_legacy = true;
+        jpeg_sec = "mjpeg";
+    }
+
+    // Per-stream OSD control (default: true).
+    // Prefer the chosen section, but allow legacy field to populate defaults.
+    parse_bool(&ini, jpeg_sec, "osd_enable", &app_config.jpeg_osd_enable);
+    if (!jpeg_from_legacy)
+        parse_bool(&ini, "mjpeg", "osd_enable", &app_config.jpeg_osd_enable);
+
+    if (app_config.jpeg_enable) {
         {
             const char *possible_values[] = {"CBR", "VBR", "QP"};
             const int count = sizeof(possible_values) / sizeof(const char *);
             int val = 0;
-            parse_enum(&ini, "mjpeg", "mode", (void *)&val,
+            parse_enum(&ini, jpeg_sec, "mode", (void *)&val,
                 possible_values, count, 0);
             // MJPEG is configured via JPEG quality factor (qfactor) now.
             // Keep parsing `mode` for compatibility, but force QP in runtime.
-            app_config.mjpeg_mode = val;
+            app_config.jpeg_mode = val;
         }
         err = parse_int(
-            &ini, "mjpeg", "width", 160, INT_MAX, &app_config.mjpeg_width);
+            &ini, jpeg_sec, "width", 160, INT_MAX, &app_config.jpeg_width);
         if (err != CONFIG_OK)
             goto RET_ERR;
         err = parse_int(
-            &ini, "mjpeg", "height", 120, INT_MAX, &app_config.mjpeg_height);
+            &ini, jpeg_sec, "height", 120, INT_MAX, &app_config.jpeg_height);
         if (err != CONFIG_OK)
             goto RET_ERR;
         err =
-            parse_int(&ini, "mjpeg", "fps", 1, INT_MAX, &app_config.mjpeg_fps);
+            parse_int(&ini, jpeg_sec, "fps", 1, INT_MAX, &app_config.jpeg_fps);
         if (err != CONFIG_OK)
             goto RET_ERR;
         // Preferred MJPEG quality control.
-        err = parse_int(&ini, "mjpeg", "qfactor", 1, 99, &app_config.mjpeg_qfactor);
+        err = parse_int(&ini, jpeg_sec, "qfactor", 1, 99, &app_config.jpeg_qfactor);
         if (err != CONFIG_OK)
             goto RET_ERR;
 
@@ -660,11 +658,11 @@ enum ConfigError parse_app_config(void) {
         // This intentionally does not affect MJPEG encoding anymore.
         {
             int legacy_bitrate = 0;
-            parse_int(&ini, "mjpeg", "bitrate", 0, INT_MAX, &legacy_bitrate);
+            parse_int(&ini, jpeg_sec, "bitrate", 0, INT_MAX, &legacy_bitrate);
         }
 
         // MJPEG bitrate control is deprecated; always operate in QP mode.
-        app_config.mjpeg_mode = HAL_VIDMODE_QP;
+        app_config.jpeg_mode = HAL_VIDMODE_QP;
     }
 
     parse_bool(&ini, "http_post", "enable", &app_config.http_post_enable);

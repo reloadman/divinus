@@ -116,15 +116,11 @@ This document describes the fields that can be found within a configuration file
 
 ## JPEG section
 
-- **enable**: Boolean to activate JPEG output.
-- **width**: Image width in pixels.
-- **height**: Image height in pixels.
-- **qfactor**: JPEG compression quality factor.
-
-## MJPEG section
+This section controls the **MJPEG stream** (`/mjpeg`, `multipart/x-mixed-replace`).
+The snapshot endpoint (`/image.jpg`) returns the **last MJPEG frame** (no separate JPEG encoder).
 
 - **enable**: Boolean to activate MJPEG output.
-- **osd_enable**: Boolean to enable/disable OSD for MJPEG stream only (default: `true`).
+- **osd_enable**: Boolean to enable/disable OSD for the JPEG/MJPEG stream only (default: `true`).
 - **mode**: Encoding mode (kept for compatibility; MJPEG uses `QP` internally).
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.

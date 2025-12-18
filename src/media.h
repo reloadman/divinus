@@ -49,3 +49,8 @@ int disable_mjpeg(void);
 int enable_mjpeg(void);
 int disable_mp4(void);
 int enable_mp4(void);
+
+// Returns the last encoded MJPEG frame as a raw JPEG bitstream.
+// - Returns 0 on success, non-zero if no frame is available within timeout.
+// - Copies data into `jpeg->data` (reallocs as needed) and sets jpeg->jpegSize.
+int media_get_last_mjpeg_frame(hal_jpegdata *jpeg, unsigned int timeout_ms);

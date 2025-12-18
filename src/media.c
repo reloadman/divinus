@@ -8,6 +8,84 @@ pthread_t aencPid = 0, audPid = 0, ispPid = 0, vidPid = 0;
 
 static hal_audcodec active_audio_codec;
 
+// Cache the last MJPEG (JPEG) frame so snapshots (/image.jpg, http_post, etc)
+// can be served without creating a dedicated JPEG encoder channel.
+static pthread_mutex_t mjpeg_last_mtx = PTHREAD_MUTEX_INITIALIZER;
+static unsigned char *mjpeg_last_buf = NULL;
+static size_t mjpeg_last_cap = 0;
+static size_t mjpeg_last_len = 0;
+static uint64_t mjpeg_last_ts = 0;
+static int mjpeg_last_valid = 0;
+
+static void mjpeg_last_clear(void) {
+    pthread_mutex_lock(&mjpeg_last_mtx);
+    mjpeg_last_valid = 0;
+    mjpeg_last_len = 0;
+    mjpeg_last_ts = 0;
+    pthread_mutex_unlock(&mjpeg_last_mtx);
+}
+
+static void mjpeg_last_update(const unsigned char *buf, size_t len, uint64_t ts) {
+    if (!buf || !len)
+        return;
+    pthread_mutex_lock(&mjpeg_last_mtx);
+    if (len > mjpeg_last_cap) {
+        unsigned char *tmp = realloc(mjpeg_last_buf, len);
+        if (!tmp) {
+            pthread_mutex_unlock(&mjpeg_last_mtx);
+            return;
+        }
+        mjpeg_last_buf = tmp;
+        mjpeg_last_cap = len;
+    }
+    memcpy(mjpeg_last_buf, buf, len);
+    mjpeg_last_len = len;
+    mjpeg_last_ts = ts;
+    mjpeg_last_valid = 1;
+    pthread_mutex_unlock(&mjpeg_last_mtx);
+}
+
+int media_get_last_mjpeg_frame(hal_jpegdata *jpeg, unsigned int timeout_ms) {
+    if (!jpeg)
+        return EXIT_FAILURE;
+
+    // Wait a bit for the first frame after startup/reconfigure.
+    const unsigned int step_ms = 10;
+    unsigned int waited = 0;
+    while (waited <= timeout_ms) {
+        pthread_mutex_lock(&mjpeg_last_mtx);
+        const int valid = mjpeg_last_valid;
+        const size_t len = mjpeg_last_len;
+        // Snapshot state quickly, then copy outside? We need the buffer stable.
+        // Keep the mutex while copying to guarantee coherent data.
+        if (valid && len > 0 && mjpeg_last_buf) {
+            if (len > jpeg->length) {
+                unsigned char *tmp = realloc(jpeg->data, len);
+                if (!tmp) {
+                    pthread_mutex_unlock(&mjpeg_last_mtx);
+                    return EXIT_FAILURE;
+                }
+                jpeg->data = tmp;
+                jpeg->length = (unsigned int)len;
+            }
+            memcpy(jpeg->data, mjpeg_last_buf, len);
+            jpeg->jpegSize = (unsigned int)len;
+            pthread_mutex_unlock(&mjpeg_last_mtx);
+            return EXIT_SUCCESS;
+        }
+        pthread_mutex_unlock(&mjpeg_last_mtx);
+
+        if (waited == timeout_ms)
+            break;
+        usleep(step_ms * 1000);
+        waited += step_ms;
+        if (waited > timeout_ms)
+            waited = timeout_ms;
+    }
+
+    return EXIT_FAILURE;
+}
+
 // Prevent unbounded growth if downstream (network/client) stalls.
 // When exceeded, we drop queued audio to keep capture threads healthy.
 #define AUDIO_ENC_BUF_MAX (512 * 1024)
@@ -417,7 +495,7 @@ int save_video_stream(char index, hal_vidstream *stream) {
             break;
         }
         case HAL_VIDCODEC_MJPG:
-            if (app_config.mjpeg_enable) {
+            if (app_config.jpeg_enable) {
                 static char *mjpeg_buf;
                 static ssize_t mjpeg_buf_size = 0;
                 ssize_t buf_size = 0;
@@ -430,6 +508,11 @@ int save_video_stream(char index, hal_vidstream *stream) {
                         data->length - data->offset);
                     buf_size += data->length - data->offset;
                 }
+                // Keep a copy for snapshot users (jpeg_get when MJPEG is enabled).
+                uint64_t ts = 0;
+                if (stream->count)
+                    ts = stream->pack[stream->count - 1].timestamp;
+                mjpeg_last_update((unsigned char *)mjpeg_buf, (size_t)buf_size, ts);
                 send_mjpeg_to_client(index, mjpeg_buf, buf_size);
             }
             break;
@@ -920,6 +1003,9 @@ int enable_audio(void) {
 int disable_mjpeg(void) {
     int ret;
 
+    // If MJPEG is being stopped/reconfigured, drop the cached snapshot.
+    mjpeg_last_clear();
+
     for (char i = 0; i < chnCount; i++) {
         if (!chnState[i].enable) continue;
         if (chnState[i].payload != HAL_VIDCODEC_MJPG) continue;
@@ -941,24 +1027,24 @@ int enable_mjpeg(void) {
 
     int index = take_next_free_channel(true);
 
-    if (ret = create_channel(index, app_config.mjpeg_width,
-        app_config.mjpeg_height, app_config.mjpeg_fps, 1))
+    if (ret = create_channel(index, app_config.jpeg_width,
+        app_config.jpeg_height, app_config.jpeg_fps, 1))
         HAL_ERROR("media", "Creating channel %d failed with %#x!\n%s\n", 
             index, ret, errstr(ret));
 
     {
         hal_vidconfig config = {0};
-        config.width = app_config.mjpeg_width;
-        config.height = app_config.mjpeg_height;
+        config.width = app_config.jpeg_width;
+        config.height = app_config.jpeg_height;
         config.codec = HAL_VIDCODEC_MJPG;
         // MJPEG is controlled via JPEG quality factor (qfactor) now.
         // We force QP mode, because bitrate-based modes are not exposed/used.
         config.mode = HAL_VIDMODE_QP;
-        config.framerate = app_config.mjpeg_fps;
+        config.framerate = app_config.jpeg_fps;
         // Some vendor HALs still read bitrate fields even in QP; keep safe defaults.
         config.bitrate = 1024;
         config.maxBitrate = 1024 * 5 / 4;
-        unsigned int q = app_config.mjpeg_qfactor;
+        unsigned int q = app_config.jpeg_qfactor;
         if (q < 1) q = 1;
         if (q > 99) q = 99;
         config.minQual = (unsigned char)q;
@@ -989,7 +1075,7 @@ int enable_mjpeg(void) {
                 index, ret, errstr(ret));
     }
 
-    if (ret = bind_channel(index, app_config.mjpeg_fps, 1))
+    if (ret = bind_channel(index, app_config.jpeg_fps, 1))
         HAL_ERROR("media", "Binding channel %d failed with %#x!\n%s\n",
             index, ret, errstr(ret));
 
@@ -1199,9 +1285,9 @@ int start_sdk(void) {
                 ret, errstr(ret));
     }
 
-    short width = MAX(app_config.mp4_width, app_config.mjpeg_width);
-    short height = MAX(app_config.mp4_height, app_config.mjpeg_height);
-    short framerate = MAX(app_config.mp4_fps, app_config.mjpeg_fps);
+    short width = MAX(app_config.mp4_width, app_config.jpeg_width);
+    short height = MAX(app_config.mp4_height, app_config.jpeg_height);
+    short framerate = MAX(app_config.mp4_fps, app_config.jpeg_fps);
 
     switch (plat) {
 #if defined(__ARM_PCS_VFP)
@@ -1251,7 +1337,7 @@ int start_sdk(void) {
     if (app_config.mp4_enable && (ret = enable_mp4()))
         HAL_ERROR("media", "MP4 initialization failed with %#x!\n", ret);
 
-    if (app_config.mjpeg_enable && (ret = enable_mjpeg()))
+    if (app_config.jpeg_enable && (ret = enable_mjpeg()))
         HAL_ERROR("media", "MJPEG initialization failed with %#x!\n", ret);
 
     if (app_config.jpeg_enable && (ret = jpeg_init()))

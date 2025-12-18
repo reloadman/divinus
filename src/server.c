@@ -766,7 +766,7 @@ void respond_request(http_request_t *req) {
         return;
     }
 
-    if (app_config.mjpeg_enable && EQUALS(req->uri, "/mjpeg")) {
+    if (app_config.jpeg_enable && EQUALS(req->uri, "/mjpeg")) {
         int respLen = sprintf(response,
             "HTTP/1.0 200 OK\r\n"
             "Cache-Control: no-cache\r\n"
@@ -918,50 +918,12 @@ void respond_request(http_request_t *req) {
         return;
     }
 
-    if (EQUALS(req->uri, "/api/jpeg")) {
+    // NOTE: /api/jpeg configures the MJPEG stream (not a separate snapshot encoder).
+    // /api/mjpeg is kept as a compatibility alias.
+    if (EQUALS(req->uri, "/api/jpeg") || EQUALS(req->uri, "/api/mjpeg")) {
         if (!EMPTY(req->query)) {
             char *remain;
-            while (req->query) {
-                char *value = split(&req->query, "&");
-                if (!value || !*value) continue;
-                unescape_uri(value);
-                char *key = split(&value, "=");
-                if (!key || !*key || !value || !*value) continue;
-                if (EQUALS(key, "width")) {
-                    short result = strtol(value, &remain, 10);
-                    if (remain != value)
-                        app_config.jpeg_width = result;
-                } else if (EQUALS(key, "height")) {
-                    short result = strtol(value, &remain, 10);
-                    if (remain != value)
-                        app_config.jpeg_height = result;
-                } else if (EQUALS(key, "qfactor")) {
-                    short result = strtol(value, &remain, 10);
-                    if (remain != value)
-                        app_config.jpeg_qfactor = result;
-                }
-            }
-
-            jpeg_deinit();
-            if (app_config.jpeg_enable) jpeg_init();
-        }
-
-        int respLen = sprintf(response,
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json;charset=UTF-8\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{\"enable\":%s,\"width\":%d,\"height\":%d,\"qfactor\":%d}",
-            app_config.jpeg_enable ? "true" : "false",
-            app_config.jpeg_width, app_config.jpeg_height, app_config.jpeg_qfactor);
-        send_and_close(req->clntFd, response, respLen);
-        return;
-    }
-
-    if (EQUALS(req->uri, "/api/mjpeg")) {
-        if (!EMPTY(req->query)) {
-            char *remain;
-            bool osd_mjpeg_changed = false;
+            bool osd_jpeg_changed = false;
             while (req->query) {
                 char *value = split(&req->query, "&");
                 if (!value || !*value) continue;
@@ -970,43 +932,43 @@ void respond_request(http_request_t *req) {
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "enable")) {
                     if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        app_config.mjpeg_enable = 1;
+                        app_config.jpeg_enable = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.mjpeg_enable = 0;
+                        app_config.jpeg_enable = 0;
                 } else if (EQUALS(key, "osd_enable")) {
-                    bool prev = app_config.mjpeg_osd_enable;
+                    bool prev = app_config.jpeg_osd_enable;
                     if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
-                        app_config.mjpeg_osd_enable = 1;
+                        app_config.jpeg_osd_enable = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.mjpeg_osd_enable = 0;
-                    if (prev != app_config.mjpeg_osd_enable)
-                        osd_mjpeg_changed = true;
+                        app_config.jpeg_osd_enable = 0;
+                    if (prev != app_config.jpeg_osd_enable)
+                        osd_jpeg_changed = true;
                 } else if (EQUALS(key, "width")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
-                        app_config.mjpeg_width = result;
+                        app_config.jpeg_width = result;
                 } else if (EQUALS(key, "height")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
-                        app_config.mjpeg_height = result;
+                        app_config.jpeg_height = result;
                 } else if (EQUALS(key, "fps")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
-                        app_config.mjpeg_fps = result;
+                        app_config.jpeg_fps = result;
                 } else if (EQUALS(key, "qfactor")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value) {
                         if (result < 1) result = 1;
                         if (result > 99) result = 99;
-                        app_config.mjpeg_qfactor = (unsigned int)result;
+                        app_config.jpeg_qfactor = (unsigned int)result;
                     }
                 } else if (EQUALS(key, "mode")) {
                     if (EQUALS_CASE(value, "CBR"))
-                        app_config.mjpeg_mode = HAL_VIDMODE_CBR;
+                        app_config.jpeg_mode = HAL_VIDMODE_CBR;
                     else if (EQUALS_CASE(value, "VBR"))
-                        app_config.mjpeg_mode = HAL_VIDMODE_VBR;
+                        app_config.jpeg_mode = HAL_VIDMODE_VBR;
                     else if (EQUALS_CASE(value, "QP"))
-                        app_config.mjpeg_mode = HAL_VIDMODE_QP;
+                        app_config.jpeg_mode = HAL_VIDMODE_QP;
                 } else if (EQUALS(key, "bitrate")) {
                     // Legacy parameter: MJPEG bitrate is no longer configurable/used.
                     // Intentionally ignored for backwards compatibility.
@@ -1014,11 +976,16 @@ void respond_request(http_request_t *req) {
             }
 
             // MJPEG is quality (qfactor) driven now; force QP mode.
-            app_config.mjpeg_mode = HAL_VIDMODE_QP;
+            app_config.jpeg_mode = HAL_VIDMODE_QP;
 
             disable_mjpeg();
-            if (app_config.mjpeg_enable) enable_mjpeg();
-            if (osd_mjpeg_changed && app_config.osd_enable) {
+            if (app_config.jpeg_enable) enable_mjpeg();
+
+            // (Re)enable snapshot module state.
+            jpeg_deinit();
+            if (app_config.jpeg_enable) jpeg_init();
+
+            if (osd_jpeg_changed && app_config.osd_enable) {
                 for (char i = 0; i < MAX_OSD; i++)
                     osds[i].updt = 1;
             }
@@ -1032,10 +999,10 @@ void respond_request(http_request_t *req) {
             "Connection: close\r\n"
             "\r\n"
             "{\"enable\":%s,\"osd_enable\":%s,\"width\":%d,\"height\":%d,\"fps\":%d,\"mode\":\"%s\",\"qfactor\":%d}",
-            app_config.mjpeg_enable ? "true" : "false",
-            app_config.mjpeg_osd_enable ? "true" : "false",
-            app_config.mjpeg_width, app_config.mjpeg_height, app_config.mjpeg_fps, mode,
-            app_config.mjpeg_qfactor);
+            app_config.jpeg_enable ? "true" : "false",
+            app_config.jpeg_osd_enable ? "true" : "false",
+            app_config.jpeg_width, app_config.jpeg_height, app_config.jpeg_fps, mode,
+            app_config.jpeg_qfactor);
         send_and_close(req->clntFd, response, respLen);
         return;
     }
