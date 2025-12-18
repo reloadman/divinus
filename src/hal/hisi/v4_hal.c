@@ -1719,6 +1719,8 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
 
     VPSS_GRP_NRX_PARAM_S p;
     memset(&p, 0, sizeof(p));
+    // Many SDKs require caller to specify which NRX version to get/set.
+    p.enNRVer = 3; // VPSS_NR_V3
     int ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
     if (ret) {
         HAL_WARNING("v4_iq", "3DNR: HI_MPI_VPSS_GetGrpNRXParam failed with %#x\n", ret);
