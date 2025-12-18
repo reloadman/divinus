@@ -82,7 +82,9 @@ This document describes the fields that can be found within a configuration file
 - **enable**: Boolean to activate or deactivate audio functionality.
 - **codec**: Audio codec, `MP3` (default) or `AAC` (AAC-LC).
 - **bitrate**: Audio bitrate in kbps (e.g., `128`).
-- **gain**: Audio gain in decibels (e.g., `0` for no gain).
+- **gain**: Audio input level.
+  - On **hisi/v4**: `0..100` where `50` means unity gain, `<50` quieter, `>50` louder.
+  - On other platforms: legacy **decibel** level (typically `-60..+30`).
 - **srate**: Audio sampling rate in Hz (default `48000`).
 - **channels**: Number of channels (1 mono, 2 stereo). Default `1`.
 - **aac_quantqual**: FAAC quality setting (enables quality/VBR mode when `> 0`, range `10..5000` in this build). When set, FAAC ignores `bitrate` and uses `quantqual` instead.

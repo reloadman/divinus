@@ -505,7 +505,7 @@ void v4_audio_deinit(void)
     v4_aud.fnDisableDevice(_v4_aud_dev);
 }
 
-int v4_audio_init(int samplerate)
+int v4_audio_init(int samplerate, int gain_percent)
 {
     int ret;
 
@@ -534,6 +534,30 @@ int v4_audio_init(int samplerate)
     // If we can't set via MPI, fall back to software scaling in capture thread.
     _v4_audio_sw_mul = 1.0f;
     _v4_audio_sw_on = 0;
+
+    const int db = v4_gain_percent_to_db(gain_percent);
+    int vol_ret = -1;
+    int applied_hw = 0;
+    if (v4_aud.fnSetChnVolume) {
+        vol_ret = v4_aud.fnSetChnVolume(_v4_aud_dev, _v4_aud_chn, db);
+        applied_hw = (vol_ret == 0);
+    } else if (v4_aud.fnSetDevVolume) {
+        vol_ret = v4_aud.fnSetDevVolume(_v4_aud_dev, db);
+        applied_hw = (vol_ret == 0);
+    }
+
+    if (!applied_hw) {
+        if (vol_ret != -1) {
+            HAL_WARNING("v4_aud", "AI SetVolume failed ret=%#x (db=%d, gain=%d%%); using software gain\n",
+                vol_ret, db, v4_clampi(gain_percent, 0, 100));
+        }
+        _v4_audio_sw_mul = powf(10.0f, (float)db / 20.0f);
+        // Enable only when meaningfully different from 1.0f.
+        _v4_audio_sw_on = (fabsf(_v4_audio_sw_mul - 1.0f) > 0.0001f);
+    } else {
+        HAL_INFO("v4_aud", "AI gain applied in HW: gain=%d%% db=%d\n",
+            v4_clampi(gain_percent, 0, 100), db);
+    }
 
     return EXIT_SUCCESS;
 }

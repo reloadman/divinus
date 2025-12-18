@@ -523,7 +523,13 @@ enum ConfigError parse_app_config(void) {
             }
         }
         parse_int(&ini, "audio", "bitrate", 32, 320, &app_config.audio_bitrate);
-        parse_int(&ini, "audio", "gain", -60, 30, &app_config.audio_gain);
+        // `audio.gain` semantics are platform-specific.
+        // - hisi/v4: user-friendly 0..100 (50 = unity gain, 0 = quieter, 100 = louder)
+        // - others: legacy dB level range (-60..+30) used by platform HALs
+        if (plat == HAL_PLATFORM_V4)
+            parse_int(&ini, "audio", "gain", 0, 100, &app_config.audio_gain);
+        else
+            parse_int(&ini, "audio", "gain", -60, 30, &app_config.audio_gain);
         err = parse_int(&ini, "audio", "srate", 8000, 96000, 
             &app_config.audio_srate);
         if (err != CONFIG_OK)

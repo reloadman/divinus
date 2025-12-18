@@ -876,7 +876,7 @@ int enable_audio(void) {
         case HAL_PLATFORM_V1:  ret = v1_audio_init(app_config.audio_srate); break;
         case HAL_PLATFORM_V2:  ret = v2_audio_init(app_config.audio_srate); break;
         case HAL_PLATFORM_V3:  ret = v3_audio_init(app_config.audio_srate); break;
-        case HAL_PLATFORM_V4:  ret = v4_audio_init(app_config.audio_srate); break;
+        case HAL_PLATFORM_V4:  ret = v4_audio_init(app_config.audio_srate, app_config.audio_gain); break;
 #elif defined(__mips__)
         case HAL_PLATFORM_T31: ret = t31_audio_init(app_config.audio_srate); break;
 #elif defined(__riscv) || defined(__riscv__)
