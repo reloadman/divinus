@@ -30,12 +30,6 @@
 #define FAAC_HAVE_NEON 0
 #endif
 
-#if FAAC_HAVE_NEON && defined(__aarch64__)
-#define FAAC_NEON_F64 1
-#else
-#define FAAC_NEON_F64 0
-#endif
-
 #include "frame.h"
 #include "coder.h"
 #include "channels.h"
@@ -73,46 +67,6 @@ static const struct {
 // Fast path for typical embedded usage (mono/stereo interleaved int16 input).
 // Enabled only when the compilation target has NEON enabled (e.g. -mfpu=neon
 // on 32-bit ARM, or default on AArch64).
-static inline void faac_s16_to_double_neon(double *dst, const int16_t *src, unsigned int n)
-{
-    unsigned int i = 0;
-    for (; i + 8 <= n; i += 8) {
-        int16x8_t v16 = vld1q_s16(src + i);
-        int32x4_t lo32 = vmovl_s16(vget_low_s16(v16));
-        int32x4_t hi32 = vmovl_s16(vget_high_s16(v16));
-
-#if FAAC_NEON_F64
-        // Avoid vcvtq_f64_s32() which is not available on all clang toolchains.
-        float32x4_t f0 = vcvtq_f32_s32(lo32);
-        float32x4_t f1 = vcvtq_f32_s32(hi32);
-        float64x2_t d0 = vcvt_f64_f32(vget_low_f32(f0));
-        float64x2_t d1 = vcvt_f64_f32(vget_high_f32(f0));
-        float64x2_t d2 = vcvt_f64_f32(vget_low_f32(f1));
-        float64x2_t d3 = vcvt_f64_f32(vget_high_f32(f1));
-
-        vst1q_f64(dst + i + 0, d0);
-        vst1q_f64(dst + i + 2, d1);
-        vst1q_f64(dst + i + 4, d2);
-        vst1q_f64(dst + i + 6, d3);
-#else
-        // ARMv7 NEON typically doesn't support vector float64 ops; do f32 then widen.
-        float32x4_t f0 = vcvtq_f32_s32(lo32);
-        float32x4_t f1 = vcvtq_f32_s32(hi32);
-        dst[i + 0] = (double)vgetq_lane_f32(f0, 0);
-        dst[i + 1] = (double)vgetq_lane_f32(f0, 1);
-        dst[i + 2] = (double)vgetq_lane_f32(f0, 2);
-        dst[i + 3] = (double)vgetq_lane_f32(f0, 3);
-        dst[i + 4] = (double)vgetq_lane_f32(f1, 0);
-        dst[i + 5] = (double)vgetq_lane_f32(f1, 1);
-        dst[i + 6] = (double)vgetq_lane_f32(f1, 2);
-        dst[i + 7] = (double)vgetq_lane_f32(f1, 3);
-#endif
-    }
-    for (; i < n; i++) {
-        dst[i] = (double)src[i];
-    }
-}
-
 static inline void faac_s16_deinterleave2_to_double_neon(double *dst, const int16_t *src_interleaved, unsigned int n, int which)
 {
     // src_interleaved points to [L0, R0, L1, R1, ...]; which selects 0=left, 1=right
@@ -131,30 +85,19 @@ static inline void faac_s16_deinterleave2_to_double_neon(double *dst, const int1
         int32x4_t lo32 = vmovl_s16(vget_low_s16(v16));
         int32x4_t hi32 = vmovl_s16(vget_high_s16(v16));
 
-#if FAAC_NEON_F64
-        float32x4_t f0 = vcvtq_f32_s32(lo32);
-        float32x4_t f1 = vcvtq_f32_s32(hi32);
-        float64x2_t d0 = vcvt_f64_f32(vget_low_f32(f0));
-        float64x2_t d1 = vcvt_f64_f32(vget_high_f32(f0));
-        float64x2_t d2 = vcvt_f64_f32(vget_low_f32(f1));
-        float64x2_t d3 = vcvt_f64_f32(vget_high_f32(f1));
-
-        vst1q_f64(dst + i + 0, d0);
-        vst1q_f64(dst + i + 2, d1);
-        vst1q_f64(dst + i + 4, d2);
-        vst1q_f64(dst + i + 6, d3);
-#else
-        float32x4_t f0 = vcvtq_f32_s32(lo32);
-        float32x4_t f1 = vcvtq_f32_s32(hi32);
-        dst[i + 0] = (double)vgetq_lane_f32(f0, 0);
-        dst[i + 1] = (double)vgetq_lane_f32(f0, 1);
-        dst[i + 2] = (double)vgetq_lane_f32(f0, 2);
-        dst[i + 3] = (double)vgetq_lane_f32(f0, 3);
-        dst[i + 4] = (double)vgetq_lane_f32(f1, 0);
-        dst[i + 5] = (double)vgetq_lane_f32(f1, 1);
-        dst[i + 6] = (double)vgetq_lane_f32(f1, 2);
-        dst[i + 7] = (double)vgetq_lane_f32(f1, 3);
-#endif
+        // Keep this path purely integer->double: avoids float/denorm corner cases
+        // and tends to be faster on ARMv7 than f32 lane-extract.
+        int32_t tmp[8];
+        vst1q_s32(tmp + 0, lo32);
+        vst1q_s32(tmp + 4, hi32);
+        dst[i + 0] = (double)tmp[0];
+        dst[i + 1] = (double)tmp[1];
+        dst[i + 2] = (double)tmp[2];
+        dst[i + 3] = (double)tmp[3];
+        dst[i + 4] = (double)tmp[4];
+        dst[i + 5] = (double)tmp[5];
+        dst[i + 6] = (double)tmp[6];
+        dst[i + 7] = (double)tmp[7];
     }
     for (; i < n; i++) {
         dst[i] = (double)src_interleaved[i * 2 + (unsigned int)which];
@@ -533,13 +476,9 @@ int FAACAPI faacEncEncode(faacEncHandle hpEncoder,
 					{
 						const int map = hEncoder->config.channel_map[channel];
 #if FAAC_HAVE_NEON
-						// Fast-path mono/stereo interleaved conversion using NEON.
-						if (numChannels == 1 && map == 0) {
-							faac_s16_to_double_neon(
-								hEncoder->next3SampleBuff[channel],
-								(const int16_t*)inputBuffer,
-								(unsigned int)samples_per_channel);
-						} else if (numChannels == 2 && (map == 0 || map == 1)) {
+						// Fast-path only for stereo deinterleave.
+						// For mono, the scalar loop is often as fast or faster (and auto-vectorizes well).
+						if (numChannels == 2 && (map == 0 || map == 1)) {
 							faac_s16_deinterleave2_to_double_neon(
 								hEncoder->next3SampleBuff[channel],
 								(const int16_t*)inputBuffer,

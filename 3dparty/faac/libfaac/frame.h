@@ -68,6 +68,16 @@ typedef struct {
     double *freqBuff[MAX_CHANNELS];
     double *overlapBuff[MAX_CHANNELS];
 
+    /*
+     * Scratch buffers for filterbank/MDCT.
+     * Upstream FAAC allocates/frees these per-frame; on embedded targets this is
+     * a measurable CPU cost. We allocate once per encoder instance instead.
+     */
+    double *fb_transf_buf;   /* 2*BLOCK_LEN_LONG */
+    double *fb_overlap_buf;  /* 2*BLOCK_LEN_LONG (used by IFilterBank) */
+    double *mdct_xr;         /* max (N/4) = BLOCK_LEN_LONG/2 for N=2*BLOCK_LEN_LONG */
+    double *mdct_xi;         /* max (N/4) = BLOCK_LEN_LONG/2 for N=2*BLOCK_LEN_LONG */
+
     double *msSpectrum[MAX_CHANNELS];
 
     /* Channel and Coder data for all channels */
