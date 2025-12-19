@@ -54,25 +54,50 @@ FAAC_OBJS = $(patsubst %.c,$(FAAC_CACHEDIR)/%.o,$(FAAC_SRC))
 SMOLRTSP_OBJS = $(patsubst %.c,$(SMOLRTSP_CACHEDIR)/%.o,$(SMOLRTSP_SRC))
 SMOLLE_OBJS = $(patsubst %.c,$(SMOLLE_CACHEDIR)/%.o,$(SMOLLE_SRC))
 
-# Default to an optimized release build unless OPT is provided by the caller.
-OPT ?= -O2 -pipe -s
+# Default to a size-optimized release build unless OPT is provided by the caller.
+# Per request: build everything with -Os, and only faac + speex with -O2.
+OPT ?= -Os -pipe -s
+
+# "Fast" optimization (used for faac and (optionally) speex sources).
+FASTOPT ?= -O2 -pipe
+
+# Avoid passing linker-only flags (like -s) to compile-only steps.
+OPT_C := $(filter-out -s,$(OPT))
+FASTOPT_C := $(filter-out -s,$(FASTOPT))
+
+# Enable LTO by default.
+LTO ?= 1
+ifeq ($(LTO),1)
+  LTOFLAGS := -flto
+else
+  LTOFLAGS :=
+endif
+
+# If any "speex" sources appear in the tree later, compile them with FASTOPT.
+FAST_SRCPATTERNS := ../%/speex/% ../%/speexdsp/%
+COPT_FOR = $(if $(filter $(FAST_SRCPATTERNS),$(1)),$(FASTOPT_C),$(OPT_C))
 
 .PHONY: clean distclean faac-clean smol-clean divinus
 divinus: $(OBJ)
 
 $(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB) $(SMOLRTSP_LIB) $(SMOLLE_LIB)
-	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LDLIBS) -o $@
+	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LTOFLAGS) $(LDFLAGS) $(FAAC_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LDLIBS) -o $@
 
 $(OBJDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
+	$(CC) -c $< $(call COPT_FOR,$<) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
 
+ifeq ($(LTO),1)
+AR ?= $(shell $(CC) -print-prog-name=gcc-ar 2>/dev/null || $(CC) -print-prog-name=ar 2>/dev/null || echo ar)
+RANLIB ?= $(shell $(CC) -print-prog-name=gcc-ranlib 2>/dev/null || $(CC) -print-prog-name=ranlib 2>/dev/null || echo ranlib)
+else
 AR ?= $(shell $(CC) -print-prog-name=ar 2>/dev/null || echo ar)
 RANLIB ?= $(shell $(CC) -print-prog-name=ranlib 2>/dev/null || echo ranlib)
+endif
 
 $(FAAC_CACHEDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
+	$(CC) -c $< $(FASTOPT_C) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -DPACKAGE_VERSION=\"faac-bundled\" -o $@
 
 $(FAAC_LIB): $(FAAC_OBJS)
 	@mkdir -p $(dir $@)
@@ -81,7 +106,7 @@ $(FAAC_LIB): $(FAAC_OBJS)
 
 $(SMOLRTSP_CACHEDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
+	$(CC) -c $< $(OPT_C) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
 
 $(SMOLRTSP_LIB): $(SMOLRTSP_OBJS)
 	@mkdir -p $(dir $@)
@@ -90,7 +115,7 @@ $(SMOLRTSP_LIB): $(SMOLRTSP_OBJS)
 
 $(SMOLLE_CACHEDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) -c $< $(OPT) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
+	$(CC) -c $< $(OPT_C) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) -o $@
 
 $(SMOLLE_LIB): $(SMOLLE_OBJS)
 	@mkdir -p $(dir $@)

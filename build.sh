@@ -27,8 +27,10 @@ TOOLCHAIN_PAIRS="
 
 if [ "$2" = "debug" ]; then
     OPT="-DDEBUG -gdwarf-3"
+    LTO=0
 else
-    OPT="-O2 -pipe -s"
+    OPT="-Os -pipe -s"
+    LTO=1
 fi
 
 build_one() {
@@ -52,7 +54,7 @@ build_one() {
     fi
 
     make -C src clean CC="$cc"
-    make -j "$NPROC" -C src CC="$cc" OPT="$OPT"
+    make -j "$NPROC" -C src CC="$cc" OPT="$OPT" LTO="$LTO"
 
     [ -x "$strip_bin" ] && "$strip_bin" divinus 2>/dev/null || true
 
