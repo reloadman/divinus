@@ -523,13 +523,25 @@ void parse_request(http_request_t *req) {
     // "Connection reset by peer" to clients (curl).
     if (!EMPTY(*app_config.web_whitelist)) {
         bool allowed = false;
-        for (int i = 0; app_config.web_whitelist[i] && *app_config.web_whitelist[i]; i++) {
-            if (ip_in_cidr(client_ip, app_config.web_whitelist[i])) {
+        bool any_valid = false;
+
+        // web_whitelist is a fixed array; entries may contain whitespace.
+        // Treat whitespace-only entries as empty and do not enforce the whitelist
+        // unless at least one valid entry is present.
+        for (int i = 0; i < (int)(sizeof(app_config.web_whitelist) / sizeof(app_config.web_whitelist[0])); i++) {
+            const char *cidr = app_config.web_whitelist[i];
+            if (!cidr) continue;
+            while (*cidr == ' ' || *cidr == '\t') cidr++;
+            if (*cidr == '\0') continue;
+
+            any_valid = true;
+            if (ip_in_cidr(client_ip, (char *)cidr)) {
                 allowed = true;
                 break;
             }
         }
-        if (!allowed) {
+
+        if (any_valid && !allowed) {
             send_http_error(req->clntFd, 403);
             req->clntFd = -1;
             req->total = 0;
