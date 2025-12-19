@@ -4187,8 +4187,8 @@ int v4_video_create(char index, hal_vidconfig *config)
                     .dstFps = config->framerate, .maxBitrate = config->bitrate }; break;
             case HAL_VIDMODE_VBR:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGVBR;
-                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1,
-                    .srcFps = config->framerate, .dstFps = config->framerate,
+                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1, 
+                    .srcFps = config->framerate, .dstFps = config->framerate, 
                     .maxBitrate = MAX(config->bitrate, config->maxBitrate) }; break;
             case HAL_VIDMODE_QP:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGQP;
@@ -4267,7 +4267,7 @@ int v4_video_create(char index, hal_vidconfig *config)
     if (channel.attrib.codec == V4_VENC_CODEC_MJPG || channel.attrib.codec == V4_VENC_CODEC_JPEG)
         channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
     else
-        channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+    channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
     if (channel.attrib.codec == V4_VENC_CODEC_H264)
         channel.attrib.profile = MAX(config->profile, 2);
     channel.attrib.byFrame = 1;
