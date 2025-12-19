@@ -3,6 +3,9 @@
 #include <stdio.h>
 
 char *errstr(int error) {
+    if (error == 0)
+        return "OK";
+
     int level;
     int module = (error >> 16) & 0xFF;
 
