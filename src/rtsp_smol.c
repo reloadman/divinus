@@ -28,9 +28,6 @@
 #define MAX_CLIENTS 4
 #define VIDEO_PAYLOAD_TYPE 96
 #define VIDEO_CLOCK 90000
-// Use a dynamic payload type for MP3. Some clients (ffmpeg/ffplay) aggressively
-// map static PT=14 ("MPA") to MP2 and then fail to parse MP3 frames.
-#define MP3_PAYLOAD_TYPE 98
 #define AAC_PAYLOAD_TYPE 97
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
@@ -57,8 +54,6 @@ static inline uint32_t audio_frame_samples(void);
 static inline uint32_t audio_ts_step(void);
 static inline uint64_t audio_frame_duration_us(void);
 static inline void reset_audio_ts(void);
-static inline int audio_uses_aac(void);
-static inline uint8_t audio_payload_type(void);
 static inline uint8_t aac_samplerate_index(uint32_t srate);
 static inline uint16_t aac_audio_specific_config(void);
 static inline void aac_config_hex(char *dst, size_t dst_sz);
@@ -252,7 +247,7 @@ static int setup_rtp_transport(
         }
     }
 
-    uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : audio_payload_type();
+    uint8_t payload = (kind == TRACK_VIDEO) ? VIDEO_PAYLOAD_TYPE : AAC_PAYLOAD_TYPE;
     uint32_t clock = (kind == TRACK_VIDEO) ? VIDEO_CLOCK : audio_clock_hz();
 
     if (cfg.lower == SmolRTSP_LowerTransport_TCP) {
@@ -469,32 +464,20 @@ static void Controller_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Req
     }
 
     if (app_config.audio_enable && app_config.audio_bitrate) {
-        const uint8_t pt = audio_payload_type();
-        if (audio_uses_aac()) {
-            char config_hex[8] = {0};
-            aac_config_hex(config_hex, sizeof(config_hex));
-            SMOLRTSP_SDP_DESCRIBE(
-                ret, w,
-                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", pt),
-                (SMOLRTSP_SDP_ATTR, "control:audio"),
-                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPEG4-GENERIC/%d/%d", pt,
-                    audio_clock_hz(), app_config.audio_channels ? app_config.audio_channels : 1),
-                (SMOLRTSP_SDP_ATTR,
-                    "fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
-                    "sizelength=13;indexlength=3;indexdeltalength=3;config=%s",
-                    pt, config_hex));
-        } else {
-            SMOLRTSP_SDP_DESCRIBE(
-                ret, w,
-                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", MP3_PAYLOAD_TYPE),
-                (SMOLRTSP_SDP_ATTR, "control:audio"),
-                // RFC 3555: use MPA + fmtp layer=3 (MP3). RTP clock is typically 90 kHz.
-                (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPA/%d/%d",
-                    MP3_PAYLOAD_TYPE,
-                    audio_clock_hz(),
-                    app_config.audio_channels ? app_config.audio_channels : 1),
-                (SMOLRTSP_SDP_ATTR, "fmtp:%d layer=3", MP3_PAYLOAD_TYPE));
-        }
+        // AAC-only audio track.
+        const uint8_t pt = AAC_PAYLOAD_TYPE;
+        char config_hex[8] = {0};
+        aac_config_hex(config_hex, sizeof(config_hex));
+        SMOLRTSP_SDP_DESCRIBE(
+            ret, w,
+            (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", pt),
+            (SMOLRTSP_SDP_ATTR, "control:audio"),
+            (SMOLRTSP_SDP_ATTR, "rtpmap:%d MPEG4-GENERIC/%d/%d", pt,
+                audio_clock_hz(), app_config.audio_channels ? app_config.audio_channels : 1),
+            (SMOLRTSP_SDP_ATTR,
+                "fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
+                "sizelength=13;indexlength=3;indexdeltalength=3;config=%s",
+                pt, config_hex));
     }
 
     // Helpful when debugging client-side codec detection (ffmpeg/ffplay).
@@ -679,12 +662,8 @@ static inline uint32_t audio_clock_hz(void) {
     return srate;
 }
 
-static inline int audio_uses_aac(void) {
-    return app_config.audio_codec == HAL_AUDCODEC_AAC;
-}
-
 static inline uint32_t audio_frame_samples(void) {
-    return audio_uses_aac() ? 1024 : 1152;
+    return 1024;
 }
 
 static inline uint32_t audio_ts_step(void) {
@@ -693,10 +672,6 @@ static inline uint32_t audio_ts_step(void) {
     const uint32_t sr = app_config.audio_srate ? (uint32_t)app_config.audio_srate : 48000;
     if (!clock || !sr) return audio_frame_samples();
     return (uint32_t)((uint64_t)audio_frame_samples() * clock / sr);
-}
-
-static inline uint8_t audio_payload_type(void) {
-    return audio_uses_aac() ? AAC_PAYLOAD_TYPE : MP3_PAYLOAD_TYPE;
 }
 
 static inline uint8_t aac_samplerate_index(uint32_t srate) {
@@ -1069,57 +1044,6 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         int ret = SmolRTSP_NalTransport_send_packet(c->video_nal, ts, nalu);
         if (ret < 0) {
             // Best-effort send; skip on error.
-            continue;
-        }
-        sent++;
-    }
-    pthread_mutex_unlock(&g_srv.mtx);
-    return 0;
-}
-
-int smolrtsp_push_mp3(const uint8_t *buf, size_t len, uint64_t ts_us) {
-    if (!g_srv.running || !buf || !len)
-        return -1;
-    static int log_mp3_rtp = 0;
-    SmolRTSP_RtpTimestamp ts;
-    if (!ts_us) {
-        uint32_t raw = g_audio_ts_raw;
-        g_audio_ts_raw += audio_ts_step();
-        ts = SmolRTSP_RtpTimestamp_Raw(raw);
-    } else {
-        ts = SmolRTSP_RtpTimestamp_SysClockUs(ts_us);
-    }
-    U8Slice99 payload = U8Slice99_from_ptrdiff((uint8_t *)buf, (uint8_t *)(buf + len));
-    // NOTE: Some ffmpeg/ffplay builds treat the RFC2250 MPEG-audio 4-byte payload
-    // header as part of the elementary stream in RTSP, breaking sync detection
-    // ("unspecified frame size"). Send raw MPEG audio frame bytes.
-    uint8_t dummy = 0;
-    U8Slice99 payload_hdr = U8Slice99_new(&dummy, 0);
-    if (log_mp3_rtp < 5 && len >= 2) {
-        uint16_t hdr = ((uint16_t)buf[0] << 8) | buf[1];
-        fprintf(stderr,
-            "[rtsp] mp3 rtp payload len=%zu hdr=%02x %02x sync=%d\n",
-            len, buf[0], buf[1], ((hdr & 0xFFE0) == 0xFFE0));
-        log_mp3_rtp++;
-    }
-    pthread_mutex_lock(&g_srv.mtx);
-    int sent = 0;
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        SmolRtspClient *c = &g_srv.clients[i];
-        if (!c->alive || !c->audio_rtp || !c->playing)
-            continue;
-        if (SmolRTSP_RtpTransport_is_full(c->audio_rtp)) {
-            // Prefer freshest: drop oldest queued interleaved frames, then send new.
-            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0) {
-                fprintf(stderr,
-                    "[rtsp] audio drop: buffer full (no trim) session=%llu len=%zu\n",
-                    (unsigned long long)c->session_id, bev_output_len(c->bev));
-                continue; // can't trim safely -> drop newest
-            }
-        }
-        int ret = SmolRTSP_RtpTransport_send_packet(
-            c->audio_rtp, ts, true, payload_hdr, payload);
-        if (ret < 0) {
             continue;
         }
         sent++;

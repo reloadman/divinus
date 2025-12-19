@@ -12,7 +12,6 @@ enum StreamType {
     STREAM_H26X,
     STREAM_JPEG,
     STREAM_MJPEG,
-    STREAM_MP3,
     STREAM_MP4,
     STREAM_PCM
 };
@@ -56,7 +55,6 @@ pthread_mutex_t client_fds_mutex;
 
 // Count active HTTP streaming clients by type (best-effort).
 // Used to avoid blocking audio/video pipelines when nobody is subscribed.
-volatile int server_mp3_clients = 0;
 volatile int server_pcm_clients = 0;
 volatile int server_h26x_clients = 0;
 volatile int server_mp4_clients = 0;
@@ -88,9 +86,7 @@ void free_client(int i) {
 
     close_socket_fd(client_fds[i].sockFd);
     client_fds[i].sockFd = -1;
-    if (client_fds[i].type == STREAM_MP3) {
-        if (server_mp3_clients > 0) server_mp3_clients--;
-    } else if (client_fds[i].type == STREAM_PCM) {
+    if (client_fds[i].type == STREAM_PCM) {
         if (server_pcm_clients > 0) server_pcm_clients--;
     } else if (client_fds[i].type == STREAM_H26X) {
         if (server_h26x_clients > 0) server_h26x_clients--;
@@ -289,26 +285,6 @@ void send_mp4_to_client(char index, hal_vidstream *stream, char isH265) {
         }
         pthread_mutex_unlock(&client_fds_mutex);
     }
-}
-
-void send_mp3_to_client(char *buf, ssize_t size) {
-    if (server_mp3_clients <= 0)
-        return;
-    pthread_mutex_lock(&client_fds_mutex);
-    for (unsigned int i = 0; i < MAX_CLIENTS; ++i) {
-        if (client_fds[i].sockFd < 0) continue;
-        if (client_fds[i].type != STREAM_MP3) continue;
-
-        static char len_buf[50];
-        ssize_t len_size = sprintf(len_buf, "%zX\r\n", size);
-        if (send_to_client(i, len_buf, len_size) < 0)
-            continue; // send <SIZE>\r\n
-        if (send_to_client(i, buf, size) < 0)
-            continue; // send <DATA>
-        if (send_to_client(i, "\r\n", 2) < 0)
-            continue; // send \r\n
-    }
-    pthread_mutex_unlock(&client_fds_mutex);
 }
 
 void send_pcm_to_client(hal_audframe *frame) {
@@ -739,25 +715,6 @@ void respond_request(http_request_t *req) {
 
     if (EQUALS(req->uri, "/") || EQUALS(req->uri, "/index.htm") || EQUALS(req->uri, "/index.html")) {
         send_html(req->clntFd, indexhtml);
-        return;
-    }
-
-    if (app_config.audio_enable && EQUALS(req->uri, "/audio.mp3")) {
-        respLen = sprintf(response,
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: audio/mpeg\r\n"
-            "Transfer-Encoding: chunked\r\n"
-            "Connection: keep-alive\r\n\r\n");
-        send_to_fd(req->clntFd, response, respLen);
-        pthread_mutex_lock(&client_fds_mutex);
-        for (uint32_t i = 0; i < MAX_CLIENTS; ++i)
-            if (client_fds[i].sockFd < 0) {
-                client_fds[i].sockFd = req->clntFd;
-                client_fds[i].type = STREAM_MP3;
-                server_mp3_clients++;
-                break;
-            }
-        pthread_mutex_unlock(&client_fds_mutex);
         return;
     }
 
@@ -1638,7 +1595,6 @@ void *server_thread(void *vargp) {
 }
 
 int start_server() {
-    server_mp3_clients = 0;
     server_pcm_clients = 0;
     server_h26x_clients = 0;
     server_mp4_clients = 0;

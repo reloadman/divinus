@@ -2862,47 +2862,109 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
+    // Build desired config in a copy of the current CCM to minimize SDK validation issues.
+    // NOTE: On some GK/HiSilicon v4 SDKs, CCMOpType enum semantics can be reversed.
+    // We try the requested opType first, then retry with flipped opType if Set fails.
+    ISP_COLORMATRIX_ATTR_S out = ccm;
+
     int val;
+    int requested_op = -1; // -1 = keep current
     if (parse_int(ini, "static_ccm", "CCMOpType", 0, 1, &val) == CONFIG_OK)
-        ccm.enOpType = (ISP_OP_TYPE_E)val;
+        requested_op = val;
+    int isoActEn = -1, tempActEn = -1;
     if (parse_int(ini, "static_ccm", "ISOActEn", 0, 1, &val) == CONFIG_OK)
-        ccm.stAuto.bISOActEn = (HI_BOOL)val;
+        isoActEn = val;
     if (parse_int(ini, "static_ccm", "TempActEn", 0, 1, &val) == CONFIG_OK)
-        ccm.stAuto.bTempActEn = (HI_BOOL)val;
+        tempActEn = val;
 
     // Manual CCM (optional)
     char buf[1024];
-    if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u16(buf, ccm.stManual.au16CCM, CCM_MATRIX_SIZE);
+    HI_BOOL have_manual = HI_FALSE;
+    if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK) {
+        v4_iq_parse_csv_u16(buf, out.stManual.au16CCM, CCM_MATRIX_SIZE);
+        have_manual = HI_TRUE;
+    }
 
     // Auto CCM tables
     int total = 0;
+    HI_BOOL have_auto = HI_FALSE;
     if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK) {
-        ccm.stAuto.u16CCMTabNum = (HI_U16)total;
+        out.stAuto.u16CCMTabNum = (HI_U16)total;
+        have_auto = (total > 0) ? HI_TRUE : HI_FALSE;
 
         if (parse_param_value(ini, "static_ccm", "AutoColorTemp", buf) == CONFIG_OK) {
             HI_U32 temps[CCM_MATRIX_NUM] = {0};
             int n = v4_iq_parse_csv_u32(buf, temps, CCM_MATRIX_NUM);
             for (int i = 0; i < n && i < total; i++)
-                ccm.stAuto.astCCMTab[i].u16ColorTemp = (HI_U16)temps[i];
+                out.stAuto.astCCMTab[i].u16ColorTemp = (HI_U16)temps[i];
         }
 
         for (int i = 0; i < total && i < CCM_MATRIX_NUM; i++) {
             char key[32];
             snprintf(key, sizeof(key), "AutoCCMTable_%d", i);
             if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK)
-                v4_iq_parse_csv_u16(buf, ccm.stAuto.astCCMTab[i].au16CCM, CCM_MATRIX_SIZE);
+                v4_iq_parse_csv_u16(buf, out.stAuto.astCCMTab[i].au16CCM, CCM_MATRIX_SIZE);
         }
     }
 
-    ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
-    if (ret) {
-        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
-        pthread_mutex_lock(&_v4_iq_dyn.lock);
-        _v4_iq_dyn.ccm_disabled = HI_TRUE;
-        pthread_mutex_unlock(&_v4_iq_dyn.lock);
-        HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
+    // Apply opType logic.
+    // IQ files commonly use: 0=Auto, 1=Manual. Some SDKs reverse it.
+    // - In Manual mode, keep only stManual matrix and disable auto activation fields/tables.
+    // - In Auto mode, keep auto tables; stManual can still be present as fallback.
+    HI_BOOL want_manual = HI_FALSE;
+    if (requested_op == 1) want_manual = HI_TRUE;
+    else if (requested_op == 0) want_manual = HI_FALSE;
+    else want_manual = (out.enOpType == OP_TYPE_MANUAL) ? HI_TRUE : HI_FALSE;
+
+    // If user asked for manual but no manual table provided, don't force manual.
+    if (want_manual && !have_manual) want_manual = HI_FALSE;
+    // If user asked for auto but no auto tables provided, don't force auto.
+    if (!want_manual && !have_auto) want_manual = HI_TRUE;
+
+    // Fill activation flags (only meaningful for auto).
+    if (isoActEn >= 0) out.stAuto.bISOActEn = (HI_BOOL)isoActEn;
+    if (tempActEn >= 0) out.stAuto.bTempActEn = (HI_BOOL)tempActEn;
+
+    // First attempt: requested mapping (as written in IQ: 0=Auto,1=Manual)
+    ISP_COLORMATRIX_ATTR_S try1 = out;
+    if (want_manual) {
+        try1.enOpType = OP_TYPE_MANUAL;
+        try1.stAuto.bISOActEn = HI_FALSE;
+        try1.stAuto.bTempActEn = HI_FALSE;
+        try1.stAuto.u16CCMTabNum = 0;
+        memset(try1.stAuto.astCCMTab, 0, sizeof(try1.stAuto.astCCMTab));
     } else {
+        try1.enOpType = OP_TYPE_AUTO;
+    }
+
+    ret = v4_isp.fnSetCCMAttr(pipe, &try1);
+    if (ret) {
+        // Second attempt: flip enum semantics (treat 0<->1)
+        ISP_COLORMATRIX_ATTR_S try2 = out;
+        if (want_manual) {
+            try2.enOpType = OP_TYPE_AUTO;
+            // still keep auto disabled to emulate "manual" as much as possible
+            try2.stAuto.bISOActEn = HI_FALSE;
+            try2.stAuto.bTempActEn = HI_FALSE;
+            try2.stAuto.u16CCMTabNum = 0;
+            memset(try2.stAuto.astCCMTab, 0, sizeof(try2.stAuto.astCCMTab));
+        } else {
+            try2.enOpType = OP_TYPE_MANUAL;
+        }
+
+        int ret2 = v4_isp.fnSetCCMAttr(pipe, &try2);
+        if (ret2) {
+            HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x (retry failed with %#x)\n", ret, ret2);
+            pthread_mutex_lock(&_v4_iq_dyn.lock);
+            _v4_iq_dyn.ccm_disabled = HI_TRUE;
+            pthread_mutex_unlock(&_v4_iq_dyn.lock);
+            HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
+            return EXIT_SUCCESS;
+        }
+        ret = 0;
+    }
+
+    if (!ret) {
         ISP_COLORMATRIX_ATTR_S rb;
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetCCMAttr(pipe, &rb);

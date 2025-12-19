@@ -275,13 +275,6 @@ static inline int pcm_ring_read(PcmRing *r, int16_t *out, uint32_t n) {
     return 1;
 }
 
-static AudioByteRing mp3Buf;
-shine_config_t mp3Cnf;
-shine_t mp3Enc;
-unsigned int pcmPos;
-unsigned int pcmSamp;
-short pcmSrc[SHINE_MAX_SAMPLES];
-
 static AudioByteRing aacBuf;
 faacEncHandle aacEnc = NULL;
 unsigned long aacInputSamples = 0;
@@ -306,8 +299,6 @@ static struct {
 #endif
 
 // Temporary buffers to send an extracted encoded frame without holding aencMtx.
-static unsigned char *mp3_send_buf = NULL;
-static size_t mp3_send_cap = 0;
 static unsigned char *aac_send_buf = NULL;
 static size_t aac_send_cap = 0;
 
@@ -330,9 +321,7 @@ static inline uint8_t aac_samplerate_index(uint32_t srate) {
     }
 }
 
-static void *aenc_thread_mp3(void);
 static void *aenc_thread_aac(void);
-static int save_audio_stream_mp3(hal_audframe *frame);
 static int save_audio_stream_aac(hal_audframe *frame);
 
 static inline void aac_stash_append(const int16_t *pcm16, unsigned int total_samples) {
@@ -468,93 +457,8 @@ static inline void speex_aac_push_pcm(const int16_t *pcm16, unsigned int total_s
 #endif
 
 void *aenc_thread(void) {
-    if (active_audio_codec == HAL_AUDCODEC_AAC)
-        return aenc_thread_aac();
-    return aenc_thread_mp3();
-}
-
-static void *aenc_thread_mp3(void) {
-    while (keepRunning && audioOn) {
-        uint16_t frame_len = 0;
-
-        // Extract one frame quickly under the mutex.
-        pthread_mutex_lock(&aencMtx);
-        if (mp3Buf.offset < sizeof(uint16_t)) {
-            pthread_mutex_unlock(&aencMtx);
-            usleep(10000);
-            continue;
-        }
-        uint8_t len_hdr[2];
-        if (!audio_ring_peek(&mp3Buf, 0, len_hdr, sizeof(len_hdr))) {
-            pthread_mutex_unlock(&aencMtx);
-            usleep(10000);
-            continue;
-        }
-        frame_len = read_u16_le_bytes(len_hdr);
-        if (!frame_len || frame_len > mp3Buf.size) {
-            // Corrupted length; drop buffer to resync.
-            HAL_WARNING("media", "MP3 frame_len invalid: %u queued=%u\n",
-                frame_len, mp3Buf.offset);
-            audio_ring_reset(&mp3Buf);
-            pthread_mutex_unlock(&aencMtx);
-            continue;
-        }
-
-        if (mp3Buf.offset < (uint32_t)frame_len + sizeof(uint16_t)) {
-            pthread_mutex_unlock(&aencMtx);
-            usleep(5000);
-            continue;
-        }
-
-        // Basic MPEG audio sync check to avoid sending garbage (best-effort).
-        if (frame_len >= 2) {
-            uint8_t mp3_hdr[2];
-            if (audio_ring_peek(&mp3Buf, sizeof(uint16_t), mp3_hdr, sizeof(mp3_hdr))) {
-                uint16_t hdr = ((uint16_t)mp3_hdr[0] << 8) | (uint16_t)mp3_hdr[1];
-                if ((hdr & 0xFFE0) != 0xFFE0) {
-                    HAL_WARNING("media", "MP3 desync: hdr=%04x queued=%u len=%u\n",
-                        hdr, mp3Buf.offset, frame_len);
-                    // Drop one byte and retry to resync.
-                    (void)audio_ring_drop(&mp3Buf, 1);
-                    pthread_mutex_unlock(&aencMtx);
-                    continue;
-                }
-            }
-        }
-
-        if (frame_len > mp3_send_cap) {
-            unsigned char *nb = realloc(mp3_send_buf, frame_len);
-            if (!nb) {
-                // Out of memory: drop queued audio and continue.
-                HAL_ERROR("media", "MP3 send buffer realloc failed (%u)\n", frame_len);
-                audio_ring_reset(&mp3Buf);
-                pthread_mutex_unlock(&aencMtx);
-                continue;
-            }
-            mp3_send_buf = nb;
-            mp3_send_cap = frame_len;
-        }
-
-        // Consume header + payload without memmove().
-        (void)audio_ring_drop(&mp3Buf, sizeof(uint16_t));
-        if (!audio_ring_read(&mp3Buf, mp3_send_buf, frame_len)) {
-            // Queue got inconsistent; reset and retry.
-            audio_ring_reset(&mp3Buf);
-            pthread_mutex_unlock(&aencMtx);
-            continue;
-        }
-        pthread_mutex_unlock(&aencMtx);
-
-        // Send/ingest WITHOUT holding aencMtx (avoid stalling MI_AI fetch thread).
-        send_mp3_to_client((char *)mp3_send_buf, frame_len);
-        pthread_mutex_lock(&mp4Mtx);
-        mp4_ingest_audio((char *)mp3_send_buf, frame_len);
-        pthread_mutex_unlock(&mp4Mtx);
-        if (app_config.rtsp_enable)
-            smolrtsp_push_mp3((uint8_t *)mp3_send_buf, frame_len, 0);
-    }
-    HAL_INFO("media", "Shutting down audio encoding thread...\n");
-    return NULL;
+    // MP3 support removed; AAC-only.
+    return aenc_thread_aac();
 }
 
 static void *aenc_thread_aac(void) {
@@ -614,9 +518,11 @@ static void *aenc_thread_aac(void) {
         }
         pthread_mutex_unlock(&aencMtx);
 
-        pthread_mutex_lock(&mp4Mtx);
-        mp4_ingest_audio((char *)aac_send_buf, frame_len);
-        pthread_mutex_unlock(&mp4Mtx);
+        if (app_config.mp4_enable && (server_mp4_clients > 0 || recordOn)) {
+            pthread_mutex_lock(&mp4Mtx);
+            mp4_ingest_audio((char *)aac_send_buf, frame_len);
+            pthread_mutex_unlock(&mp4Mtx);
+        }
 
         if (app_config.rtsp_enable)
             smolrtsp_push_aac(aac_send_buf, frame_len, ts_us);
@@ -641,57 +547,8 @@ int save_audio_stream(hal_audframe *frame) {
     if (server_pcm_clients > 0)
         send_pcm_to_client(frame);
 
-    if (active_audio_codec == HAL_AUDCODEC_AAC)
-        return save_audio_stream_aac(frame);
-    return save_audio_stream_mp3(frame);
-}
-
-static int save_audio_stream_mp3(hal_audframe *frame) {
-    int ret = EXIT_SUCCESS;
-
-    unsigned int pcmLen = frame->length[0] / 2;
-    unsigned int pcmOrig = pcmLen;
-    short *pcmPack = (short *)frame->data[0];
-
-    while (pcmPos + pcmLen >= pcmSamp) {
-        memcpy(pcmSrc + pcmPos, pcmPack + pcmOrig - pcmLen,
-            (pcmSamp - pcmPos) * 2);
-        unsigned char *mp3Ptr =
-            shine_encode_buffer_interleaved(mp3Enc, pcmSrc, &ret);
-        pthread_mutex_lock(&aencMtx);
-        if (ret > 0) {
-            if (!mp3Buf.buf || mp3Buf.size != AUDIO_ENC_BUF_MAX)
-                (void)audio_ring_init(&mp3Buf, AUDIO_ENC_BUF_MAX);
-
-            const uint32_t need = (uint32_t)ret + sizeof(uint16_t);
-            if (need > mp3Buf.size) {
-                // Frame too large for queue; drop.
-                audio_ring_reset(&mp3Buf);
-            } else {
-                if (audio_ring_space(&mp3Buf) < need)
-                    audio_ring_reset(&mp3Buf);
-                uint8_t len_hdr[2];
-                write_u16_le_bytes(len_hdr, (uint16_t)ret);
-                (void)audio_ring_write(&mp3Buf, len_hdr, sizeof(len_hdr));
-                (void)audio_ring_write(&mp3Buf, mp3Ptr, (uint32_t)ret);
-            }
-        }
-        pthread_mutex_unlock(&aencMtx);
-
-        static int log_mp3_enc = 0;
-        if (log_mp3_enc < 3) {
-            HAL_INFO("media", "MP3 enc frame bytes=%d pcmPos reset\n", ret);
-            log_mp3_enc++;
-        }
-
-        pcmLen -= (pcmSamp - pcmPos);
-        pcmPos = 0;
-    }
-
-    memcpy(pcmSrc + pcmPos, pcmPack + pcmOrig - pcmLen, pcmLen * 2);
-    pcmPos += pcmLen;
-
-    return ret;
+    // MP3 support removed; AAC-only.
+    return save_audio_stream_aac(frame);
 }
 
 static int save_audio_stream_aac(hal_audframe *frame) {
@@ -1141,7 +998,7 @@ void disable_audio(void) {
 
     pthread_join(aencPid, NULL);
     pthread_join(audPid, NULL);
-    if (active_audio_codec == HAL_AUDCODEC_AAC) {
+    {
 #if defined(DIVINUS_WITH_SPEEXDSP)
         speex_aac_reset();
 #endif
@@ -1160,13 +1017,6 @@ void disable_audio(void) {
         aacInputSamples = 0;
         aacMaxOutputBytes = 0;
         aacPcmPos = 0;
-    } else {
-        shine_close(mp3Enc);
-        audio_ring_free(&mp3Buf);
-        free(mp3_send_buf);
-        mp3_send_buf = NULL;
-        mp3_send_cap = 0;
-        pcmPos = 0;
     }
     active_audio_codec = HAL_AUDCODEC_UNSPEC;
 
@@ -1195,12 +1045,12 @@ int enable_audio(void) {
 
     if (audioOn) return ret;
 
-    active_audio_codec = app_config.audio_codec ? app_config.audio_codec : HAL_AUDCODEC_MP3;
+    // MP3 support removed; AAC-only.
+    active_audio_codec = HAL_AUDCODEC_AAC;
     aacChannels = app_config.audio_channels ? app_config.audio_channels : 1;
     if (aacChannels > 2) aacChannels = 2;
     HAL_INFO("media", "Audio init: codec=%s srate=%u bitrate=%u channels=%u gain=%d\n",
-        active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" :
-        (active_audio_codec == HAL_AUDCODEC_MP3 ? "MP3" : "UNSPEC"),
+        "AAC",
         app_config.audio_srate, app_config.audio_bitrate,
         aacChannels,
         app_config.audio_gain);
@@ -1227,76 +1077,56 @@ int enable_audio(void) {
         HAL_ERROR("media", "Audio initialization failed with %#x!\n%s\n",
             ret, errstr(ret));
 
-    if (active_audio_codec != HAL_AUDCODEC_AAC &&
-        shine_check_config(app_config.audio_srate, app_config.audio_bitrate) < 0)
-        HAL_ERROR("media", "MP3 samplerate/bitrate configuration is unsupported!\n");
+    (void)audio_ring_init(&aacBuf, AUDIO_ENC_BUF_MAX);
+    aacEnc = faacEncOpen(app_config.audio_srate, aacChannels,
+        &aacInputSamples, &aacMaxOutputBytes);
+    if (!aacEnc) {
+        HAL_ERROR("media", "AAC encoder initialization failed!\n");
+        return EXIT_FAILURE;
+    }
+    HAL_INFO("media", "faacEncOpen ok: inputSamples=%lu maxOut=%lu\n",
+        aacInputSamples, aacMaxOutputBytes);
 
-    if (active_audio_codec == HAL_AUDCODEC_AAC) {
-        (void)audio_ring_init(&aacBuf, AUDIO_ENC_BUF_MAX);
-        aacEnc = faacEncOpen(app_config.audio_srate, aacChannels,
-            &aacInputSamples, &aacMaxOutputBytes);
-        if (!aacEnc) {
-            HAL_ERROR("media", "AAC encoder initialization failed!\n");
-            return EXIT_FAILURE;
-        }
-        HAL_INFO("media", "faacEncOpen ok: inputSamples=%lu maxOut=%lu\n",
-            aacInputSamples, aacMaxOutputBytes);
+    faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
+    cfg->aacObjectType = LOW;
+    cfg->mpegVersion = MPEG4;
+    cfg->useTns = app_config.audio_aac_tns ? 1 : 0;
+    cfg->allowMidside = aacChannels > 1;
+    cfg->outputFormat = 0; // raw AAC-LC frames
+    // FAAC supports two modes:
+    // - bitrate mode: bitRate > 0 (per-channel), quantqual == 0
+    // - quality/VBR mode: quantqual > 0, bitRate == 0
+    cfg->bandWidth = app_config.audio_aac_bandwidth; // 0 = auto
+    if (app_config.audio_aac_quantqual > 0) {
+        cfg->quantqual = app_config.audio_aac_quantqual;
+        cfg->bitRate = 0;
+    } else {
+        cfg->quantqual = 0;
+        cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
+    }
+    cfg->inputFormat = FAAC_INPUT_16BIT;
+    if (!faacEncSetConfiguration(aacEnc, cfg)) {
+        HAL_ERROR("media", "AAC encoder configuration failed!\n");
+        return EXIT_FAILURE;
+    }
 
-        faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
-        cfg->aacObjectType = LOW;
-        cfg->mpegVersion = MPEG4;
-        cfg->useTns = app_config.audio_aac_tns ? 1 : 0;
-        cfg->allowMidside = aacChannels > 1;
-        cfg->outputFormat = 0; // raw AAC-LC frames
-        // FAAC supports two modes:
-        // - bitrate mode: bitRate > 0 (per-channel), quantqual == 0
-        // - quality/VBR mode: quantqual > 0, bitRate == 0
-        cfg->bandWidth = app_config.audio_aac_bandwidth; // 0 = auto
-        if (app_config.audio_aac_quantqual > 0) {
-            cfg->quantqual = app_config.audio_aac_quantqual;
-            cfg->bitRate = 0;
-        } else {
-            cfg->quantqual = 0;
-            cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
-        }
-        cfg->inputFormat = FAAC_INPUT_16BIT;
-        if (!faacEncSetConfiguration(aacEnc, cfg)) {
-            HAL_ERROR("media", "AAC encoder configuration failed!\n");
-            return EXIT_FAILURE;
-        }
-
-        aacPcm = calloc(aacInputSamples * aacChannels, sizeof(int16_t));
-        aacOut = malloc(aacMaxOutputBytes);
-        if (!pcm_ring_init(&aacPcmStash, (uint32_t)aacInputSamples * aacChannels * 4U)) {
-            HAL_ERROR("media", "AAC PCM stash ring allocation failed!\n");
-            return EXIT_FAILURE;
-        }
-        if (!aacPcm || !aacOut) {
-            HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
-            return EXIT_FAILURE;
-        }
-        pcm_ring_reset(&aacPcmStash);
-        HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
+    aacPcm = calloc(aacInputSamples * aacChannels, sizeof(int16_t));
+    aacOut = malloc(aacMaxOutputBytes);
+    if (!pcm_ring_init(&aacPcmStash, (uint32_t)aacInputSamples * aacChannels * 4U)) {
+        HAL_ERROR("media", "AAC PCM stash ring allocation failed!\n");
+        return EXIT_FAILURE;
+    }
+    if (!aacPcm || !aacOut) {
+        HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
+        return EXIT_FAILURE;
+    }
+    pcm_ring_reset(&aacPcmStash);
+    HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
 
 #if defined(DIVINUS_WITH_SPEEXDSP)
-        // Optional SpeexDSP preprocess for AAC PCM path (denoise/AGC/VAD).
-        speex_aac_init_from_config(app_config.audio_srate, aacChannels);
+    // Optional SpeexDSP preprocess for AAC PCM path (denoise/AGC/VAD).
+    speex_aac_init_from_config(app_config.audio_srate, aacChannels);
 #endif
-    } else {
-        (void)audio_ring_init(&mp3Buf, AUDIO_ENC_BUF_MAX);
-        mp3Cnf.mpeg.mode = MONO;
-        mp3Cnf.mpeg.bitr = app_config.audio_bitrate;
-        mp3Cnf.mpeg.emph = NONE;
-        mp3Cnf.mpeg.copyright = 0;
-        mp3Cnf.mpeg.original = 1;
-        mp3Cnf.wave.channels = PCM_MONO;
-        mp3Cnf.wave.samplerate = app_config.audio_srate;
-        if (!(mp3Enc = shine_initialise(&mp3Cnf)))
-            HAL_ERROR("media", "MP3 encoder initialization failed!\n");
-
-        pcmSamp = shine_samples_per_pass(mp3Enc);
-        pcmPos = 0;
-    }
 
     // IMPORTANT: audio capture/encode threads spin on `while (keepRunning && audioOn)`.
     // Set audioOn BEFORE starting threads, otherwise they may exit immediately.
@@ -1336,8 +1166,7 @@ int enable_audio(void) {
                         &aencPid, &thread_attr, (void *(*)(void *))aenc_thread, NULL))
             HAL_ERROR("media", "Starting the audio encoding thread failed!\n");
         else
-            HAL_INFO("media", "Audio encoding thread started (codec=%s)\n",
-                active_audio_codec == HAL_AUDCODEC_AAC ? "AAC" : "MP3");
+            HAL_INFO("media", "Audio encoding thread started (codec=AAC)\n");
         if (pthread_attr_setstacksize(&thread_attr, stacksize))
             HAL_DANGER("media", "Can't set stack size %zu\n", stacksize);
         pthread_attr_destroy(&thread_attr);

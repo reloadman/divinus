@@ -12,7 +12,6 @@
 #include "error.h"
 #include "hal/types.h"
 #include "http_post.h"
-#include "lib/shine/layer3.h"
 #include "jpeg.h"
 #include "rtsp_smol.h"
 #include "server.h"

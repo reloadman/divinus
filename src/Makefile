@@ -1,4 +1,5 @@
-SRC_LOCAL = $(shell find ./ -name '*.c')
+# MP3 (Shine) support removed; don't compile Shine sources.
+SRC_LOCAL = $(shell find ./ -name '*.c' ! -path './lib/shine/*')
 SMOLRTSP_LOCAL = $(shell find ../3dparty/smolrtsp/src -name '*.c')
 SMOLLE_LOCAL = $(shell find ../3dparty/smolrtsp-libevent/src -name '*.c')
 FAAC_LOCAL = $(shell find ../3dparty/faac/libfaac -name '*.c')

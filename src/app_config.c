@@ -162,17 +162,17 @@ int save_app_config(void) {
 
     fprintf(file, "audio:\n");
     fprintf(file, "  enable: %s\n", app_config.audio_enable ? "true" : "false");
-    fprintf(file, "  codec: %s\n",
-        app_config.audio_codec == HAL_AUDCODEC_AAC ? "AAC" : "MP3");
+    // MP3 support removed; keep config AAC-only.
+    fprintf(file, "  codec: %s\n", "AAC");
     fprintf(file, "  bitrate: %d\n", app_config.audio_bitrate);
     fprintf(file, "  gain: %d\n", app_config.audio_gain);
     fprintf(file, "  srate: %d\n", app_config.audio_srate);
     fprintf(file, "  channels: %d\n", app_config.audio_channels);
-    // AAC-only tuning (FAAC). Safe to keep in config even if codec=MP3.
+    // AAC-only tuning (FAAC).
     fprintf(file, "  aac_quantqual: %u\n", app_config.audio_aac_quantqual);
     fprintf(file, "  aac_bandwidth: %u\n", app_config.audio_aac_bandwidth);
     fprintf(file, "  aac_tns: %s\n", app_config.audio_aac_tns ? "true" : "false");
-    // SpeexDSP preprocess (used only when codec=AAC). Safe to keep in config even if codec=MP3.
+    // SpeexDSP preprocess (used only when codec=AAC).
     fprintf(file, "  speex_enable: %s\n", app_config.audio_speex_enable ? "true" : "false");
     fprintf(file, "  speex_denoise: %s\n", app_config.audio_speex_denoise ? "true" : "false");
     fprintf(file, "  speex_agc: %s\n", app_config.audio_speex_agc ? "true" : "false");
@@ -288,7 +288,8 @@ enum ConfigError parse_app_config(void) {
     app_config.sensor_config[0] = 0;
     app_config.iq_config[0] = 0;
     app_config.audio_enable = false;
-    app_config.audio_codec = HAL_AUDCODEC_MP3;
+    // MP3 support removed; AAC-only.
+    app_config.audio_codec = HAL_AUDCODEC_AAC;
     app_config.audio_bitrate = 128;
     // Default audio gain:
     // - hisi/v4 uses 0..100 scale, where 50 is unity gain
@@ -548,10 +549,12 @@ enum ConfigError parse_app_config(void) {
             int val = 0;
             if (parse_enum(&ini, "audio", "codec", (void *)&val,
                     possible_values, count, 0) == CONFIG_OK) {
-                if (val == 0)
-                    app_config.audio_codec = HAL_AUDCODEC_MP3;
-                else
+                if (val == 0) {
+                    HAL_WARNING("app_config", "audio.codec=MP3 is no longer supported; forcing AAC\n");
                     app_config.audio_codec = HAL_AUDCODEC_AAC;
+                } else {
+                    app_config.audio_codec = HAL_AUDCODEC_AAC;
+                }
             }
         }
         parse_int(&ini, "audio", "bitrate", 32, 320, &app_config.audio_bitrate);
