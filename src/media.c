@@ -338,7 +338,8 @@ static void aac_apply_bitrate_kbps_locked(unsigned int kbps_total) {
     cfg->bitRate = (unsigned long)((kbps_total * 1000u) / (unsigned int)aacChannels);
     // Keep user-configured bandwidth and TNS; bitrate mode only changes bitRate.
     cfg->bandWidth = app_config.audio_aac_bandwidth;
-    cfg->useTns = app_config.audio_aac_tns ? 1 : 0;
+    // During mute, force-disable TNS to avoid audible artifacts on "silence".
+    cfg->useTns = audio_is_muted() ? 0 : (app_config.audio_aac_tns ? 1 : 0);
     (void)faacEncSetConfiguration(aacEnc, cfg);
 }
 
