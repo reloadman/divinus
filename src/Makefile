@@ -64,12 +64,13 @@ SMOLLE_LIB = $(SMOLLE_CACHEDIR)/libsmolrtsp-libevent.a
 
 # Cache libevent separately as a per-toolchain/per-ABI static build.
 LIBEVENT_SRCDIR := $(abspath ../3dparty/libevent-2.1.12)
-LIBEVENT_CACHEDIR ?= ../build/libevent/$(TOOLCHAIN)-$(FLOATABI)
+LIBEVENT_CACHEDIR ?= $(abspath ../build/libevent/$(TOOLCHAIN)-$(FLOATABI))
 LIBEVENT_CONFIG_H := $(LIBEVENT_CACHEDIR)/include/event2/event-config.h
 LIBEVENT_CORE_LIB := $(LIBEVENT_CACHEDIR)/.libs/libevent_core.a
 LIBEVENT_EXTRA_LIB := $(LIBEVENT_CACHEDIR)/.libs/libevent_extra.a
 LIBEVENT_PTHREADS_LIB := $(LIBEVENT_CACHEDIR)/.libs/libevent_pthreads.a
 LIBEVENT_LIBS := $(LIBEVENT_CORE_LIB) $(LIBEVENT_EXTRA_LIB) $(LIBEVENT_PTHREADS_LIB)
+LIBEVENT_STAMP := $(LIBEVENT_CACHEDIR)/.built
 
 # Prefer our vendored libevent headers. NOTE: event-config.h is generated into
 # $(LIBEVENT_CACHEDIR)/include, so keep it early in include search path.
@@ -116,7 +117,7 @@ divinus: $(OBJ)
 
 CPPFLAGS += -DDIVINUS_WITH_SPEEXDSP
 
-$(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLRTSP_LIB) $(SMOLLE_LIB) $(LIBEVENT_LIBS)
+$(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLRTSP_LIB) $(SMOLLE_LIB) $(LIBEVENT_STAMP)
 	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LDLIBS) -o $@
 
 $(OBJDIR)/%.o: ../%.c Makefile $(LIBEVENT_CONFIG_H)
@@ -178,8 +179,10 @@ $(LIBEVENT_CONFIG_H): $(LIBEVENT_SRCDIR)/configure
 	fi
 	$(MAKE) -C "$(LIBEVENT_CACHEDIR)" include/event2/event-config.h
 
-$(LIBEVENT_LIBS): $(LIBEVENT_CONFIG_H)
-	$(MAKE) -C "$(LIBEVENT_CACHEDIR)"
+$(LIBEVENT_STAMP): $(LIBEVENT_CONFIG_H)
+	# libevent's autotools build is occasionally racy under -j; build it serially.
+	$(MAKE) -C "$(LIBEVENT_CACHEDIR)" -j1
+	@touch $@
 
 # SpeexDSP build flags (requested defaults):
 # - --enable-neon
