@@ -74,8 +74,29 @@ http_post:
 
 audio:
   enable: false
+  codec: MP3
+  channels: 1
+  gain: 0
   srate: 48000
   bitrate: 128
+  # AAC (FAAC) tuning (used only when codec=AAC)
+  aac_quantqual: 0
+  aac_bandwidth: 0
+  aac_tns: false
+  # SpeexDSP preprocess (used only when codec=AAC)
+  speex_enable: true
+  speex_denoise: true
+  speex_agc: true
+  speex_vad: true
+  speex_dereverb: false
+  speex_frame_size: 960          # 20 ms @ 48 kHz
+  speex_noise_suppress_db: -20
+  speex_agc_level: 24000
+  speex_agc_increment: 12
+  speex_agc_decrement: 40
+  speex_agc_max_gain_db: 30
+  speex_vad_prob_start: 60
+  speex_vad_prob_continue: 45
 
 mp4:
   enable: true

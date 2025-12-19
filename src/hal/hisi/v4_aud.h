@@ -69,6 +69,11 @@ typedef struct {
     int (*fnDisableChannel)(int device, int channel);
     int (*fnEnableChannel)(int device, int channel);
 
+    // Optional: some SDKs expose volume controls for AI.
+    // Variants exist: device-level and channel-level.
+    int (*fnSetDevVolume)(int device, int dbLevel);
+    int (*fnSetChnVolume)(int device, int channel, int dbLevel);
+
     int (*fnFreeFrame)(int device, int channel, v4_aud_frm *frame, v4_aud_efrm *encFrame);
     int (*fnGetFrame)(int device, int channel, v4_aud_frm *frame, v4_aud_efrm *encFrame, int millis);
 } v4_aud_impl;
@@ -107,6 +112,10 @@ static int v4_aud_load(v4_aud_impl *aud_lib) {
     if (!(aud_lib->fnGetFrame = (int(*)(int device, int channel, v4_aud_frm *frame, v4_aud_efrm *encFrame, int millis))
         hal_symbol_load("v4_aud", aud_lib->handle, "HI_MPI_AI_GetFrame")))
         return EXIT_FAILURE;
+
+    // Optional symbols: do not fail init if not present.
+    aud_lib->fnSetDevVolume = (int(*)(int, int))dlsym(aud_lib->handle, "HI_MPI_AI_SetVolume");
+    aud_lib->fnSetChnVolume = (int(*)(int, int, int))dlsym(aud_lib->handle, "HI_MPI_AI_SetChnVolume");
 
     return EXIT_SUCCESS;
 }

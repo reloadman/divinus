@@ -353,7 +353,10 @@ enum ConfigError parse_list(
     int list_start = start_pos + param_match[0].rm_eo;
 
     regex_t line_regex;
-    if (compile_regex(&line_regex, "\\n(\\s+)([-*>]?\\s*)([^\\n]*)") < 0) {
+    // YAML-style list items must start with a bullet ("- " or "* ").
+    // Do NOT treat plain indented lines (e.g. "web_enable_auth: false") as list entries,
+    // otherwise empty lists would accidentally consume subsequent parameters.
+    if (compile_regex(&line_regex, "\\n(\\s+)([-*]\\s+)([^\\n]*)") < 0) {
         HAL_DANGER("config", "Error compiling line regex!\n");
         return CONFIG_REGEX_ERROR;
     }

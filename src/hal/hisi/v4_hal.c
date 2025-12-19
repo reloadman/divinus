@@ -2,6 +2,7 @@
 
 #include "v4_hal.h"
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -43,6 +44,33 @@ char _v4_vpss_chn = 0;
 char _v4_vpss_grp = 0;
 
 static char _v4_iq_cfg_path[256] = {0};
+
+// Audio gain handling:
+// - Prefer hardware AI volume control when SDK exposes it
+// - Otherwise apply software scaling on captured PCM samples (16-bit)
+static float _v4_audio_sw_mul = 1.0f;
+static int _v4_audio_sw_on = 0;
+
+static inline int v4_clampi(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Map user gain percent 0..100 to "dB" value used for AI volume APIs / scaling.
+// Semantics for hisi/v4:
+// - 50 => 0 dB (unity)
+// - 0  => -60 dB
+// - 100 => +30 dB
+static int v4_gain_percent_to_db(int percent) {
+    int p = v4_clampi(percent, 0, 100);
+    if (p <= 50) {
+        // -60 .. 0
+        return -60 + (p * 60) / 50;
+    }
+    // 0 .. +30
+    return ((p - 50) * 30) / 50;
+}
 
 // Forward decl (used by delayed apply thread)
 static int v4_iq_apply(const char *path, int pipe);
@@ -477,7 +505,7 @@ void v4_audio_deinit(void)
     v4_aud.fnDisableDevice(_v4_aud_dev);
 }
 
-int v4_audio_init(int samplerate)
+int v4_audio_init(int samplerate, int gain_percent)
 {
     int ret;
 
@@ -502,6 +530,35 @@ int v4_audio_init(int samplerate)
     if (ret = v4_aud.fnEnableChannel(_v4_aud_dev, _v4_aud_chn))
         return ret;
 
+    // Apply gain/volume (optional in SDK).
+    // If we can't set via MPI, fall back to software scaling in capture thread.
+    _v4_audio_sw_mul = 1.0f;
+    _v4_audio_sw_on = 0;
+
+    const int db = v4_gain_percent_to_db(gain_percent);
+    int vol_ret = -1;
+    int applied_hw = 0;
+    if (v4_aud.fnSetChnVolume) {
+        vol_ret = v4_aud.fnSetChnVolume(_v4_aud_dev, _v4_aud_chn, db);
+        applied_hw = (vol_ret == 0);
+    } else if (v4_aud.fnSetDevVolume) {
+        vol_ret = v4_aud.fnSetDevVolume(_v4_aud_dev, db);
+        applied_hw = (vol_ret == 0);
+    }
+
+    if (!applied_hw) {
+        if (vol_ret != -1) {
+            HAL_WARNING("v4_aud", "AI SetVolume failed ret=%#x (db=%d, gain=%d%%); using software gain\n",
+                vol_ret, db, v4_clampi(gain_percent, 0, 100));
+        }
+        _v4_audio_sw_mul = powf(10.0f, (float)db / 20.0f);
+        // Enable only when meaningfully different from 1.0f.
+        _v4_audio_sw_on = (fabsf(_v4_audio_sw_mul - 1.0f) > 0.0001f);
+    } else {
+        HAL_INFO("v4_aud", "AI gain applied in HW: gain=%d%% db=%d\n",
+            v4_clampi(gain_percent, 0, 100), db);
+    }
+
     return EXIT_SUCCESS;
 }
 
@@ -520,6 +577,20 @@ void *v4_audio_thread(void)
             HAL_WARNING("v4_aud", "Getting the frame failed "
                 "with %#x!\n", ret);
             continue;
+        }
+
+        // Software gain (only when hardware volume isn't available / failed).
+        if (_v4_audio_sw_on && frame.addr[0] && frame.length >= 2) {
+            const float mul = _v4_audio_sw_mul;
+            int16_t *pcm = (int16_t *)frame.addr[0];
+            const unsigned int samples = frame.length / 2;
+            for (unsigned int i = 0; i < samples; i++) {
+                const float fv = (float)pcm[i] * mul;
+                int32_t v = (int32_t)lrintf(fv);
+                if (v > 32767) v = 32767;
+                if (v < -32768) v = -32768;
+                pcm[i] = (int16_t)v;
+            }
         }
 
         if (v4_aud_cb) {
@@ -3944,7 +4015,24 @@ int v4_video_create(char index, hal_vidconfig *config)
     const int h264_plus =
         (config->codec == HAL_VIDCODEC_H264) && (config->flags & HAL_VIDOPT_H264_PLUS);
     channel.gop.mode = h264_plus ? V4_VENC_GOPMODE_ADVSMARTP : V4_VENC_GOPMODE_NORMALP;
-    if (config->codec == HAL_VIDCODEC_JPG || config->codec == HAL_VIDCODEC_MJPG) {
+    if (config->codec == HAL_VIDCODEC_JPG) {
+        // Dedicated JPEG snapshot channel.
+        // Some vendor SDKs validate the codec and attribute union strictly, so JPEG must
+        // use V4_VENC_CODEC_JPEG (not MJPG), and a sane buffer size.
+        channel.attrib.codec = V4_VENC_CODEC_JPEG;
+        channel.attrib.maxPic.width = config->width;
+        channel.attrib.maxPic.height = config->height;
+        channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
+        channel.attrib.byFrame = 1;
+        channel.attrib.pic.width = config->width;
+        channel.attrib.pic.height = config->height;
+        channel.attrib.jpg.dcfThumbs = 0;
+        channel.attrib.jpg.numThumbs = 0;
+        memset(channel.attrib.jpg.sizeThumbs, 0, sizeof(channel.attrib.jpg.sizeThumbs));
+        channel.attrib.jpg.multiReceiveOn = 0;
+        goto create;
+    } else if (config->codec == HAL_VIDCODEC_MJPG) {
+        // MJPEG stream channel (rate control still applies).
         channel.attrib.codec = V4_VENC_CODEC_MJPG;
         switch (config->mode) {
             case HAL_VIDMODE_CBR:
@@ -3953,8 +4041,8 @@ int v4_video_create(char index, hal_vidconfig *config)
                     .dstFps = config->framerate, .maxBitrate = config->bitrate }; break;
             case HAL_VIDMODE_VBR:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGVBR;
-                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1, 
-                    .srcFps = config->framerate, .dstFps = config->framerate, 
+                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1,
+                    .srcFps = config->framerate, .dstFps = config->framerate,
                     .maxBitrate = MAX(config->bitrate, config->maxBitrate) }; break;
             case HAL_VIDMODE_QP:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGQP;
@@ -4029,13 +4117,18 @@ int v4_video_create(char index, hal_vidconfig *config)
     } else HAL_ERROR("v4_venc", "This codec is not supported by the hardware!");
     channel.attrib.maxPic.width = config->width;
     channel.attrib.maxPic.height = config->height;
-    channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+    // NOTE: For MJPEG/JPEG many SDKs require at least aligned W*H (and often reject smaller).
+    if (channel.attrib.codec == V4_VENC_CODEC_MJPG || channel.attrib.codec == V4_VENC_CODEC_JPEG)
+        channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
+    else
+        channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
     if (channel.attrib.codec == V4_VENC_CODEC_H264)
         channel.attrib.profile = MAX(config->profile, 2);
     channel.attrib.byFrame = 1;
     channel.attrib.pic.width = config->width;
     channel.attrib.pic.height = config->height;
 
+create:
     // Debug: dump what we're asking the SDK to create.
     if (channel.attrib.codec == V4_VENC_CODEC_H264) {
         HAL_INFO("v4_venc", "CreateChannel ch=%d H264 plus=%d %dx%d fps=%d gop=%d gopMode=%d rateMode=%d bitrate=%d maxBitrate=%d qp=[%d..%d] profile=%u (cfgProfile=%d)\n",
@@ -4049,6 +4142,9 @@ int v4_video_create(char index, hal_vidconfig *config)
             index, config->width, config->height, config->framerate,
             (int)channel.rate.mode, config->bitrate, MAX(config->bitrate, config->maxBitrate),
             config->maxQual);
+    } else if (channel.attrib.codec == V4_VENC_CODEC_JPEG) {
+        HAL_INFO("v4_venc", "CreateChannel ch=%d JPEG %dx%d\n",
+            index, config->width, config->height);
     } else if (channel.attrib.codec == V4_VENC_CODEC_H265) {
         HAL_INFO("v4_venc", "CreateChannel ch=%d H265 %dx%d fps=%d gop=%d gopMode=%d rateMode=%d maxBitrate=%d\n",
             index, config->width, config->height, config->framerate, config->gop,

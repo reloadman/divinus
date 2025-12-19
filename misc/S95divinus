@@ -1,0 +1,80 @@
+#!/bin/sh
+
+DAEMON="divinus"
+DAEMON_PATH="/usr/bin/$DAEMON"
+PIDFILE="/run/$DAEMON.pid"
+DAEMON_ARGS=""
+# Seconds to wait before respawn after crash
+RESTART_DELAY="${RESTART_DELAY:-10}"
+
+# shellcheck source=/dev/null
+[ -r "/etc/default/$DAEMON" ] && . "/etc/default/$DAEMON"
+
+# The daemon does not create a pidfile, and use "-m" to instruct start-stop-daemon to create one.
+start() {
+	printf 'Starting %s: ' "$DAEMON"
+	if [ ! -x "$DAEMON_PATH" ]; then
+		echo "MISSING ($DAEMON_PATH)"
+		return 1
+	fi
+	# allow majestic/service to settle before starting divinus
+	sleep 5
+	# shellcheck disable=SC2086 # we need the word splitting for args
+	start-stop-daemon -b -m -S -q -p "$PIDFILE" -x /bin/sh -- -c "
+		# Ensure children die with the supervisor and exit the loop on stop
+		trap ' 
+			if [ -n \"\$child\" ]; then
+				kill -TERM \"\$child\" 2>/dev/null
+				wait \"\$child\" 2>/dev/null
+			fi
+			exit 0
+		' INT TERM EXIT
+		while true; do
+			$DAEMON_PATH $DAEMON_ARGS &
+			child=\$!
+			wait \$child
+			status=\$?
+			logger -t $DAEMON \"exited with code \$status, restarting in $RESTART_DELAY s\"
+			sleep $RESTART_DELAY
+		done
+	"
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+	return "$status"
+}
+
+stop() {
+	printf 'Stopping %s: ' "$DAEMON"
+	#[ -f /usr/bin/$DAEMON ] || echo -en "DISABLED, "
+	start-stop-daemon -K -q -p "$PIDFILE" --retry=TERM/3/KILL/2
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+	return "$status"
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}
+
+reload() {
+	start
+}
+
+case "$1" in
+	start|stop|restart|reload)
+		"$1";;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload}"
+		exit 1
+esac
