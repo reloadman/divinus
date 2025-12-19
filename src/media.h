@@ -44,6 +44,12 @@ int disable_video(char index, char jpeg);
 
 void disable_audio(void);
 int enable_audio(void);
+// Runtime audio muting: keep RTSP/audio track alive, but feed silence to encoder.
+// NOTE: This does NOT remove the RTSP audio track; it only affects PCM content.
+void media_set_audio_mute(int muted);
+int media_get_audio_mute(void);
+// Best-effort runtime bitrate update (AAC bitrate mode only; ignored in VBR/quantqual mode).
+void media_set_audio_bitrate_kbps(unsigned int kbps);
 int disable_mjpeg(void);
 int enable_mjpeg(void);
 int disable_mp4(void);

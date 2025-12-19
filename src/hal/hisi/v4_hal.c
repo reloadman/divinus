@@ -994,6 +994,25 @@ typedef struct {
     ISP_COLORMATRIX_AUTO_S stAuto;
 } ISP_COLORMATRIX_ATTR_S;
 
+// Alternative CCM layout used by some MPP generations (e.g. hi3519-style):
+// Auto has 3 fixed matrices (High/Mid/Low) with explicit color temperatures.
+typedef struct {
+    HI_BOOL bISOActEn;
+    HI_BOOL bTempActEn;
+    HI_U16  u16HighColorTemp;
+    HI_U16  au16HighCCM[CCM_MATRIX_SIZE];
+    HI_U16  u16MidColorTemp;
+    HI_U16  au16MidCCM[CCM_MATRIX_SIZE];
+    HI_U16  u16LowColorTemp;
+    HI_U16  au16LowCCM[CCM_MATRIX_SIZE];
+} ISP_COLORMATRIX_AUTO_HML_S;
+
+typedef struct {
+    ISP_OP_TYPE_E enOpType;
+    ISP_COLORMATRIX_MANUAL_S stManual;
+    ISP_COLORMATRIX_AUTO_HML_S stAuto;
+} ISP_COLORMATRIX_ATTR_HML_S;
+
 #define ISP_AUTO_ISO_STRENGTH_NUM 16
 typedef struct {
     HI_U8 u8Saturation;
@@ -2850,9 +2869,15 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
-    ISP_COLORMATRIX_ATTR_S ccm;
-    memset(&ccm, 0, sizeof(ccm));
-    int ret = v4_isp.fnGetCCMAttr(pipe, &ccm);
+    // We don't know which exact CCM struct layout this GK/SDK expects.
+    // Use a sufficiently large, aligned blob, seed it with GetCCMAttr(),
+    // then try applying using both known layouts (tabbed and H/M/L).
+    union {
+        HI_U64 _align;
+        unsigned char b[1024];
+    } u;
+    memset(&u, 0, sizeof(u));
+    int ret = v4_isp.fnGetCCMAttr(pipe, u.b);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_GetCCMAttr failed with %#x\n", ret);
         pthread_mutex_lock(&_v4_iq_dyn.lock);
@@ -2862,10 +2887,9 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
-    // Build desired config in a copy of the current CCM to minimize SDK validation issues.
-    // NOTE: On some GK/HiSilicon v4 SDKs, CCMOpType enum semantics can be reversed.
-    // We try the requested opType first, then retry with flipped opType if Set fails.
-    ISP_COLORMATRIX_ATTR_S out = ccm;
+    // Keep a pristine copy for retries with other layout.
+    unsigned char orig[1024];
+    memcpy(orig, u.b, sizeof(orig));
 
     int val;
     int requested_op = -1; // -1 = keep current
@@ -2880,31 +2904,32 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     // Manual CCM (optional)
     char buf[1024];
     HI_BOOL have_manual = HI_FALSE;
+    HI_U16 manual_ccm[CCM_MATRIX_SIZE] = {0};
     if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK) {
-        v4_iq_parse_csv_u16(buf, out.stManual.au16CCM, CCM_MATRIX_SIZE);
+        v4_iq_parse_csv_u16(buf, manual_ccm, CCM_MATRIX_SIZE);
         have_manual = HI_TRUE;
     }
 
-    // Auto CCM tables
+    // Auto CCM tables as provided by IQ (tabbed form).
     int total = 0;
     HI_BOOL have_auto = HI_FALSE;
-    if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK) {
-        out.stAuto.u16CCMTabNum = (HI_U16)total;
-        have_auto = (total > 0) ? HI_TRUE : HI_FALSE;
-
+    HI_U32 temps_u32[CCM_MATRIX_NUM] = {0};
+    HI_U16 auto_ccm[CCM_MATRIX_NUM][CCM_MATRIX_SIZE];
+    memset(auto_ccm, 0, sizeof(auto_ccm));
+    int ntemps = 0;
+    if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK && total > 0) {
         if (parse_param_value(ini, "static_ccm", "AutoColorTemp", buf) == CONFIG_OK) {
-            HI_U32 temps[CCM_MATRIX_NUM] = {0};
-            int n = v4_iq_parse_csv_u32(buf, temps, CCM_MATRIX_NUM);
-            for (int i = 0; i < n && i < total; i++)
-                out.stAuto.astCCMTab[i].u16ColorTemp = (HI_U16)temps[i];
+            ntemps = v4_iq_parse_csv_u32(buf, temps_u32, CCM_MATRIX_NUM);
         }
-
         for (int i = 0; i < total && i < CCM_MATRIX_NUM; i++) {
             char key[32];
             snprintf(key, sizeof(key), "AutoCCMTable_%d", i);
-            if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK)
-                v4_iq_parse_csv_u16(buf, out.stAuto.astCCMTab[i].au16CCM, CCM_MATRIX_SIZE);
+            if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK) {
+                v4_iq_parse_csv_u16(buf, auto_ccm[i], CCM_MATRIX_SIZE);
+                have_auto = HI_TRUE;
+            }
         }
+        if (ntemps > 0) have_auto = HI_TRUE;
     }
 
     // Apply opType logic.
@@ -2914,69 +2939,128 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
     HI_BOOL want_manual = HI_FALSE;
     if (requested_op == 1) want_manual = HI_TRUE;
     else if (requested_op == 0) want_manual = HI_FALSE;
-    else want_manual = (out.enOpType == OP_TYPE_MANUAL) ? HI_TRUE : HI_FALSE;
+    else {
+        // Default to current mode by reading tabbed layout header (safe if wrong too).
+        ISP_COLORMATRIX_ATTR_S *cur = (ISP_COLORMATRIX_ATTR_S *)(void *)u.b;
+        want_manual = (cur->enOpType == OP_TYPE_MANUAL) ? HI_TRUE : HI_FALSE;
+    }
 
     // If user asked for manual but no manual table provided, don't force manual.
     if (want_manual && !have_manual) want_manual = HI_FALSE;
     // If user asked for auto but no auto tables provided, don't force auto.
     if (!want_manual && !have_auto) want_manual = HI_TRUE;
 
-    // Fill activation flags (only meaningful for auto).
-    if (isoActEn >= 0) out.stAuto.bISOActEn = (HI_BOOL)isoActEn;
-    if (tempActEn >= 0) out.stAuto.bTempActEn = (HI_BOOL)tempActEn;
-
-    // First attempt: requested mapping (as written in IQ: 0=Auto,1=Manual)
-    ISP_COLORMATRIX_ATTR_S try1 = out;
-    if (want_manual) {
-        try1.enOpType = OP_TYPE_MANUAL;
-        try1.stAuto.bISOActEn = HI_FALSE;
-        try1.stAuto.bTempActEn = HI_FALSE;
-        try1.stAuto.u16CCMTabNum = 0;
-        memset(try1.stAuto.astCCMTab, 0, sizeof(try1.stAuto.astCCMTab));
-    } else {
-        try1.enOpType = OP_TYPE_AUTO;
-    }
-
-    ret = v4_isp.fnSetCCMAttr(pipe, &try1);
-    if (ret) {
-        // Second attempt: flip enum semantics (treat 0<->1)
-        ISP_COLORMATRIX_ATTR_S try2 = out;
+    // Try TABBED then HML (most GK builds seem to accept HML, but not sure).
+    // Attempt 1: tabbed layout
+    {
+        ISP_COLORMATRIX_ATTR_S *a = (ISP_COLORMATRIX_ATTR_S *)(void *)u.b;
         if (want_manual) {
-            try2.enOpType = OP_TYPE_AUTO;
-            // still keep auto disabled to emulate "manual" as much as possible
-            try2.stAuto.bISOActEn = HI_FALSE;
-            try2.stAuto.bTempActEn = HI_FALSE;
-            try2.stAuto.u16CCMTabNum = 0;
-            memset(try2.stAuto.astCCMTab, 0, sizeof(try2.stAuto.astCCMTab));
+            a->enOpType = OP_TYPE_MANUAL;
+            a->stManual.bSatEn = HI_FALSE;
+            if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+            a->stAuto.bISOActEn = HI_FALSE;
+            a->stAuto.bTempActEn = HI_FALSE;
+            a->stAuto.u16CCMTabNum = 0;
+            memset(a->stAuto.astCCMTab, 0, sizeof(a->stAuto.astCCMTab));
         } else {
-            try2.enOpType = OP_TYPE_MANUAL;
+            a->enOpType = OP_TYPE_AUTO;
+            if (isoActEn >= 0) a->stAuto.bISOActEn = (HI_BOOL)isoActEn;
+            if (tempActEn >= 0) a->stAuto.bTempActEn = (HI_BOOL)tempActEn;
+            int n = total;
+            if (n < 3) n = 3;
+            if (n > CCM_MATRIX_NUM) n = CCM_MATRIX_NUM;
+            a->stAuto.u16CCMTabNum = (HI_U16)n;
+            for (int i = 0; i < n && i < CCM_MATRIX_NUM; i++) {
+                HI_U16 ct = (HI_U16)((i < ntemps) ? temps_u32[i] : 6500);
+                a->stAuto.astCCMTab[i].u16ColorTemp = ct;
+                memcpy(a->stAuto.astCCMTab[i].au16CCM, auto_ccm[i], CCM_MATRIX_SIZE * sizeof(HI_U16));
+            }
+            if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
         }
+        ret = v4_isp.fnSetCCMAttr(pipe, u.b);
+    }
+    const char *used = "TAB";
+    if (ret) {
+        memcpy(u.b, orig, sizeof(orig));
+        // Attempt 2: H/M/L layout
+        {
+            ISP_COLORMATRIX_ATTR_HML_S *a = (ISP_COLORMATRIX_ATTR_HML_S *)(void *)u.b;
+            if (want_manual) {
+                a->enOpType = OP_TYPE_MANUAL;
+                a->stManual.bSatEn = HI_FALSE;
+                if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+                a->stAuto.bISOActEn = HI_FALSE;
+                a->stAuto.bTempActEn = HI_FALSE;
+            } else {
+                a->enOpType = OP_TYPE_AUTO;
+                if (isoActEn >= 0) a->stAuto.bISOActEn = (HI_BOOL)isoActEn;
+                if (tempActEn >= 0) a->stAuto.bTempActEn = (HI_BOOL)tempActEn;
 
-        int ret2 = v4_isp.fnSetCCMAttr(pipe, &try2);
-        if (ret2) {
-            HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x (retry failed with %#x)\n", ret, ret2);
-            pthread_mutex_lock(&_v4_iq_dyn.lock);
-            _v4_iq_dyn.ccm_disabled = HI_TRUE;
-            pthread_mutex_unlock(&_v4_iq_dyn.lock);
-            HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
-            return EXIT_SUCCESS;
+                // Map up to 3 provided tables into Low/Mid/High.
+                struct Node { HI_U16 t; const HI_U16 *m; } nodes[3];
+                int n = 0;
+                for (int i = 0; i < total && i < 3; i++) {
+                    HI_U16 t = (HI_U16)((i < ntemps) ? temps_u32[i] : (i == 0 ? 4500 : (i == 1 ? 6500 : 8000)));
+                    nodes[n].t = t;
+                    nodes[n].m = auto_ccm[i];
+                    n++;
+                }
+                while (n < 3) {
+                    HI_U16 t = (n == 0 ? 4500 : (n == 1 ? 6500 : 8000));
+                    nodes[n].t = t;
+                    nodes[n].m = auto_ccm[n - 1];
+                    n++;
+                }
+                // sort ascending by t
+                for (int i = 0; i < 3; i++) for (int j = i + 1; j < 3; j++)
+                    if (nodes[j].t < nodes[i].t) { struct Node tmp = nodes[i]; nodes[i] = nodes[j]; nodes[j] = tmp; }
+
+                HI_U16 lowT = nodes[0].t;
+                HI_U16 midT = nodes[1].t;
+                HI_U16 highT = nodes[2].t;
+                if (lowT < 2000) lowT = 2000;
+                if (midT + 400 > highT) midT = (highT > 400) ? (highT - 400) : highT;
+                if (lowT + 400 > midT) lowT = (midT > 400) ? (midT - 400) : lowT;
+
+                a->stAuto.u16LowColorTemp = lowT;
+                a->stAuto.u16MidColorTemp = midT;
+                a->stAuto.u16HighColorTemp = highT;
+                memcpy(a->stAuto.au16LowCCM, nodes[0].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+                memcpy(a->stAuto.au16MidCCM, nodes[1].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+                memcpy(a->stAuto.au16HighCCM, nodes[2].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+
+                if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+            }
+            ret = v4_isp.fnSetCCMAttr(pipe, u.b);
         }
-        ret = 0;
+        used = "HML";
+    }
+    if (ret) {
+        // As a sanity check: can we Set() exactly what Get() returned?
+        memcpy(u.b, orig, sizeof(orig));
+        int roundtrip = v4_isp.fnSetCCMAttr(pipe, u.b);
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x (other layout failed too). roundtrip_set=%#x\n", ret, roundtrip);
+
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        _v4_iq_dyn.ccm_disabled = HI_TRUE;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+        HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
+        return EXIT_SUCCESS;
     }
 
-    if (!ret) {
-        ISP_COLORMATRIX_ATTR_S rb;
-        memset(&rb, 0, sizeof(rb));
-        int gr = v4_isp.fnGetCCMAttr(pipe, &rb);
-        if (!gr) {
-            HAL_INFO("v4_iq", "CCM: applied (opType=%d manualCCM[0..2]=%u,%u,%u)\n",
-                (int)rb.enOpType,
-                (unsigned)rb.stManual.au16CCM[0],
-                (unsigned)rb.stManual.au16CCM[1],
-                (unsigned)rb.stManual.au16CCM[2]);
-        } else {
-            HAL_INFO("v4_iq", "CCM: applied\n");
-        }
+    // Read-back (best-effort)
+    union { HI_U64 _a; unsigned char b[1024]; } rb;
+    memset(&rb, 0, sizeof(rb));
+    int gr = v4_isp.fnGetCCMAttr(pipe, rb.b);
+    if (!gr) {
+        ISP_COLORMATRIX_ATTR_S *rbt = (ISP_COLORMATRIX_ATTR_S *)(void *)rb.b;
+        HAL_INFO("v4_iq", "CCM: applied (%s opType=%d manualCCM[0..2]=%u,%u,%u)\n",
+            used, (int)rbt->enOpType,
+            (unsigned)rbt->stManual.au16CCM[0],
+            (unsigned)rbt->stManual.au16CCM[1],
+            (unsigned)rbt->stManual.au16CCM[2]);
+    } else {
+        HAL_INFO("v4_iq", "CCM: applied (%s)\n", used);
     }
     // Don't fail full IQ apply because CCM isn't accepted on this SDK/build.
     return EXIT_SUCCESS;

@@ -858,6 +858,12 @@ void respond_request(http_request_t *req) {
     }
 
     if (EQUALS(req->uri, "/api/audio")) {
+        const int prev_bitrate = (int)app_config.audio_bitrate;
+        const int prev_gain = (int)app_config.audio_gain;
+        const int prev_srate = (int)app_config.audio_srate;
+        const int prev_mute = media_get_audio_mute();
+        int mute_req = -1; // -1 = unchanged, 0 = unmute, 1 = mute
+
         if (!EMPTY(req->query)) {
             char *remain;
             while (req->query) {
@@ -868,13 +874,25 @@ void respond_request(http_request_t *req) {
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "bitrate")) {
                     short result = strtol(value, &remain, 10);
-                    if (remain != value)
+                    if (remain != value) {
+                        if (result < 8) result = 8;
+                        if (result > 320) result = 320;
                         app_config.audio_bitrate = result;
+                    }
                 } else if (EQUALS(key, "enable")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
+                    // Backwards compatible: "enable=false" means "mute" (keep RTSP audio track alive).
+                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1")) {
                         app_config.audio_enable = 1;
+                        mute_req = 0;
+                    } else if (EQUALS_CASE(value, "false") || EQUALS(value, "0")) {
+                        app_config.audio_enable = 1; // do NOT disable audio pipeline; keep it alive
+                        mute_req = 1;
+                    }
+                } else if (EQUALS(key, "mute")) {
+                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
+                        mute_req = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.audio_enable = 0;
+                        mute_req = 0;
                 } else if (EQUALS(key, "gain")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -885,9 +903,37 @@ void respond_request(http_request_t *req) {
                         app_config.audio_srate = result;
                 }
             }
+        }
 
+        // Muting requires the audio pipeline to be active (we generate silence by zeroing PCM).
+        if (mute_req == 1)
+            app_config.audio_enable = 1;
+
+        // Ensure audio pipeline is running when requested (mute requires encoder to keep producing frames).
+        if (app_config.audio_enable && !audioOn) {
+            enable_audio();
+        }
+
+        // Apply runtime mute toggle if provided.
+        if (mute_req != -1) {
+            media_set_audio_mute(mute_req);
+        }
+
+        // Apply bitrate change without restarting audio (best-effort).
+        if ((int)app_config.audio_bitrate != prev_bitrate) {
+            media_set_audio_bitrate_kbps(app_config.audio_bitrate);
+        }
+
+        // Some changes still require a full audio restart (HAL + encoder).
+        // NOTE: this can cause a short gap in RTP audio.
+        if ((int)app_config.audio_srate != prev_srate || (int)app_config.audio_gain != prev_gain) {
+            const int want_mute = (mute_req != -1) ? mute_req : prev_mute;
             disable_audio();
-            if (app_config.audio_enable) enable_audio();
+            if (app_config.audio_enable) {
+                enable_audio();
+                if (want_mute)
+                    media_set_audio_mute(1);
+            }
         }
 
         int respLen = sprintf(response,
@@ -895,8 +941,9 @@ void respond_request(http_request_t *req) {
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "{\"enable\":%s,\"bitrate\":%d,\"gain\":%d,\"srate\":%d}",
+            "{\"enable\":%s,\"mute\":%s,\"bitrate\":%d,\"gain\":%d,\"srate\":%d}",
             app_config.audio_enable ? "true" : "false",
+            media_get_audio_mute() ? "true" : "false",
             app_config.audio_bitrate, app_config.audio_gain, app_config.audio_srate);
         send_and_close(req->clntFd, response, respLen);
         return;

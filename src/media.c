@@ -11,6 +11,32 @@ pthread_mutex_t aencMtx, chnMtx, mp4Mtx;
 pthread_t aencPid = 0, audPid = 0, ispPid = 0, vidPid = 0;
 
 static hal_audcodec active_audio_codec;
+// Global AAC encoder state is declared later in this file; forward-declare for helpers below.
+extern faacEncHandle aacEnc;
+extern unsigned int aacChannels;
+// Runtime mute (keep track alive, send silence).
+static volatile int g_audio_mute = 0;
+
+// Protect FAAC encoder instance/config from concurrent use.
+static pthread_mutex_t g_aac_enc_mtx = PTHREAD_MUTEX_INITIALIZER;
+// Protect PCM preprocess + stash against concurrent reset (mute toggles).
+static pthread_mutex_t g_aac_pcm_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+#if defined(DIVINUS_WITH_SPEEXDSP)
+static void speex_aac_flush(void);
+#endif
+
+// When muted and using AAC bitrate mode, temporarily reduce bitrate to save network.
+// 8 kbps mono is typically enough for "silence keepalive" and remains decodable.
+#define AUDIO_MUTE_AAC_BITRATE_KBPS 16u
+
+static inline int audio_is_muted(void) {
+    return g_audio_mute != 0;
+}
+
+int media_get_audio_mute(void) {
+    return audio_is_muted();
+}
 
 // Cache the last MJPEG (JPEG) frame so snapshots (/image.jpg, http_post, etc)
 // can be served without creating a dedicated JPEG encoder channel.
@@ -298,6 +324,68 @@ static struct {
 } speex_aac = {0};
 #endif
 
+// --- Runtime mute / bitrate controls (AAC) ---
+static void aac_apply_bitrate_kbps_locked(unsigned int kbps_total) {
+    if (!aacEnc || aacChannels == 0)
+        return;
+    // Do not override VBR/quality mode.
+    if (app_config.audio_aac_quantqual > 0)
+        return;
+    faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
+    if (!cfg)
+        return;
+    cfg->quantqual = 0;
+    cfg->bitRate = (unsigned long)((kbps_total * 1000u) / (unsigned int)aacChannels);
+    // Keep user-configured bandwidth and TNS; bitrate mode only changes bitRate.
+    cfg->bandWidth = app_config.audio_aac_bandwidth;
+    cfg->useTns = app_config.audio_aac_tns ? 1 : 0;
+    (void)faacEncSetConfiguration(aacEnc, cfg);
+}
+
+void media_set_audio_bitrate_kbps(unsigned int kbps) {
+    // Update configured bitrate (used for encoder init / unmute restore).
+    if (kbps > 0)
+        app_config.audio_bitrate = kbps;
+
+    pthread_mutex_lock(&g_aac_enc_mtx);
+    if (active_audio_codec == HAL_AUDCODEC_AAC && aacEnc) {
+        if (!audio_is_muted())
+            aac_apply_bitrate_kbps_locked(app_config.audio_bitrate);
+        else
+            aac_apply_bitrate_kbps_locked(AUDIO_MUTE_AAC_BITRATE_KBPS);
+    }
+    pthread_mutex_unlock(&g_aac_enc_mtx);
+}
+
+void media_set_audio_mute(int muted) {
+    const int was_muted = audio_is_muted();
+    g_audio_mute = muted ? 1 : 0;
+
+    // Flush any buffered pre-mute audio so the effect is immediate.
+    if (!was_muted && audio_is_muted()) {
+        pthread_mutex_lock(&g_aac_pcm_mtx);
+        pcm_ring_reset(&aacPcmStash);
+#if defined(DIVINUS_WITH_SPEEXDSP)
+        speex_aac_flush();
+#endif
+        // Drop any already-encoded (pre-mute) AAC frames queued for network send.
+        pthread_mutex_lock(&aencMtx);
+        audio_ring_reset(&aacBuf);
+        pthread_mutex_unlock(&aencMtx);
+        pthread_mutex_unlock(&g_aac_pcm_mtx);
+    }
+
+    // Best-effort: reduce bitrate while muted (AAC bitrate mode only).
+    pthread_mutex_lock(&g_aac_enc_mtx);
+    if (active_audio_codec == HAL_AUDCODEC_AAC && aacEnc) {
+        if (audio_is_muted())
+            aac_apply_bitrate_kbps_locked(AUDIO_MUTE_AAC_BITRATE_KBPS);
+        else
+            aac_apply_bitrate_kbps_locked(app_config.audio_bitrate);
+    }
+    pthread_mutex_unlock(&g_aac_enc_mtx);
+}
+
 // Temporary buffers to send an extracted encoded frame without holding aencMtx.
 static unsigned char *aac_send_buf = NULL;
 static size_t aac_send_cap = 0;
@@ -343,6 +431,12 @@ static void speex_aac_reset(void) {
     speex_aac.channels = 0;
     speex_aac.frame_size = 0;
     speex_aac.active = 0;
+}
+
+static void speex_aac_flush(void) {
+    if (!speex_aac.active)
+        return;
+    pcm_ring_reset(&speex_aac.in);
 }
 
 static void speex_aac_init_from_config(unsigned int srate, unsigned int channels) {
@@ -543,6 +637,11 @@ int save_audio_stream(hal_audframe *frame) {
     printf("        ts:%d\n", frame->timestamp);
 #endif
 
+    // If muted, zero PCM in-place before any downstream consumers.
+    if (audio_is_muted() && frame && frame->data[0] && frame->length[0] > 0) {
+        memset(frame->data[0], 0, (size_t)frame->length[0]);
+    }
+
     // Avoid taking server mutex on every frame when nobody is subscribed to raw PCM.
     if (server_pcm_clients > 0)
         send_pcm_to_client(frame);
@@ -579,6 +678,7 @@ static int save_audio_stream_aac(hal_audframe *frame) {
 
     // Append to stash (16-bit LE samples, interleaved).
     unsigned int total_samples = samples_per_ch * channels;
+    pthread_mutex_lock(&g_aac_pcm_mtx);
 #if defined(DIVINUS_WITH_SPEEXDSP)
     speex_aac_push_pcm(pcm16, total_samples);
 #else
@@ -590,9 +690,13 @@ static int save_audio_stream_aac(hal_audframe *frame) {
     while (aacPcmStash.buf && aacPcmStash.len >= need_samples) {
         if (!pcm_ring_read(&aacPcmStash, aacPcm, need_samples))
             break;
+        pthread_mutex_unlock(&g_aac_pcm_mtx);
 
-        int bytes = faacEncEncode(aacEnc, (int32_t *)aacPcm, (unsigned int)aacInputSamples,
+        int bytes;
+        pthread_mutex_lock(&g_aac_enc_mtx);
+        bytes = faacEncEncode(aacEnc, (int32_t *)aacPcm, (unsigned int)aacInputSamples,
             aacOut, aacMaxOutputBytes);
+        pthread_mutex_unlock(&g_aac_enc_mtx);
         static int log_fail = 0;
         static int log_ok = 0;
         if (bytes <= 0) {
@@ -637,7 +741,10 @@ static int save_audio_stream_aac(hal_audframe *frame) {
             log_ok++;
         }
         pthread_mutex_unlock(&aencMtx);
+
+        pthread_mutex_lock(&g_aac_pcm_mtx);
     }
+    pthread_mutex_unlock(&g_aac_pcm_mtx);
 
     return EXIT_SUCCESS;
 }
@@ -1002,8 +1109,11 @@ void disable_audio(void) {
 #if defined(DIVINUS_WITH_SPEEXDSP)
         speex_aac_reset();
 #endif
+        pthread_mutex_lock(&g_aac_enc_mtx);
         if (aacEnc)
             faacEncClose(aacEnc);
+        aacEnc = NULL;
+        pthread_mutex_unlock(&g_aac_enc_mtx);
         free(aacPcm);
         free(aacOut);
         pcm_ring_free(&aacPcmStash);
@@ -1011,7 +1121,6 @@ void disable_audio(void) {
         free(aac_send_buf);
         aac_send_buf = NULL;
         aac_send_cap = 0;
-        aacEnc = NULL;
         aacPcm = NULL;
         aacOut = NULL;
         aacInputSamples = 0;
