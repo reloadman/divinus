@@ -1576,6 +1576,9 @@ int start_sdk(void) {
         if (ret)
             HAL_ERROR("media", "Audio initialization failed with %#x!\n%s\n",
                 ret, errstr(ret));
+        // Apply persisted mute state immediately after starting audio.
+        if (app_config.audio_mute)
+            media_set_audio_mute(1);
     }
 
     short width = MAX(app_config.mp4_width, app_config.jpeg_width);

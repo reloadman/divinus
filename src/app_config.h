@@ -92,6 +92,8 @@ struct AppConfig {
 
     // [audio]
     bool audio_enable;
+    // Persisted mute state: keep audio/RTSP track alive, but send silence.
+    bool audio_mute;
     hal_audcodec audio_codec;
     unsigned int audio_bitrate;
     int audio_gain;

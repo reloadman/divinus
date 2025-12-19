@@ -914,8 +914,12 @@ void respond_request(http_request_t *req) {
             enable_audio();
         }
 
-        // Apply runtime mute toggle if provided.
+        // Apply runtime mute toggle if provided and persist immediately.
         if (mute_req != -1) {
+            app_config.audio_mute = (mute_req == 1);
+            int sr = save_app_config();
+            if (sr != 0)
+                HAL_WARNING("server", "Failed to save config after audio mute change (ret=%d)\n", sr);
             media_set_audio_mute(mute_req);
         }
 

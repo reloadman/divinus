@@ -162,6 +162,7 @@ int save_app_config(void) {
 
     fprintf(file, "audio:\n");
     fprintf(file, "  enable: %s\n", app_config.audio_enable ? "true" : "false");
+    fprintf(file, "  mute: %s\n", app_config.audio_mute ? "true" : "false");
     // MP3 support removed; keep config AAC-only.
     fprintf(file, "  codec: %s\n", "AAC");
     fprintf(file, "  bitrate: %d\n", app_config.audio_bitrate);
@@ -288,6 +289,7 @@ enum ConfigError parse_app_config(void) {
     app_config.sensor_config[0] = 0;
     app_config.iq_config[0] = 0;
     app_config.audio_enable = false;
+    app_config.audio_mute = false;
     // MP3 support removed; AAC-only.
     app_config.audio_codec = HAL_AUDCODEC_AAC;
     app_config.audio_bitrate = 128;
@@ -542,6 +544,9 @@ enum ConfigError parse_app_config(void) {
     }
 
     parse_bool(&ini, "audio", "enable", &app_config.audio_enable);
+    // Persisted mute flag (keep audio/RTSP track alive but send silence).
+    // Parse regardless of enable; it will be applied when/if audio starts.
+    parse_bool(&ini, "audio", "mute", &app_config.audio_mute);
     if (app_config.audio_enable) {
         {
             const char *possible_values[] = {"MP3", "AAC", "AAC-LC"};

@@ -80,6 +80,7 @@ This document describes the fields that can be found within a configuration file
 ## Audio section
 
 - **enable**: Boolean to activate or deactivate audio functionality.
+- **mute**: Boolean to mute audio while keeping the RTSP/audio track alive. When `true`, Divinus sends digital silence to the encoder (no track removal).
 - **codec**: Audio codec, `MP3` (default) or `AAC` (AAC-LC).
 - **bitrate**: Audio bitrate in kbps (e.g., `128`).
 - **gain**: Audio input level.
