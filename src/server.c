@@ -58,6 +58,9 @@ pthread_mutex_t client_fds_mutex;
 // Used to avoid blocking audio/video pipelines when nobody is subscribed.
 volatile int server_mp3_clients = 0;
 volatile int server_pcm_clients = 0;
+volatile int server_h26x_clients = 0;
+volatile int server_mp4_clients = 0;
+volatile int server_mjpeg_clients = 0;
 
 static bool is_local_address(const char *client_ip) {
     if (!client_ip) return false;
@@ -89,6 +92,12 @@ void free_client(int i) {
         if (server_mp3_clients > 0) server_mp3_clients--;
     } else if (client_fds[i].type == STREAM_PCM) {
         if (server_pcm_clients > 0) server_pcm_clients--;
+    } else if (client_fds[i].type == STREAM_H26X) {
+        if (server_h26x_clients > 0) server_h26x_clients--;
+    } else if (client_fds[i].type == STREAM_MP4) {
+        if (server_mp4_clients > 0) server_mp4_clients--;
+    } else if (client_fds[i].type == STREAM_MJPEG) {
+        if (server_mjpeg_clients > 0) server_mjpeg_clients--;
     }
     client_fds[i].type = -1;
 }
@@ -152,6 +161,8 @@ void send_http_error(int fd, int code) {
 }
 
 void send_h26x_to_client(char index, hal_vidstream *stream) {
+    if (server_h26x_clients <= 0)
+        return;
     for (unsigned int i = 0; i < stream->count; ++i) {
         hal_vidpack *pack = &stream->pack[i];
         unsigned int pack_len = pack->length - pack->offset;
@@ -195,6 +206,8 @@ void send_h26x_to_client(char index, hal_vidstream *stream) {
 }
 
 void send_mp4_to_client(char index, hal_vidstream *stream, char isH265) {
+    if (server_mp4_clients <= 0)
+        return;
 
     for (unsigned int i = 0; i < stream->count; ++i) {
         hal_vidpack *pack = &stream->pack[i];
@@ -319,6 +332,8 @@ void send_pcm_to_client(hal_audframe *frame) {
 }
 
 void send_mjpeg_to_client(char index, char *buf, ssize_t size) {
+    if (server_mjpeg_clients <= 0)
+        return;
     static char prefix_buf[128];
     ssize_t prefix_size = sprintf(prefix_buf,
         "--boundarydonotcross\r\n"
@@ -780,6 +795,7 @@ void respond_request(http_request_t *req) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_H26X;
                 client_fds[i].nalCnt = 0;
+                server_h26x_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -800,6 +816,7 @@ void respond_request(http_request_t *req) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_MP4;
                 client_fds[i].mp4.header_sent = false;
+                server_mp4_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -819,6 +836,7 @@ void respond_request(http_request_t *req) {
             if (client_fds[i].sockFd < 0) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_MJPEG;
+                server_mjpeg_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -1622,6 +1640,9 @@ void *server_thread(void *vargp) {
 int start_server() {
     server_mp3_clients = 0;
     server_pcm_clients = 0;
+    server_h26x_clients = 0;
+    server_mp4_clients = 0;
+    server_mjpeg_clients = 0;
     for (unsigned int i = 0; i < MAX_CLIENTS; i++) {
         client_fds[i].sockFd = -1;
         client_fds[i].type = -1;

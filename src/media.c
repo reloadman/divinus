@@ -647,12 +647,22 @@ int save_video_stream(char index, hal_vidstream *stream) {
         {
             char isH265 = chnState[index].payload == HAL_VIDCODEC_H265 ? 1 : 0;
 
-            if (app_config.mp4_enable) {
+            const int have_h26x_clients = (server_h26x_clients > 0);
+            const int have_mp4_clients = (server_mp4_clients > 0);
+            const int do_mp4 = (app_config.mp4_enable && (have_mp4_clients || recordOn));
+
+            if (do_mp4) {
                 pthread_mutex_lock(&mp4Mtx);
-                send_mp4_to_client(index, stream, isH265);
-                if (recordOn) send_mp4_to_record(stream, isH265);
+                if (have_mp4_clients)
+                    send_mp4_to_client(index, stream, isH265);
+                if (recordOn)
+                    send_mp4_to_record(stream, isH265);
                 pthread_mutex_unlock(&mp4Mtx);
                 
+                if (have_h26x_clients)
+                    send_h26x_to_client(index, stream);
+            } else if (app_config.mp4_enable && have_h26x_clients) {
+                // Raw H.26x over HTTP (video.264/video.265) does not require MP4 muxing.
                 send_h26x_to_client(index, stream);
             }
             if (app_config.rtsp_enable)
@@ -663,10 +673,10 @@ int save_video_stream(char index, hal_vidstream *stream) {
                         isH265,
                         stream->pack[i].timestamp);
 
-            if (app_config.stream_enable)
+            if (app_config.stream_enable && udp_stream_has_clients())
                 for (int i = 0; i < stream->count; i++)
-                    udp_stream_send_nal(stream->pack[i].data + stream->pack[i].offset, 
-                        stream->pack[i].length - stream->pack[i].offset, 
+                    udp_stream_send_nal(stream->pack[i].data + stream->pack[i].offset,
+                        stream->pack[i].length - stream->pack[i].offset,
                         stream->pack[i].nalu[0].type == NalUnitType_CodedSliceIdr, isH265);
             
             break;
@@ -676,9 +686,12 @@ int save_video_stream(char index, hal_vidstream *stream) {
                 static char *mjpeg_buf;
                 static ssize_t mjpeg_buf_size = 0;
                 ssize_t buf_size = 0;
+                const int want_mjpeg_stream = (server_mjpeg_clients > 0);
                 for (unsigned int i = 0; i < stream->count; i++) {
                     hal_vidpack *data = &stream->pack[i];
-                    ssize_t need_size = buf_size + data->length - data->offset + 2;
+                    // Keep a raw JPEG bitstream for snapshot cache; only reserve extra bytes
+                    // for HTTP MJPEG streaming when there are active MJPEG clients.
+                    ssize_t need_size = buf_size + data->length - data->offset;
                     if (need_size > mjpeg_buf_size)
                         mjpeg_buf = realloc(mjpeg_buf, mjpeg_buf_size = need_size);
                     memcpy(mjpeg_buf + buf_size, data->data + data->offset,
@@ -690,7 +703,12 @@ int save_video_stream(char index, hal_vidstream *stream) {
                 if (stream->count)
                     ts = stream->pack[stream->count - 1].timestamp;
                 mjpeg_last_update((unsigned char *)mjpeg_buf, (size_t)buf_size, ts);
-                send_mjpeg_to_client(index, mjpeg_buf, buf_size);
+                if (want_mjpeg_stream) {
+                    // send_mjpeg_to_client appends "\r\n" in-place; ensure capacity for 2 bytes once.
+                    if (buf_size + 2 > mjpeg_buf_size)
+                        mjpeg_buf = realloc(mjpeg_buf, mjpeg_buf_size = buf_size + 2);
+                    send_mjpeg_to_client(index, mjpeg_buf, buf_size);
+                }
             }
             break;
         case HAL_VIDCODEC_JPG:
@@ -700,15 +718,19 @@ int save_video_stream(char index, hal_vidstream *stream) {
             ssize_t buf_size = 0;
             for (unsigned int i = 0; i < stream->count; i++) {
                 hal_vidpack *data = &stream->pack[i];
-                ssize_t need_size = buf_size + data->length - data->offset + 2;
+                // send_jpeg_to_client appends "\r\n" in-place; reserve extra bytes once below.
+                ssize_t need_size = buf_size + data->length - data->offset;
                 if (need_size > jpeg_buf_size)
                     jpeg_buf = realloc(jpeg_buf, jpeg_buf_size = need_size);
                 memcpy(jpeg_buf + buf_size, data->data + data->offset,
                     data->length - data->offset);
                 buf_size += data->length - data->offset;
             }
-            if (app_config.jpeg_enable)
+            if (app_config.jpeg_enable) {
+                if (buf_size + 2 > jpeg_buf_size)
+                    jpeg_buf = realloc(jpeg_buf, jpeg_buf_size = buf_size + 2);
                 send_jpeg_to_client(index, jpeg_buf, buf_size);
+            }
             break;
         }
         default:

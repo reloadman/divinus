@@ -43,3 +43,6 @@ void send_pcm_to_client(hal_audframe *frame);
 // Updated inside server.c under client_fds_mutex; read opportunistically elsewhere.
 extern volatile int server_mp3_clients;
 extern volatile int server_pcm_clients;
+extern volatile int server_h26x_clients;
+extern volatile int server_mp4_clients;
+extern volatile int server_mjpeg_clients;
