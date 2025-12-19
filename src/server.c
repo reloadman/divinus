@@ -501,7 +501,11 @@ void parse_request(http_request_t *req) {
 
 grant_access:
     req->total = 0;
-    int received = recv(req->clntFd, req->input, REQSIZE, 0);
+    // Clear header pointers from previous requests (they point into req->input).
+    memset(http_headers, 0, sizeof(http_headers));
+
+    // recv() does NOT NUL-terminate. Keep 1 byte for '\0' because we parse with strtok/strlen/strchr.
+    int received = recv(req->clntFd, req->input, REQSIZE - 1, 0);
     if (received < 0)
         HAL_WARNING("server", "Reading from client failed!\n");
     else if (!received)
@@ -509,11 +513,20 @@ grant_access:
     req->total += received;
 
     if (req->total <= 0) return;
+    req->input[req->total] = '\0';
 
     char *state = NULL;
     req->method = strtok_r(req->input, " \t\r\n", &state);
     req->uri = strtok_r(NULL, " \t", &state);
     req->prot = strtok_r(NULL, " \t\r\n", &state);
+
+    if (!req->method || !req->uri || !req->prot) {
+        HAL_WARNING("server", "Malformed request line, closing.\n");
+        close_socket_fd(req->clntFd);
+        req->clntFd = -1;
+        req->total = 0;
+        return;
+    }
 
     HAL_INFO("server", "\x1b[32mNew request: (%s) %s\n"
         "         Received from: %s\x1b[0m\n",
@@ -522,7 +535,8 @@ grant_access:
     if (req->query = strchr(req->uri, '?'))
         *req->query++ = '\0';
     else
-        req->query = req->uri - 1;
+        // No query string: point to the terminating '\0' so EMPTY(req->query) is safe.
+        req->query = req->uri + strlen(req->uri);
 
     http_header_t *h = http_headers;
     char *l;
@@ -531,6 +545,8 @@ grant_access:
         if (!(k = strtok_r(NULL, "\r\n: \t", &state)))
             break;
         v = strtok_r(NULL, "\r\n", &state);
+        if (!v)
+            break;
         while (*v && *v == ' ' && v++);
         h->name = k;
         h++->value = v;
@@ -546,7 +562,9 @@ grant_access:
     req->paysize = l ? atol(l) : 0;
 
     while (l && req->total < req->paysize) {
-        received = recv(req->clntFd, req->input + req->total, REQSIZE - req->total, 0);
+        if (req->total >= REQSIZE - 1)
+            break;
+        received = recv(req->clntFd, req->input + req->total, (REQSIZE - 1) - req->total, 0);
         if (received < 0) {
             HAL_WARNING("server", "Reading from client failed!\n");
             break;
@@ -555,6 +573,7 @@ grant_access:
             break;
         }
         req->total += received;
+        req->input[req->total] = '\0';
     }
 
     req->payload = strtok_r(NULL, "\r\n", &state);
