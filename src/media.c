@@ -28,7 +28,7 @@ static void speex_aac_flush(void);
 
 // When muted and using AAC bitrate mode, temporarily reduce bitrate to save network.
 // 8 kbps mono is typically enough for "silence keepalive" and remains decodable.
-#define AUDIO_MUTE_AAC_BITRATE_KBPS 16u
+#define AUDIO_MUTE_AAC_BITRATE_KBPS 32u
 
 static inline int audio_is_muted(void) {
     return g_audio_mute != 0;
@@ -527,6 +527,14 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
 }
 
 static inline void speex_aac_push_pcm(const int16_t *pcm16, unsigned int total_samples) {
+    // During mute we want *true digital silence*. Some preprocess configurations
+    // (especially AGC/VAD) can produce audible "comfort noise"/hiss even on a
+    // near-silent input. Bypass SpeexDSP entirely when muted.
+    if (audio_is_muted()) {
+        aac_stash_append(pcm16, total_samples);
+        return;
+    }
+
     if (!speex_aac.active || !speex_aac.st || !speex_aac.in.buf || !speex_aac.frame || total_samples == 0) {
         aac_stash_append(pcm16, total_samples);
         return;
