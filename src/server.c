@@ -490,16 +490,6 @@ void parse_request(http_request_t *req) {
         (struct sockaddr *)&client_sock, &client_sock_len);
     char *client_ip = inet_ntoa(client_sock.sin_addr);
 
-    if (!EMPTY(*app_config.web_whitelist)) {
-        for (int i = 0; app_config.web_whitelist[i] && *app_config.web_whitelist[i]; i++)
-            if (ip_in_cidr(client_ip, app_config.web_whitelist[i])) goto grant_access;
-        close_socket_fd(req->clntFd);
-        req->clntFd = -1;
-        req->total = 0;
-        return;
-    }
-
-grant_access:
     req->total = 0;
     // Clear header pointers from previous requests (they point into req->input).
     memset(http_headers, 0, sizeof(http_headers));
@@ -526,6 +516,25 @@ grant_access:
         req->clntFd = -1;
         req->total = 0;
         return;
+    }
+
+    // Apply whitelist AFTER reading the request. Closing a TCP socket without
+    // reading can trigger an RST on some stacks, which looks like
+    // "Connection reset by peer" to clients (curl).
+    if (!EMPTY(*app_config.web_whitelist)) {
+        bool allowed = false;
+        for (int i = 0; app_config.web_whitelist[i] && *app_config.web_whitelist[i]; i++) {
+            if (ip_in_cidr(client_ip, app_config.web_whitelist[i])) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) {
+            send_http_error(req->clntFd, 403);
+            req->clntFd = -1;
+            req->total = 0;
+            return;
+        }
     }
 
     HAL_INFO("server", "\x1b[32mNew request: (%s) %s\n"
