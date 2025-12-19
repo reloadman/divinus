@@ -24,22 +24,7 @@ static inline int __rtcp_send_sr(struct connection_item_t *con, int track_id)
     unsigned int ts_l; 
     int send_bytes;
     struct sockaddr_in to_addr;
-    struct {
-        int server_rtcp_fd;
-        int server_rtp_fd;
-        unsigned int client_port_rtp;
-        unsigned int client_port_rtcp;
-        unsigned int server_port_rtp;
-        unsigned int server_port_rtcp;
-        unsigned int range_start;
-        unsigned int range_end;
-        unsigned int rtcp_octet;
-        unsigned int rtcp_packet_cnt;
-        int rtcp_tick;
-        int rtcp_tick_org;
-        unsigned short rtp_seq;
-        unsigned int rtp_timestamp;
-    } *t;
+    struct rtsp_transport_t *t;
 
     /* guard against invalid track index */
     ASSERT(track_id >= 0 && track_id < (int)(sizeof(con->trans) / sizeof(con->trans[0])), return FAILURE);

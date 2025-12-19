@@ -168,6 +168,24 @@ int save_app_config(void) {
     fprintf(file, "  gain: %d\n", app_config.audio_gain);
     fprintf(file, "  srate: %d\n", app_config.audio_srate);
     fprintf(file, "  channels: %d\n", app_config.audio_channels);
+    // AAC-only tuning (FAAC). Safe to keep in config even if codec=MP3.
+    fprintf(file, "  aac_quantqual: %u\n", app_config.audio_aac_quantqual);
+    fprintf(file, "  aac_bandwidth: %u\n", app_config.audio_aac_bandwidth);
+    fprintf(file, "  aac_tns: %s\n", app_config.audio_aac_tns ? "true" : "false");
+    // SpeexDSP preprocess (used only when codec=AAC). Safe to keep in config even if codec=MP3.
+    fprintf(file, "  speex_enable: %s\n", app_config.audio_speex_enable ? "true" : "false");
+    fprintf(file, "  speex_denoise: %s\n", app_config.audio_speex_denoise ? "true" : "false");
+    fprintf(file, "  speex_agc: %s\n", app_config.audio_speex_agc ? "true" : "false");
+    fprintf(file, "  speex_vad: %s\n", app_config.audio_speex_vad ? "true" : "false");
+    fprintf(file, "  speex_dereverb: %s\n", app_config.audio_speex_dereverb ? "true" : "false");
+    fprintf(file, "  speex_frame_size: %u\n", app_config.audio_speex_frame_size);
+    fprintf(file, "  speex_noise_suppress_db: %d\n", app_config.audio_speex_noise_suppress_db);
+    fprintf(file, "  speex_agc_level: %d\n", app_config.audio_speex_agc_level);
+    fprintf(file, "  speex_agc_increment: %d\n", app_config.audio_speex_agc_increment);
+    fprintf(file, "  speex_agc_decrement: %d\n", app_config.audio_speex_agc_decrement);
+    fprintf(file, "  speex_agc_max_gain_db: %d\n", app_config.audio_speex_agc_max_gain_db);
+    fprintf(file, "  speex_vad_prob_start: %d\n", app_config.audio_speex_vad_prob_start);
+    fprintf(file, "  speex_vad_prob_continue: %d\n", app_config.audio_speex_vad_prob_continue);
 
     fprintf(file, "mp4:\n");
     fprintf(file, "  enable: %s\n", app_config.mp4_enable ? "true" : "false");
@@ -272,9 +290,31 @@ enum ConfigError parse_app_config(void) {
     app_config.audio_enable = false;
     app_config.audio_codec = HAL_AUDCODEC_MP3;
     app_config.audio_bitrate = 128;
-    app_config.audio_gain = 0;
+    // Default audio gain:
+    // - hisi/v4 uses 0..100 scale, where 50 is unity gain
+    // - other platforms interpret it as dB and use 0 as unity gain
+    app_config.audio_gain = (plat == HAL_PLATFORM_V4) ? 50 : 0;
     app_config.audio_srate = 48000;
     app_config.audio_channels = 1;
+    // AAC (FAAC) advanced options (ignored unless codec=AAC)
+    app_config.audio_aac_quantqual = 0;   // 0 = disabled (use bitrate mode)
+    app_config.audio_aac_bandwidth = 0;   // 0 = auto
+    app_config.audio_aac_tns = false;
+    // SpeexDSP preprocess defaults (used only when codec=AAC)
+    app_config.audio_speex_enable = true;
+    app_config.audio_speex_denoise = true;
+    app_config.audio_speex_agc = true;
+    app_config.audio_speex_vad = true;
+    app_config.audio_speex_dereverb = false; // heavy / experimental in upstream
+    // 0 = auto (computed at runtime as srate/50 i.e. 20ms).
+    app_config.audio_speex_frame_size = 0;
+    app_config.audio_speex_noise_suppress_db = -20;
+    app_config.audio_speex_agc_level = 24000;
+    app_config.audio_speex_agc_increment = 12;
+    app_config.audio_speex_agc_decrement = 40;
+    app_config.audio_speex_agc_max_gain_db = 30;
+    app_config.audio_speex_vad_prob_start = 60;
+    app_config.audio_speex_vad_prob_continue = 45;
     app_config.mp4_enable = false;
 
     // JPEG/MJPEG stream (multipart/x-mixed-replace). Snapshots use last MJPEG frame.
@@ -515,12 +555,47 @@ enum ConfigError parse_app_config(void) {
             }
         }
         parse_int(&ini, "audio", "bitrate", 32, 320, &app_config.audio_bitrate);
-        parse_int(&ini, "audio", "gain", -60, 30, &app_config.audio_gain);
+        // `audio.gain` semantics are platform-specific.
+        // - hisi/v4: user-friendly 0..100 (50 = unity gain, 0 = quieter, 100 = louder)
+        // - others: legacy dB level range (-60..+30) used by platform HALs
+        if (plat == HAL_PLATFORM_V4)
+            parse_int(&ini, "audio", "gain", 0, 100, &app_config.audio_gain);
+        else
+            parse_int(&ini, "audio", "gain", -60, 30, &app_config.audio_gain);
         err = parse_int(&ini, "audio", "srate", 8000, 96000, 
             &app_config.audio_srate);
         if (err != CONFIG_OK)
             goto RET_ERR;
         parse_int(&ini, "audio", "channels", 1, 2, (int *)&app_config.audio_channels);
+
+        // AAC-only advanced options (FAAC).
+        // `aac_quantqual` enables quality/VBR mode when > 0 (range 10..5000 in our FAAC build).
+        // In this mode `bitrate` is ignored by FAAC (bitRate=0).
+        parse_int(&ini, "audio", "aac_quantqual", 0, 5000, (int *)&app_config.audio_aac_quantqual);
+        // Encoder bandwidth in Hz; 0 lets FAAC choose defaults.
+        parse_int(&ini, "audio", "aac_bandwidth", 0, 96000, (int *)&app_config.audio_aac_bandwidth);
+        // Temporal Noise Shaping (TNS).
+        parse_bool(&ini, "audio", "aac_tns", &app_config.audio_aac_tns);
+
+        // SpeexDSP preprocess options (used only when codec=AAC).
+        parse_bool(&ini, "audio", "speex_enable", &app_config.audio_speex_enable);
+        parse_bool(&ini, "audio", "speex_denoise", &app_config.audio_speex_denoise);
+        parse_bool(&ini, "audio", "speex_agc", &app_config.audio_speex_agc);
+        parse_bool(&ini, "audio", "speex_vad", &app_config.audio_speex_vad);
+        parse_bool(&ini, "audio", "speex_dereverb", &app_config.audio_speex_dereverb);
+        {
+            int fs = 0;
+            // 0 or missing = auto (srate/50). Values < 80 are clamped at runtime.
+            if (parse_int(&ini, "audio", "speex_frame_size", 0, 8192, &fs) == CONFIG_OK)
+                app_config.audio_speex_frame_size = (unsigned int)fs;
+        }
+        parse_int(&ini, "audio", "speex_noise_suppress_db", -60, 0, &app_config.audio_speex_noise_suppress_db);
+        parse_int(&ini, "audio", "speex_agc_level", 1, 32768, &app_config.audio_speex_agc_level);
+        parse_int(&ini, "audio", "speex_agc_increment", 0, 100, &app_config.audio_speex_agc_increment);
+        parse_int(&ini, "audio", "speex_agc_decrement", 0, 100, &app_config.audio_speex_agc_decrement);
+        parse_int(&ini, "audio", "speex_agc_max_gain_db", 0, 60, &app_config.audio_speex_agc_max_gain_db);
+        parse_int(&ini, "audio", "speex_vad_prob_start", 0, 100, &app_config.audio_speex_vad_prob_start);
+        parse_int(&ini, "audio", "speex_vad_prob_continue", 0, 100, &app_config.audio_speex_vad_prob_continue);
     }
 
     parse_bool(&ini, "mp4", "enable", &app_config.mp4_enable);

@@ -97,6 +97,37 @@ struct AppConfig {
     int audio_gain;
     unsigned int audio_srate;
     unsigned char audio_channels;
+    // AAC (FAAC) advanced tuning. These are ignored unless audio_codec == AAC.
+    // - aac_quantqual: if > 0 enables quality/VBR mode (FAAC quantqual) and disables `audio_bitrate`.
+    // - aac_bandwidth: encoder bandwidth in Hz (0 = auto).
+    // - aac_tns: enable Temporal Noise Shaping.
+    unsigned int audio_aac_quantqual;
+    unsigned int audio_aac_bandwidth;
+    bool audio_aac_tns;
+
+    // SpeexDSP (preprocess) for AAC PCM path (denoise/AGC/VAD/dereverb).
+    // NOTE: This is applied only when audio_codec == AAC and channels == 1.
+    bool audio_speex_enable;              // master switch (bypass everything when false)
+    bool audio_speex_denoise;
+    bool audio_speex_agc;
+    bool audio_speex_vad;
+    bool audio_speex_dereverb;
+    // Number of PCM samples per channel per preprocess call.
+    // Typical values: 160 @ 8kHz, 320 @ 16kHz, 960 @ 48kHz (20 ms).
+    // If 0, it's computed automatically as `audio_srate / 50` (20 ms).
+    unsigned int audio_speex_frame_size;
+    // Noise suppression (dB), typical -15..-30.
+    int audio_speex_noise_suppress_db;
+    // AGC target level (SpeexDSP expects float in floating-point builds).
+    // SpeexDSP clamps it to [1..32768].
+    int audio_speex_agc_level;
+    // AGC speed and limits (dB units expected by SpeexDSP ctl).
+    int audio_speex_agc_increment;
+    int audio_speex_agc_decrement;
+    int audio_speex_agc_max_gain_db;
+    // VAD thresholds as probabilities in percent [0..100].
+    int audio_speex_vad_prob_start;
+    int audio_speex_vad_prob_continue;
 
     // [mp4]
     bool mp4_enable;

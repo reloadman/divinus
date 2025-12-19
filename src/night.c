@@ -40,6 +40,16 @@ static unsigned long long night_now_ms(void) {
     return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
 }
 
+// Sleep in small chunks so disable_night() can join quickly.
+// Avoids blocking HTTP handlers (e.g. /api/night) on long check_interval_s sleeps.
+static void night_sleep_ms_interruptible(unsigned int ms) {
+    while (keepRunning && nightOn && ms) {
+        unsigned int step = (ms > 50) ? 50 : ms;
+        usleep(step * 1000);
+        ms -= step;
+    }
+}
+
 void night_grayscale(bool enable) {
     set_grayscale(enable);
     grayscale = enable;
@@ -155,7 +165,7 @@ void *night_thread(void) {
             HAL_WARNING("night",
                 "ISP ISO thresholds invalid (isp_iso_low=%d isp_iso_hi=%d), ignoring\n",
                 app_config.isp_iso_low, app_config.isp_iso_hi);
-            while (keepRunning && nightOn) sleep(1);
+            while (keepRunning && nightOn) night_sleep_ms_interruptible(1000);
         } else {
             const unsigned int lockout_s = app_config.isp_switch_lockout_s;
             const unsigned int probe_settle_ms = 1200; // allow AE to re-converge after toggling IR
@@ -198,7 +208,7 @@ void *night_thread(void) {
                             if (lockout_s == 0 || now - last_switch_ms >= (unsigned long long)lockout_s * 1000ull) {
                                 // Probe DAY
                                 night_mode(false);
-                                usleep(probe_settle_ms * 1000);
+                                night_sleep_ms_interruptible(probe_settle_ms);
                                 // Sample a few times without IR; if ISO stays above iso_low,
                                 // ambient is still dark -> revert to IR.
                                 int max_iso2 = -1;
@@ -207,7 +217,7 @@ void *night_thread(void) {
                                     if (get_isp_exposure_info(&iso2, &exptime2, &again2, &dgain2, &ispdgain2, &ismax2) == EXIT_SUCCESS) {
                                         if ((int)iso2 > max_iso2) max_iso2 = (int)iso2;
                                     }
-                                    usleep(200 * 1000);
+                                    night_sleep_ms_interruptible(200);
                                 }
                                 if (max_iso2 >= 0 && max_iso2 > app_config.isp_iso_low) {
                                     night_mode(true);
@@ -217,7 +227,7 @@ void *night_thread(void) {
                         }
                     }
                 }
-                sleep(app_config.check_interval_s);
+                night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
             }
         }
     } else if (app_config.isp_lum_low >= 0 && app_config.isp_lum_hi >= 0) {
@@ -225,7 +235,7 @@ void *night_thread(void) {
             HAL_WARNING("night",
                 "ISP luminance thresholds invalid (isp_lum_low=%d isp_lum_hi=%d), ignoring\n",
                 app_config.isp_lum_low, app_config.isp_lum_hi);
-            while (keepRunning && nightOn) sleep(1);
+            while (keepRunning && nightOn) night_sleep_ms_interruptible(1000);
         } else {
             HAL_INFO("night",
                 "Using ISP luminance source (u8AveLum): low=%d hi=%d interval=%us\n",
@@ -252,7 +262,7 @@ void *night_thread(void) {
                         else if ((int)lum >= app_config.isp_lum_hi) night_mode(false);
                     }
                 }
-                sleep(app_config.check_interval_s);
+                night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
             }
         }
     } else if (app_config.adc_device[0]) {
@@ -275,11 +285,11 @@ void *night_thread(void) {
                 if (!manual) night_mode(tmp >= app_config.adc_threshold);
                 cnt = tmp = 0;
             }
-            usleep(app_config.check_interval_s * 1000000 / 12);
+            night_sleep_ms_interruptible((app_config.check_interval_s * 1000u) / 12u);
         }
         if (adc_fd) close(adc_fd);
     } else if (app_config.ir_sensor_pin == 999) {
-        while (keepRunning && nightOn) sleep(1);
+        while (keepRunning && nightOn) night_sleep_ms_interruptible(1000);
     } else {
         // Apply immediately once at start (do not wait check_interval_s).
         {
@@ -290,11 +300,11 @@ void *night_thread(void) {
         while (keepRunning && nightOn) {
             bool state = false;
             if (gpio_read(app_config.ir_sensor_pin, &state) != EXIT_SUCCESS) {
-                sleep(app_config.check_interval_s);
+                night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
                 continue;
             }
             if (!manual) night_mode(state);
-            sleep(app_config.check_interval_s);
+            night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
         }
     }
 
