@@ -1,5 +1,6 @@
 #include "media.h"
 #include "hal/config.h"
+#include <stdint.h>
 #include <faac.h>
 #if defined(DIVINUS_WITH_SPEEXDSP)
 #include <speex/speex_preprocess.h>
@@ -93,14 +94,195 @@ int media_get_last_mjpeg_frame(hal_jpegdata *jpeg, unsigned int timeout_ms) {
 // When exceeded, we drop queued audio to keep capture threads healthy.
 #define AUDIO_ENC_BUF_MAX (32 * 1024)
 
-struct BitBuf mp3Buf;
+// Simple ring buffers to avoid memmove() in hot audio paths.
+typedef struct {
+    uint8_t *buf;
+    uint32_t size;   // capacity in bytes
+    uint32_t rpos;   // read index
+    uint32_t wpos;   // write index
+    uint32_t offset; // used bytes (kept for compatibility with old code patterns)
+} AudioByteRing;
+
+typedef struct {
+    int16_t *buf;
+    uint32_t cap;    // capacity in samples (int16_t)
+    uint32_t rpos;
+    uint32_t wpos;
+    uint32_t len;    // used samples
+} PcmRing;
+
+static inline void audio_ring_reset(AudioByteRing *q) {
+    if (!q) return;
+    q->rpos = 0;
+    q->wpos = 0;
+    q->offset = 0;
+}
+
+static inline int audio_ring_init(AudioByteRing *q, uint32_t cap) {
+    if (!q) return 0;
+    if (cap == 0) cap = AUDIO_ENC_BUF_MAX;
+    if (q->buf && q->size == cap) {
+        audio_ring_reset(q);
+        return 1;
+    }
+    free(q->buf);
+    q->buf = (uint8_t *)malloc(cap);
+    q->size = q->buf ? cap : 0;
+    audio_ring_reset(q);
+    return q->buf != NULL;
+}
+
+static inline void audio_ring_free(AudioByteRing *q) {
+    if (!q) return;
+    free(q->buf);
+    q->buf = NULL;
+    q->size = 0;
+    q->rpos = q->wpos = q->offset = 0;
+}
+
+static inline uint32_t audio_ring_space(const AudioByteRing *q) {
+    return (!q || q->size < q->offset) ? 0 : (q->size - q->offset);
+}
+
+static inline int audio_ring_write(AudioByteRing *q, const void *data, uint32_t n) {
+    if (!q || !q->buf || q->size == 0 || !data || n == 0) return 0;
+    if (n > q->size) {
+        // Single frame doesn't fit even in empty queue.
+        audio_ring_reset(q);
+        return 0;
+    }
+    if (audio_ring_space(q) < n) {
+        // Drop queued audio and keep newest (matches old behavior).
+        audio_ring_reset(q);
+    }
+    // Write in up to 2 segments (wrap).
+    uint32_t first = q->size - q->wpos;
+    if (first > n) first = n;
+    memcpy(q->buf + q->wpos, data, first);
+    if (n > first)
+        memcpy(q->buf, (const uint8_t *)data + first, n - first);
+    q->wpos = (q->wpos + n) % q->size;
+    q->offset += n;
+    return 1;
+}
+
+static inline int audio_ring_peek(const AudioByteRing *q, uint32_t off, void *out, uint32_t n) {
+    if (!q || !q->buf || !out || n == 0) return 0;
+    if (off + n > q->offset) return 0;
+    uint32_t pos = (q->rpos + off) % q->size;
+    uint32_t first = q->size - pos;
+    if (first > n) first = n;
+    memcpy(out, q->buf + pos, first);
+    if (n > first)
+        memcpy((uint8_t *)out + first, q->buf, n - first);
+    return 1;
+}
+
+static inline int audio_ring_drop(AudioByteRing *q, uint32_t n) {
+    if (!q || !q->buf || n == 0) return 1;
+    if (n > q->offset) return 0;
+    q->rpos = (q->rpos + n) % q->size;
+    q->offset -= n;
+    return 1;
+}
+
+static inline int audio_ring_read(AudioByteRing *q, void *out, uint32_t n) {
+    if (!audio_ring_peek(q, 0, out, n)) return 0;
+    return audio_ring_drop(q, n);
+}
+
+static inline uint16_t read_u16_le_bytes(const uint8_t b[2]) {
+    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+}
+
+static inline uint64_t read_u64_le_bytes(const uint8_t b[8]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= ((uint64_t)b[i]) << (8 * i);
+    return v;
+}
+
+static inline void write_u16_le_bytes(uint8_t b[2], uint16_t v) {
+    b[0] = (uint8_t)(v & 0xFF);
+    b[1] = (uint8_t)((v >> 8) & 0xFF);
+}
+
+static inline void write_u64_le_bytes(uint8_t b[8], uint64_t v) {
+    for (int i = 0; i < 8; i++)
+        b[i] = (uint8_t)((v >> (i * 8)) & 0xFF);
+}
+
+static inline void pcm_ring_reset(PcmRing *r) {
+    if (!r) return;
+    r->rpos = 0;
+    r->wpos = 0;
+    r->len = 0;
+}
+
+static inline int pcm_ring_init(PcmRing *r, uint32_t cap_samples) {
+    if (!r) return 0;
+    if (cap_samples == 0) return 0;
+    if (r->buf && r->cap == cap_samples) {
+        pcm_ring_reset(r);
+        return 1;
+    }
+    free(r->buf);
+    r->buf = (int16_t *)calloc(cap_samples, sizeof(int16_t));
+    r->cap = r->buf ? cap_samples : 0;
+    pcm_ring_reset(r);
+    return r->buf != NULL;
+}
+
+static inline void pcm_ring_free(PcmRing *r) {
+    if (!r) return;
+    free(r->buf);
+    r->buf = NULL;
+    r->cap = 0;
+    r->rpos = r->wpos = r->len = 0;
+}
+
+static inline int pcm_ring_write(PcmRing *r, const int16_t *samples, uint32_t n) {
+    if (!r || !r->buf || r->cap == 0 || !samples || n == 0) return 0;
+    if (n > r->cap) {
+        // Keep the newest tail that fits.
+        samples = samples + (n - r->cap);
+        n = r->cap;
+        pcm_ring_reset(r);
+    } else if (r->cap - r->len < n) {
+        // Drop queued samples; keep newest (matches old behavior).
+        pcm_ring_reset(r);
+    }
+    uint32_t first = r->cap - r->wpos;
+    if (first > n) first = n;
+    memcpy(r->buf + r->wpos, samples, first * sizeof(int16_t));
+    if (n > first)
+        memcpy(r->buf, samples + first, (n - first) * sizeof(int16_t));
+    r->wpos = (r->wpos + n) % r->cap;
+    r->len += n;
+    return 1;
+}
+
+static inline int pcm_ring_read(PcmRing *r, int16_t *out, uint32_t n) {
+    if (!r || !r->buf || !out || n == 0) return 0;
+    if (n > r->len) return 0;
+    uint32_t first = r->cap - r->rpos;
+    if (first > n) first = n;
+    memcpy(out, r->buf + r->rpos, first * sizeof(int16_t));
+    if (n > first)
+        memcpy(out + first, r->buf, (n - first) * sizeof(int16_t));
+    r->rpos = (r->rpos + n) % r->cap;
+    r->len -= n;
+    return 1;
+}
+
+static AudioByteRing mp3Buf;
 shine_config_t mp3Cnf;
 shine_t mp3Enc;
 unsigned int pcmPos;
 unsigned int pcmSamp;
 short pcmSrc[SHINE_MAX_SAMPLES];
 
-struct BitBuf aacBuf;
+static AudioByteRing aacBuf;
 faacEncHandle aacEnc = NULL;
 unsigned long aacInputSamples = 0;
 unsigned long aacMaxOutputBytes = 0;
@@ -108,9 +290,7 @@ int16_t *aacPcm = NULL;      // encoder input buffer (16-bit LE PCM)
 unsigned char *aacOut = NULL;
 unsigned int aacPcmPos = 0;
 unsigned int aacChannels = 1;
-int16_t *aacStash = NULL;    // stash of incoming PCM (16-bit LE samples)
-unsigned int aacStashLen = 0;
-uint64_t aacStashTsUs = 0;
+static PcmRing aacPcmStash;  // stash of incoming PCM (16-bit LE samples)
 
 #if defined(DIVINUS_WITH_SPEEXDSP)
 // SpeexDSP preprocess state for AAC PCM path (optional).
@@ -120,9 +300,8 @@ static struct {
     unsigned int channels;
     unsigned int frame_size;      // samples per channel per preprocess run
     int active;
-    int16_t *stash;               // input stash (interleaved, but we only support mono)
-    unsigned int stash_len;       // in samples (int16_t)
-    unsigned int stash_cap;       // in samples (int16_t)
+    PcmRing in;                   // input FIFO (mono)
+    int16_t *frame;               // frame_size samples scratch for preprocess
 } speex_aac = {0};
 #endif
 
@@ -157,19 +336,9 @@ static int save_audio_stream_mp3(hal_audframe *frame);
 static int save_audio_stream_aac(hal_audframe *frame);
 
 static inline void aac_stash_append(const int16_t *pcm16, unsigned int total_samples) {
-    if (!aacStash || total_samples == 0)
+    if (total_samples == 0)
         return;
-    // Keep enough headroom for jitter/bursts (matches existing allocation).
-    unsigned int channels = aacChannels ? aacChannels : 1;
-    unsigned int max_stash = (unsigned int)aacInputSamples * channels * 4U;
-    if (aacStashLen + total_samples > max_stash) {
-        // If encoder can't keep up, drop accumulated samples and keep newest.
-        aacStashLen = 0;
-    }
-    if (aacStashLen + total_samples <= max_stash) {
-        memcpy(aacStash + aacStashLen, pcm16, total_samples * sizeof(int16_t));
-        aacStashLen += total_samples;
-    }
+    (void)pcm_ring_write(&aacPcmStash, pcm16, (uint32_t)total_samples);
 }
 
 #if defined(DIVINUS_WITH_SPEEXDSP)
@@ -178,10 +347,9 @@ static void speex_aac_reset(void) {
         speex_preprocess_state_destroy(speex_aac.st);
         speex_aac.st = NULL;
     }
-    free(speex_aac.stash);
-    speex_aac.stash = NULL;
-    speex_aac.stash_len = 0;
-    speex_aac.stash_cap = 0;
+    pcm_ring_free(&speex_aac.in);
+    free(speex_aac.frame);
+    speex_aac.frame = NULL;
     speex_aac.srate = 0;
     speex_aac.channels = 0;
     speex_aac.frame_size = 0;
@@ -247,10 +415,16 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
 
     // Allocate stash for incoming PCM. Keep a small multiple of frame size.
     unsigned int cap = frame_size * 8U;
-    int16_t *stash = calloc(cap, sizeof(int16_t));
-    if (!stash) {
-        HAL_ERROR("media", "SpeexDSP stash allocation failed (%u samples); bypassing.\n", cap);
+    if (!pcm_ring_init(&speex_aac.in, cap)) {
+        HAL_ERROR("media", "SpeexDSP ring allocation failed (%u samples); bypassing.\n", cap);
         speex_preprocess_state_destroy(st);
+        return;
+    }
+    int16_t *frame = (int16_t *)malloc(frame_size * sizeof(int16_t));
+    if (!frame) {
+        HAL_ERROR("media", "SpeexDSP frame allocation failed (%u samples); bypassing.\n", frame_size);
+        speex_preprocess_state_destroy(st);
+        pcm_ring_free(&speex_aac.in);
         return;
     }
 
@@ -258,9 +432,7 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
     speex_aac.srate = srate;
     speex_aac.channels = channels;
     speex_aac.frame_size = frame_size;
-    speex_aac.stash = stash;
-    speex_aac.stash_cap = cap;
-    speex_aac.stash_len = 0;
+    speex_aac.frame = frame;
     speex_aac.active = 1;
 
     HAL_INFO("media", "SpeexDSP preprocess enabled for AAC: frame_size=%u srate=%u (denoise=%d agc=%d vad=%d dereverb=%d)\n",
@@ -272,7 +444,7 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
 }
 
 static inline void speex_aac_push_pcm(const int16_t *pcm16, unsigned int total_samples) {
-    if (!speex_aac.active || !speex_aac.st || !speex_aac.stash || total_samples == 0) {
+    if (!speex_aac.active || !speex_aac.st || !speex_aac.in.buf || !speex_aac.frame || total_samples == 0) {
         aac_stash_append(pcm16, total_samples);
         return;
     }
@@ -284,40 +456,13 @@ static inline void speex_aac_push_pcm(const int16_t *pcm16, unsigned int total_s
         return;
     }
 
-    // Ensure stash can hold the incoming block; if not, drop buffered data.
-    if (total_samples > speex_aac.stash_cap) {
-        // Worst case: input chunk larger than our stash. Process in-place by chunks.
-        unsigned int pos = 0;
-        while (pos + frame_samples <= total_samples) {
-            // Copy into stash to run preprocess (needs mutable buffer).
-            memcpy(speex_aac.stash, pcm16 + pos, frame_samples * sizeof(int16_t));
-            speex_preprocess_run(speex_aac.st, (spx_int16_t *)speex_aac.stash);
-            aac_stash_append(speex_aac.stash, frame_samples);
-            pos += frame_samples;
-        }
-        if (pos < total_samples) {
-            aac_stash_append(pcm16 + pos, total_samples - pos);
-        }
-        return;
-    }
-
-    if (speex_aac.stash_len + total_samples > speex_aac.stash_cap) {
-        speex_aac.stash_len = 0;
-    }
-    if (speex_aac.stash_len + total_samples <= speex_aac.stash_cap) {
-        memcpy(speex_aac.stash + speex_aac.stash_len, pcm16, total_samples * sizeof(int16_t));
-        speex_aac.stash_len += total_samples;
-    }
-
-    while (speex_aac.stash_len >= frame_samples) {
-        // Run preprocess on the first frame in stash.
-        speex_preprocess_run(speex_aac.st, (spx_int16_t *)speex_aac.stash);
-        aac_stash_append(speex_aac.stash, frame_samples);
-
-        unsigned int remain = speex_aac.stash_len - frame_samples;
-        if (remain)
-            memmove(speex_aac.stash, speex_aac.stash + frame_samples, remain * sizeof(int16_t));
-        speex_aac.stash_len = remain;
+    // Push into FIFO and process full frames.
+    (void)pcm_ring_write(&speex_aac.in, pcm16, total_samples);
+    while (speex_aac.in.len >= frame_samples) {
+        if (!pcm_ring_read(&speex_aac.in, speex_aac.frame, frame_samples))
+            break;
+        speex_preprocess_run(speex_aac.st, (spx_int16_t *)speex_aac.frame);
+        aac_stash_append(speex_aac.frame, frame_samples);
     }
 }
 #endif
@@ -339,13 +484,18 @@ static void *aenc_thread_mp3(void) {
             usleep(10000);
             continue;
         }
-
-        frame_len = (uint8_t)mp3Buf.buf[0] | ((uint8_t)mp3Buf.buf[1] << 8);
+        uint8_t len_hdr[2];
+        if (!audio_ring_peek(&mp3Buf, 0, len_hdr, sizeof(len_hdr))) {
+            pthread_mutex_unlock(&aencMtx);
+            usleep(10000);
+            continue;
+        }
+        frame_len = read_u16_le_bytes(len_hdr);
         if (!frame_len || frame_len > mp3Buf.size) {
             // Corrupted length; drop buffer to resync.
-            HAL_WARNING("media", "MP3 frame_len invalid: %u offset=%u\n",
+            HAL_WARNING("media", "MP3 frame_len invalid: %u queued=%u\n",
                 frame_len, mp3Buf.offset);
-            mp3Buf.offset = 0;
+            audio_ring_reset(&mp3Buf);
             pthread_mutex_unlock(&aencMtx);
             continue;
         }
@@ -356,19 +506,19 @@ static void *aenc_thread_mp3(void) {
             continue;
         }
 
-        char *payload = mp3Buf.buf + sizeof(uint16_t);
-
-        // Basic MPEG audio sync check to avoid sending garbage.
+        // Basic MPEG audio sync check to avoid sending garbage (best-effort).
         if (frame_len >= 2) {
-            uint16_t hdr = (uint8_t)payload[0] << 8 | (uint8_t)payload[1];
-            if ((hdr & 0xFFE0) != 0xFFE0) {
-                HAL_WARNING("media", "MP3 desync: hdr=%04x offset=%u len=%u\n",
-                    hdr, mp3Buf.offset, frame_len);
-                // Drop one byte to try to resync.
-                memmove(mp3Buf.buf, mp3Buf.buf + 1, mp3Buf.offset - 1);
-                mp3Buf.offset -= 1;
-                pthread_mutex_unlock(&aencMtx);
-                continue;
+            uint8_t mp3_hdr[2];
+            if (audio_ring_peek(&mp3Buf, sizeof(uint16_t), mp3_hdr, sizeof(mp3_hdr))) {
+                uint16_t hdr = ((uint16_t)mp3_hdr[0] << 8) | (uint16_t)mp3_hdr[1];
+                if ((hdr & 0xFFE0) != 0xFFE0) {
+                    HAL_WARNING("media", "MP3 desync: hdr=%04x queued=%u len=%u\n",
+                        hdr, mp3Buf.offset, frame_len);
+                    // Drop one byte and retry to resync.
+                    (void)audio_ring_drop(&mp3Buf, 1);
+                    pthread_mutex_unlock(&aencMtx);
+                    continue;
+                }
             }
         }
 
@@ -377,19 +527,22 @@ static void *aenc_thread_mp3(void) {
             if (!nb) {
                 // Out of memory: drop queued audio and continue.
                 HAL_ERROR("media", "MP3 send buffer realloc failed (%u)\n", frame_len);
-                mp3Buf.offset = 0;
+                audio_ring_reset(&mp3Buf);
                 pthread_mutex_unlock(&aencMtx);
                 continue;
             }
             mp3_send_buf = nb;
             mp3_send_cap = frame_len;
         }
-        memcpy(mp3_send_buf, payload, frame_len);
 
-        // Remove extracted frame from queue.
-        mp3Buf.offset -= (uint32_t)frame_len + sizeof(uint16_t);
-        if (mp3Buf.offset)
-            memmove(mp3Buf.buf, mp3Buf.buf + frame_len + sizeof(uint16_t), mp3Buf.offset);
+        // Consume header + payload without memmove().
+        (void)audio_ring_drop(&mp3Buf, sizeof(uint16_t));
+        if (!audio_ring_read(&mp3Buf, mp3_send_buf, frame_len)) {
+            // Queue got inconsistent; reset and retry.
+            audio_ring_reset(&mp3Buf);
+            pthread_mutex_unlock(&aencMtx);
+            continue;
+        }
         pthread_mutex_unlock(&aencMtx);
 
         // Send/ingest WITHOUT holding aencMtx (avoid stalling MI_AI fetch thread).
@@ -417,14 +570,19 @@ static void *aenc_thread_aac(void) {
             continue;
         }
 
-        frame_len = (uint8_t)aacBuf.buf[0] |
-            ((uint8_t)aacBuf.buf[1] << 8);
-        memcpy(&ts_us, aacBuf.buf + sizeof(uint16_t), sizeof(uint64_t));
+        uint8_t hdr[2 + 8];
+        if (!audio_ring_peek(&aacBuf, 0, hdr, sizeof(hdr))) {
+            pthread_mutex_unlock(&aencMtx);
+            usleep(10000);
+            continue;
+        }
+        frame_len = read_u16_le_bytes(hdr);
+        ts_us = read_u64_le_bytes(hdr + 2);
 
         if (frame_len == 0 || frame_len > aacMaxOutputBytes) {
-            HAL_WARNING("media", "AAC frame_len invalid: %u offset=%u\n",
+            HAL_WARNING("media", "AAC frame_len invalid: %u queued=%u\n",
                 frame_len, aacBuf.offset);
-            aacBuf.offset = 0;
+            audio_ring_reset(&aacBuf);
             pthread_mutex_unlock(&aencMtx);
             continue;
         }
@@ -435,27 +593,25 @@ static void *aenc_thread_aac(void) {
             continue;
         }
 
-        unsigned char *payload =
-            (unsigned char *)(aacBuf.buf + sizeof(uint16_t) + sizeof(uint64_t));
-
         if (frame_len > aac_send_cap) {
             unsigned char *nb = realloc(aac_send_buf, frame_len);
             if (!nb) {
                 HAL_ERROR("media", "AAC send buffer realloc failed (%u)\n", frame_len);
-                aacBuf.offset = 0;
+                audio_ring_reset(&aacBuf);
                 pthread_mutex_unlock(&aencMtx);
                 continue;
             }
             aac_send_buf = nb;
             aac_send_cap = frame_len;
         }
-        memcpy(aac_send_buf, payload, frame_len);
 
-        aacBuf.offset -= frame_len + sizeof(uint16_t) + sizeof(uint64_t);
-        if (aacBuf.offset)
-            memmove(aacBuf.buf,
-                aacBuf.buf + frame_len + sizeof(uint16_t) + sizeof(uint64_t),
-                aacBuf.offset);
+        // Consume header + payload without memmove().
+        (void)audio_ring_drop(&aacBuf, sizeof(uint16_t) + sizeof(uint64_t));
+        if (!audio_ring_read(&aacBuf, aac_send_buf, frame_len)) {
+            audio_ring_reset(&aacBuf);
+            pthread_mutex_unlock(&aencMtx);
+            continue;
+        }
         pthread_mutex_unlock(&aencMtx);
 
         pthread_mutex_lock(&mp4Mtx);
@@ -504,22 +660,20 @@ static int save_audio_stream_mp3(hal_audframe *frame) {
             shine_encode_buffer_interleaved(mp3Enc, pcmSrc, &ret);
         pthread_mutex_lock(&aencMtx);
         if (ret > 0) {
+            if (!mp3Buf.buf || mp3Buf.size != AUDIO_ENC_BUF_MAX)
+                (void)audio_ring_init(&mp3Buf, AUDIO_ENC_BUF_MAX);
+
             const uint32_t need = (uint32_t)ret + sizeof(uint16_t);
-            if (!mp3Buf.buf && mp3Buf.size == 0) {
-                mp3Buf.buf = malloc(AUDIO_ENC_BUF_MAX);
-                mp3Buf.size = mp3Buf.buf ? AUDIO_ENC_BUF_MAX : 0;
-                mp3Buf.offset = 0;
-            }
-            // Drop queued audio when buffer is full; keep capture thread real-time.
-            if (mp3Buf.size && (mp3Buf.offset + need > mp3Buf.size))
-                mp3Buf.offset = 0;
-            if (mp3Buf.size && need <= mp3Buf.size) {
-                enum BufError e1 = put_u16_le(&mp3Buf, (uint16_t)ret);
-                enum BufError e2 = put(&mp3Buf, (char *)mp3Ptr, (uint32_t)ret);
-                if (e1 != BUF_OK || e2 != BUF_OK) {
-                    HAL_WARNING("media", "MP3 buffer put failed e1=%d e2=%d (drop)\n", e1, e2);
-                    mp3Buf.offset = 0;
-                }
+            if (need > mp3Buf.size) {
+                // Frame too large for queue; drop.
+                audio_ring_reset(&mp3Buf);
+            } else {
+                if (audio_ring_space(&mp3Buf) < need)
+                    audio_ring_reset(&mp3Buf);
+                uint8_t len_hdr[2];
+                write_u16_le_bytes(len_hdr, (uint16_t)ret);
+                (void)audio_ring_write(&mp3Buf, len_hdr, sizeof(len_hdr));
+                (void)audio_ring_write(&mp3Buf, mp3Ptr, (uint32_t)ret);
             }
         }
         pthread_mutex_unlock(&aencMtx);
@@ -575,14 +729,10 @@ static int save_audio_stream_aac(hal_audframe *frame) {
 #endif
 
     // Consume stash in blocks of aacInputSamples * channels (16-bit LE).
-    while (aacStash && aacStashLen >= (unsigned int)aacInputSamples * channels) {
-        memcpy(aacPcm, aacStash, (unsigned int)aacInputSamples * channels * sizeof(int16_t));
-
-        unsigned int remain = aacStashLen - (unsigned int)aacInputSamples * channels;
-        if (remain)
-            memmove(aacStash, aacStash + (unsigned int)aacInputSamples * channels,
-                remain * sizeof(int16_t));
-        aacStashLen = remain;
+    const uint32_t need_samples = (uint32_t)aacInputSamples * channels;
+    while (aacPcmStash.buf && aacPcmStash.len >= need_samples) {
+        if (!pcm_ring_read(&aacPcmStash, aacPcm, need_samples))
+            break;
 
         int bytes = faacEncEncode(aacEnc, (int32_t *)aacPcm, (unsigned int)aacInputSamples,
             aacOut, aacMaxOutputBytes);
@@ -609,25 +759,22 @@ static int save_audio_stream_aac(hal_audframe *frame) {
         uint64_t ts_us = 0;
 
         pthread_mutex_lock(&aencMtx);
-        if (!aacBuf.buf || aacBuf.size != AUDIO_ENC_BUF_MAX) {
-            free(aacBuf.buf);
-            aacBuf.buf = malloc(AUDIO_ENC_BUF_MAX);
-            aacBuf.size = aacBuf.buf ? AUDIO_ENC_BUF_MAX : 0;
-            aacBuf.offset = 0;
-        }
-        // Drop queued audio if buffer would overflow. Keep capture thread real-time.
+        if (!aacBuf.buf || aacBuf.size != AUDIO_ENC_BUF_MAX)
+            (void)audio_ring_init(&aacBuf, AUDIO_ENC_BUF_MAX);
+
         const uint32_t need = (uint32_t)bytes + sizeof(uint16_t) + sizeof(uint64_t);
-        if (aacBuf.size && (aacBuf.offset + need > aacBuf.size))
-            aacBuf.offset = 0;
-        enum BufError e1 = put_u16_le(&aacBuf, (uint16_t)bytes);
-        char ts_buf[8];
-        for (int i = 0; i < 8; i++) ts_buf[i] = (ts_us >> (i * 8)) & 0xFF;
-        enum BufError e2 = put(&aacBuf, ts_buf, 8);
-        enum BufError e3 = put(&aacBuf, (char *)aacOut, (uint32_t)bytes);
-        if (e1 != BUF_OK || e2 != BUF_OK || e3 != BUF_OK) {
-            HAL_ERROR("media", "AAC buffer put failed e1=%d e2=%d e3=%d\n", e1, e2, e3);
-            aacBuf.offset = 0;
-        } else if (log_ok < 3) {
+        if (need > aacBuf.size) {
+            audio_ring_reset(&aacBuf);
+        } else {
+            if (audio_ring_space(&aacBuf) < need)
+                audio_ring_reset(&aacBuf);
+            uint8_t hdr[2 + 8];
+            write_u16_le_bytes(hdr, (uint16_t)bytes);
+            write_u64_le_bytes(hdr + 2, ts_us);
+            (void)audio_ring_write(&aacBuf, hdr, sizeof(hdr));
+            (void)audio_ring_write(&aacBuf, aacOut, (uint32_t)bytes);
+        }
+        if (log_ok < 3) {
             HAL_INFO("media", "AAC encoded bytes=%d ts_calc=%llu\n",
                 bytes, (unsigned long long)ts_us);
             log_ok++;
@@ -1002,32 +1149,23 @@ void disable_audio(void) {
             faacEncClose(aacEnc);
         free(aacPcm);
         free(aacOut);
-        free(aacStash);
-        free(aacBuf.buf);
-        aacBuf.buf = NULL;
-        aacBuf.size = 0;
+        pcm_ring_free(&aacPcmStash);
+        audio_ring_free(&aacBuf);
         free(aac_send_buf);
         aac_send_buf = NULL;
         aac_send_cap = 0;
         aacEnc = NULL;
         aacPcm = NULL;
         aacOut = NULL;
-        aacStash = NULL;
         aacInputSamples = 0;
         aacMaxOutputBytes = 0;
         aacPcmPos = 0;
-        aacStashLen = 0;
-        aacStashTsUs = 0;
-        aacBuf.offset = 0;
     } else {
         shine_close(mp3Enc);
-        free(mp3Buf.buf);
-        mp3Buf.buf = NULL;
-        mp3Buf.size = 0;
+        audio_ring_free(&mp3Buf);
         free(mp3_send_buf);
         mp3_send_buf = NULL;
         mp3_send_cap = 0;
-        mp3Buf.offset = 0;
         pcmPos = 0;
     }
     active_audio_codec = HAL_AUDCODEC_UNSPEC;
@@ -1094,14 +1232,8 @@ int enable_audio(void) {
         HAL_ERROR("media", "MP3 samplerate/bitrate configuration is unsupported!\n");
 
     if (active_audio_codec == HAL_AUDCODEC_AAC) {
-        aacBuf.offset = 0;
-        if (!aacBuf.buf || aacBuf.size != AUDIO_ENC_BUF_MAX) {
-            free(aacBuf.buf);
-            aacBuf.buf = malloc(AUDIO_ENC_BUF_MAX);
-            aacBuf.size = aacBuf.buf ? AUDIO_ENC_BUF_MAX : 0;
-            aacBuf.offset = 0;
-        }
-        aacEnc = faacEncOpen(app_config.audio_srate, app_config.audio_channels,
+        (void)audio_ring_init(&aacBuf, AUDIO_ENC_BUF_MAX);
+        aacEnc = faacEncOpen(app_config.audio_srate, aacChannels,
             &aacInputSamples, &aacMaxOutputBytes);
         if (!aacEnc) {
             HAL_ERROR("media", "AAC encoder initialization failed!\n");
@@ -1133,14 +1265,17 @@ int enable_audio(void) {
             return EXIT_FAILURE;
         }
 
-        aacPcm = calloc(aacInputSamples * app_config.audio_channels, sizeof(int16_t));
+        aacPcm = calloc(aacInputSamples * aacChannels, sizeof(int16_t));
         aacOut = malloc(aacMaxOutputBytes);
-        aacStash = calloc(aacInputSamples * app_config.audio_channels * 4, sizeof(int16_t));
-        if (!aacPcm || !aacOut || !aacStash) {
+        if (!pcm_ring_init(&aacPcmStash, (uint32_t)aacInputSamples * aacChannels * 4U)) {
+            HAL_ERROR("media", "AAC PCM stash ring allocation failed!\n");
+            return EXIT_FAILURE;
+        }
+        if (!aacPcm || !aacOut) {
             HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
             return EXIT_FAILURE;
         }
-        aacStashLen = 0;
+        pcm_ring_reset(&aacPcmStash);
         HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
 
 #if defined(DIVINUS_WITH_SPEEXDSP)
@@ -1148,13 +1283,7 @@ int enable_audio(void) {
         speex_aac_init_from_config(app_config.audio_srate, aacChannels);
 #endif
     } else {
-        mp3Buf.offset = 0;
-        if (!mp3Buf.buf || mp3Buf.size != AUDIO_ENC_BUF_MAX) {
-            free(mp3Buf.buf);
-            mp3Buf.buf = malloc(AUDIO_ENC_BUF_MAX);
-            mp3Buf.size = mp3Buf.buf ? AUDIO_ENC_BUF_MAX : 0;
-            mp3Buf.offset = 0;
-        }
+        (void)audio_ring_init(&mp3Buf, AUDIO_ENC_BUF_MAX);
         mp3Cnf.mpeg.mode = MONO;
         mp3Cnf.mpeg.bitr = app_config.audio_bitrate;
         mp3Cnf.mpeg.emph = NONE;
