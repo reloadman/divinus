@@ -91,7 +91,7 @@ int media_get_last_mjpeg_frame(hal_jpegdata *jpeg, unsigned int timeout_ms) {
 
 // Prevent unbounded growth if downstream (network/client) stalls.
 // When exceeded, we drop queued audio to keep capture threads healthy.
-#define AUDIO_ENC_BUF_MAX (512 * 1024)
+#define AUDIO_ENC_BUF_MAX (32 * 1024)
 
 struct BitBuf mp3Buf;
 shine_config_t mp3Cnf;
