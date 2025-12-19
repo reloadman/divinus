@@ -35,7 +35,7 @@
 #define DEFAULT_TCP_CHANNEL_RTP 0
 #define DEFAULT_TCP_CHANNEL_RTCP 1
 // Must match max_buffer passed to smolrtsp_transport_tcp(...) in setup_rtp_transport().
-#define RTSP_TCP_MAX_BUFFER (128 * 1024)
+#define RTSP_TCP_MAX_BUFFER (512 * 1024)
 // When TCP buffer is full, drain oldest interleaved frames down to this size.
 #define RTSP_TCP_TRIM_TARGET (RTSP_TCP_MAX_BUFFER / 2)
 
@@ -273,7 +273,7 @@ static int setup_rtp_transport(
 
         SmolRTSP_Writer writer = SmolRTSP_Context_get_writer(ctx);
         SmolRTSP_Transport t =
-            smolrtsp_transport_tcp(writer, pair.rtp_channel, 256 * 1024 /* max buffer */);
+            smolrtsp_transport_tcp(writer, pair.rtp_channel, RTSP_TCP_MAX_BUFFER /* max buffer */);
 
         SmolRTSP_RtpTransport *rtp = SmolRTSP_RtpTransport_new(t, payload, clock);
 
@@ -1036,14 +1036,32 @@ int smolrtsp_push_video(const uint8_t *buf, size_t len, int is_h265, uint64_t ts
         // IMPORTANT: In RTSP/TCP interleaved mode, audio/video share one output buffer.
         // Under poor TCP conditions video can starve audio. Prefer keeping audio alive:
         // if output is congested, drop VIDEO packets (do not enqueue them).
-        if (SmolRTSP_NalTransport_is_full(c->video_nal) ||
-            bev_output_len(c->bev) > RTSP_TCP_TRIM_TARGET) {
+        const size_t out_len = bev_output_len(c->bev);
+        if (out_len > RTSP_TCP_MAX_BUFFER) {
+            // TCP output is congested; drop oldest interleaved frames to recover.
+            // If we can't trim safely, fall back to dropping newest video.
+            if (trim_tcp_interleaved_oldest(c->bev, RTSP_TCP_TRIM_TARGET) < 0) {
+                static uint64_t last_log = 0;
+                uint64_t now = monotonic_us();
+                if (now - last_log > 1000 * 1000ULL) {
+                    fprintf(stderr,
+                        "[rtsp] video drop: tcp buffer full (no trim) session=%llu len=%zu max=%u target=%u\n",
+                        (unsigned long long)c->session_id, out_len,
+                        (unsigned)RTSP_TCP_MAX_BUFFER, (unsigned)RTSP_TCP_TRIM_TARGET);
+                    last_log = now;
+                }
+                continue;
+            }
+        }
+
+        if (SmolRTSP_NalTransport_is_full(c->video_nal)) {
             static uint64_t last_log = 0;
             uint64_t now = monotonic_us();
             if (now - last_log > 1000 * 1000ULL) {
+                const size_t cur = bev_output_len(c->bev);
                 fprintf(stderr,
-                    "[rtsp] video drop: buffer full session=%llu len=%zu\n",
-                    (unsigned long long)c->session_id, bev_output_len(c->bev));
+                    "[rtsp] video drop: transport full session=%llu len=%zu max=%u\n",
+                    (unsigned long long)c->session_id, cur, (unsigned)RTSP_TCP_MAX_BUFFER);
                 last_log = now;
             }
             continue;
