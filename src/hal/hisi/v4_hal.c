@@ -2608,8 +2608,11 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_ae";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_ae", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_ae", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_ae";
+    } else if (section_pos(ini, "static_ae", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE: no [static_ae] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -2624,13 +2627,13 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
 
     int val;
     // Top-level AE/exposure switches
-    if (parse_int(ini, "static_ae", "ByPass", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ByPass", 0, 1, &val) == CONFIG_OK)
         exp.bByPass = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "HistStatAdjust", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "HistStatAdjust", 0, 1, &val) == CONFIG_OK)
         exp.bHistStatAdjust = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AERunInterval", 1, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AERunInterval", 1, 255, &val) == CONFIG_OK)
         exp.u8AERunInterval = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AERouteExValid", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AERouteExValid", 0, 1, &val) == CONFIG_OK)
         exp.bAERouteExValid = (HI_BOOL)val;
     // If RouteEx table is known to be rejected by this SDK, don't let firmware try to use it.
     if (exp.bAERouteExValid) {
@@ -2639,90 +2642,90 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
         if (disabled) exp.bAERouteExValid = HI_FALSE;
     }
-    if (parse_int(ini, "static_ae", "PriorFrame", 0, 2, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "PriorFrame", 0, 2, &val) == CONFIG_OK)
         exp.enPriorFrame = (ISP_PRIOR_FRAME_E)val;
-    if (parse_int(ini, "static_ae", "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
         exp.bAEGainSepCfg = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AEOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AEOpType", 0, 1, &val) == CONFIG_OK)
         exp.enOpType = (ISP_OP_TYPE_E)val;
 
     // Auto ranges (the most common knobs in vendor IQ)
-    if (parse_int(ini, "static_ae", "AutoExpTimeMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoExpTimeMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stExpTimeRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoExpTimeMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoExpTimeMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stExpTimeRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoAGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stAGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoAGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stAGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stDGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stDGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoISPDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoISPDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stISPDGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoISPDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoISPDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stISPDGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoSysGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSysGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stSysGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stSysGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoGainThreshold", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoGainThreshold", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.u32GainThreshold = (HI_U32)val;
 
     // Auto behavior
-    if (parse_int(ini, "static_ae", "AutoSpeed", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSpeed", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Speed = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoBlackSpeedBias", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoBlackSpeedBias", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16BlackSpeedBias = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoTolerance", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoTolerance", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Tolerance = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoCompensation", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoCompensation", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Compensation = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoEVBias", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoEVBias", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16EVBias = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoAEStrategyMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAEStrategyMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.enAEStrategyMode = (ISP_AE_STRATEGY_E)val;
-    if (parse_int(ini, "static_ae", "AutoHistRatioSlope", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoHistRatioSlope", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16HistRatioSlope = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoMaxHistOffset", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoMaxHistOffset", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8MaxHistOffset = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoAEMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAEMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.enAEMode = (ISP_AE_MODE_E)val;
 
     // Anti-flicker (optional)
-    if (parse_int(ini, "static_ae", "AntiFlickerEnable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerEnable", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.bEnable = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AntiFlickerFrequency", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerFrequency", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.u8Frequency = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AntiFlickerMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.enMode = (ISP_ANTIFLICKER_MODE_E)val;
-    if (parse_int(ini, "static_ae", "SubFlickerEnable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "SubFlickerEnable", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stSubflicker.bEnable = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "SubFlickerLumaDiff", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "SubFlickerLumaDiff", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.stSubflicker.u8LumaDiff = (HI_U8)val;
 
     // Manual exposure (optional)
-    if (parse_int(ini, "static_ae", "ManualExpTimeOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualExpTimeOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enExpTimeOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualAGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualAGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enAGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualDGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualDGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enDGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualISPDGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualISPDGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enISPDGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualExpTime", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualExpTime", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32ExpTime = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualAGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualAGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32AGain = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualDGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualDGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32DGain = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualISPDGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualISPDGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32ISPDGain = (HI_U32)val;
 
-    if (parse_int(ini, "static_ae", "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.stAEDelayAttr.u16BlackDelayFrame = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.stAEDelayAttr.u16WhiteDelayFrame = (HI_U16)val;
 
     ret = v4_isp.fnSetExposureAttr(pipe, &exp);
@@ -3205,8 +3208,11 @@ static int v4_iq_apply_static_aeweight(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE weight: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_aeweight";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_aeweight", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_aeweight", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_aeweight";
+    } else if (section_pos(ini, "static_aeweight", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE weight: no [static_aeweight] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -3226,7 +3232,7 @@ static int v4_iq_apply_static_aeweight(struct IniConfig *ini, int pipe) {
     for (int r = 0; r < AE_ZONE_ROW; r++) {
         char key[32];
         snprintf(key, sizeof(key), "ExpWeight_%d", r);
-        if (parse_param_value(ini, "static_aeweight", key, buf) != CONFIG_OK)
+        if (parse_param_value(ini, sec, key, buf) != CONFIG_OK)
             continue;
         memset(row, 0, sizeof(row));
         int n = v4_iq_parse_csv_u32(buf, row, AE_ZONE_COLUMN);
