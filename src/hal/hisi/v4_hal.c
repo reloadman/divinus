@@ -1622,6 +1622,12 @@ typedef struct {
     HI_BOOL lowlight_auto_ae;
     HI_U32 lowlight_iso;
     HI_U32 lowlight_exptime;
+    // Optional "fast lowlight" overrides to reduce motion blur in bright-enough lowlight scenes.
+    // Triggered when u8AveLum >= lowlight_fast_lum.
+    HI_U8  lowlight_fast_lum;
+    HI_U32 lowlight_fast_expmax;
+    HI_U32 lowlight_fast_againmax;
+    HI_U8  lowlight_fast_comp_boost;
     HI_BOOL have_ae_day;
     HI_BOOL have_ae_low;
     HI_BOOL last_ae_lowlight;
@@ -1922,10 +1928,16 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
     }
 
     VPSS_GRP_NRX_PARAM_S p;
-    memset(&p, 0, sizeof(p));
+    int ret = -1;
     // Many SDKs require caller to specify which NRX version to get/set.
-    p.enNRVer = 3; // VPSS_NR_V3
-    int ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
+    // GK/HiSilicon forks vary: some accept 3 (V3), others use 0/1/2. Probe a few.
+    int chosen_ver = -1;
+    for (int ver_try = 3; ver_try >= 0; ver_try--) {
+        memset(&p, 0, sizeof(p));
+        p.enNRVer = ver_try;
+        ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
+        if (!ret) { chosen_ver = ver_try; break; }
+    }
     if (ret) {
         HAL_WARNING("v4_iq", "3DNR: HI_MPI_VPSS_GetGrpNRXParam failed with %#x\n", ret);
         return ret;
@@ -1933,7 +1945,8 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
 
     // Expect EV200-style V3 on GK7205V210; if not, don't risk corrupting union.
     if (p.enNRVer != 3) {
-        HAL_INFO("v4_iq", "3DNR: unsupported VPSS NRX version %d, skipping\n", (int)p.enNRVer);
+        HAL_INFO("v4_iq", "3DNR: VPSS NRX version %d (chosen=%d) not supported by our V3 struct, skipping\n",
+                 (int)p.enNRVer, chosen_ver);
         return EXIT_SUCCESS;
     }
 
@@ -2229,12 +2242,24 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HI_BOOL ll_en = HI_FALSE;
         HI_U32 ll_iso = 1500;
         HI_U32 ll_exptime = 15000;
+        HI_U8  ll_fast_lum = 24;
+        HI_U32 ll_fast_expmax = 20000;
+        HI_U32 ll_fast_againmax = 2048;
+        HI_U8  ll_fast_comp_boost = 2;
         if (parse_int(ini, "all_param", "LowLightAutoAE", 0, 1, &v) == CONFIG_OK)
             ll_en = (v != 0) ? HI_TRUE : HI_FALSE;
         if (parse_int(ini, "all_param", "LowLightIso", 0, INT_MAX, &v) == CONFIG_OK)
             ll_iso = (HI_U32)v;
         if (parse_int(ini, "all_param", "LowLightExpTime", 0, INT_MAX, &v) == CONFIG_OK)
             ll_exptime = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightFastLum", 0, 255, &v) == CONFIG_OK)
+            ll_fast_lum = (HI_U8)v;
+        if (parse_int(ini, "all_param", "LowLightFastExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_fast_expmax = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightFastAGainMax", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_fast_againmax = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightFastCompBoost", 0, 64, &v) == CONFIG_OK)
+            ll_fast_comp_boost = (HI_U8)v;
 
         // Load AE profiles (day + low-light)
         HI_BOOL have_day = HI_FALSE, have_low = HI_FALSE;
@@ -2272,6 +2297,10 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         _v4_iq_dyn.lowlight_auto_ae = ll_en;
         _v4_iq_dyn.lowlight_iso = ll_iso;
         _v4_iq_dyn.lowlight_exptime = ll_exptime;
+        _v4_iq_dyn.lowlight_fast_lum = ll_fast_lum;
+        _v4_iq_dyn.lowlight_fast_expmax = ll_fast_expmax;
+        _v4_iq_dyn.lowlight_fast_againmax = ll_fast_againmax;
+        _v4_iq_dyn.lowlight_fast_comp_boost = ll_fast_comp_boost;
         _v4_iq_dyn.have_ae_day = have_day;
         _v4_iq_dyn.have_ae_low = have_low;
         _v4_iq_dyn.last_ae_lowlight = HI_FALSE;
@@ -2432,6 +2461,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
         HI_U8 day_histoff = 0, low_histoff = 0;
         HI_U16 day_histslope = 0, low_histslope = 0;
         HI_U8 day_speed = 0, low_speed = 0;
+        HI_U8 ll_fast_lum = 24;
+        HI_U32 ll_fast_expmax = 20000;
+        HI_U32 ll_fast_againmax = 2048;
+        HI_U8 ll_fast_comp_boost = 2;
         int last_nr_idx = -1;
         HI_BOOL last_nr_ir = HI_FALSE;
         int nr3d_fail_count = 0;
@@ -2469,6 +2502,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
         low_histslope = _v4_iq_dyn.ae_low_histslope;
         day_speed = _v4_iq_dyn.ae_day_speed;
         low_speed = _v4_iq_dyn.ae_low_speed;
+        ll_fast_lum = _v4_iq_dyn.lowlight_fast_lum;
+        ll_fast_expmax = _v4_iq_dyn.lowlight_fast_expmax;
+        ll_fast_againmax = _v4_iq_dyn.lowlight_fast_againmax;
+        ll_fast_comp_boost = _v4_iq_dyn.lowlight_fast_comp_boost;
         last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
         last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
         nr3d_fail_count = _v4_iq_dyn.nr3d_fail_count;
@@ -2707,13 +2744,25 @@ static void *v4_iq_dynamic_thread(void *arg) {
             memset(&ea, 0, sizeof(ea));
             if (v4_isp.fnGetExposureAttr(pipe, &ea) == 0) {
                 // Compute desired knobs for current lowlight state
-                const HI_U8 want_comp = is_lowlight ? low_comp : day_comp;
-                const HI_U32 want_expmax = is_lowlight ? low_expmax : day_expmax;
-                const HI_U32 want_sysgainmax = is_lowlight ? low_sysgainmax : day_sysgainmax;
-                const HI_U32 want_againmax = is_lowlight ? low_againmax : day_againmax;
-                const HI_U8 want_histoff = is_lowlight ? low_histoff : day_histoff;
-                const HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
-                const HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
+                HI_U8 want_comp = is_lowlight ? low_comp : day_comp;
+                HI_U32 want_expmax = is_lowlight ? low_expmax : day_expmax;
+                HI_U32 want_sysgainmax = is_lowlight ? low_sysgainmax : day_sysgainmax;
+                HI_U32 want_againmax = is_lowlight ? low_againmax : day_againmax;
+                HI_U8 want_histoff = is_lowlight ? low_histoff : day_histoff;
+                HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
+                HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
+
+                // Fast lowlight: if scene is bright enough, prefer shorter shutter to reduce motion blur.
+                // Comp boost helps keep the image from looking "too dark" when we cut shutter time.
+                if (is_lowlight && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) {
+                    if (want_expmax > ll_fast_expmax) want_expmax = ll_fast_expmax;
+                    if (ll_fast_againmax > 0) want_againmax = ll_fast_againmax;
+                    if (ll_fast_comp_boost > 0) {
+                        HI_U32 c = (HI_U32)want_comp + (HI_U32)ll_fast_comp_boost;
+                        if (c > 255) c = 255;
+                        want_comp = (HI_U8)c;
+                    }
+                }
 
                 // Apply if state changed OR if current params don't match desired
                 const HI_BOOL mismatch =
@@ -2749,8 +2798,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                         _v4_iq_dyn.last_ae_lowlight = is_lowlight;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq",
-                            "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u aGainMax=%u sysGainMax=%u\n",
-                            (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime,
+                            "Dynamic AE: lowlight=%d iso=%u expTime=%u aveLum=%u comp=%u expMax=%u aGainMax=%u sysGainMax=%u\n",
+                            (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime, (unsigned)expi.u8AveLum,
                             (unsigned)want_comp, (unsigned)want_expmax, (unsigned)want_againmax, (unsigned)want_sysgainmax);
                     } else {
                         HAL_WARNING("v4_iq",
@@ -2775,9 +2824,14 @@ static void *v4_iq_dynamic_thread(void *arg) {
             HI_BOOL allow_fx = (now3 == (time_t)-1) ? HI_TRUE : ((now3 - last_fx_try) >= 2);
             // Consider it "noisy lowlight" only when we actually need to hide noise.
             // Thresholds are conservative; tune later if needed.
-            const HI_BOOL noisy_lowlight =
+            // Separate thresholds: keep gamma longer, disable sharpen earlier.
+            const HI_BOOL noisy_gamma =
                 (is_lowlight == HI_TRUE) &&
                 (iso >= 800 || expi.u32DGain > 1200 || expi.u32ISPDGain > 1200);
+            const HI_BOOL noisy_sharpen =
+                (is_lowlight == HI_TRUE) &&
+                (iso >= 400 || expi.u32DGain > 1100 || expi.u32ISPDGain > 1150);
+            const HI_BOOL noisy_lowlight = (noisy_gamma || noisy_sharpen) ? HI_TRUE : HI_FALSE;
 
             if (allow_fx && (!baseline_init || noisy_lowlight != last_noisy_fx)) {
                 last_fx_try = now3;
@@ -2787,7 +2841,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     memset(&ga, 0, sizeof(ga));
                     if (!v4_isp.fnGetGammaAttr(pipe, &ga)) {
                         if (!baseline_init) baseline_gamma = ga.bEnable;
-                        ga.bEnable = noisy_lowlight ? HI_FALSE : baseline_gamma;
+                        ga.bEnable = noisy_gamma ? HI_FALSE : baseline_gamma;
                         (void)v4_isp.fnSetGammaAttr(pipe, &ga);
                     }
                 }
@@ -2797,7 +2851,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     memset(&sh, 0, sizeof(sh));
                     if (!v4_isp.fnGetIspSharpenAttr(pipe, &sh)) {
                         if (!baseline_init) baseline_sharpen = sh.bEnable;
-                        sh.bEnable = noisy_lowlight ? HI_FALSE : baseline_sharpen;
+                        sh.bEnable = noisy_sharpen ? HI_FALSE : baseline_sharpen;
                         (void)v4_isp.fnSetIspSharpenAttr(pipe, &sh);
                     }
                 }
@@ -2806,8 +2860,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 last_noisy_fx = noisy_lowlight;
                 HAL_INFO("v4_iq", "Dynamic FX: lowlight=%d noisy=%d gamma=%s sharpen=%s (iso=%u dg=%u ispdg=%u)\n",
                     (int)is_lowlight, (int)noisy_lowlight,
-                    noisy_lowlight ? "off" : (baseline_gamma ? "on" : "off"),
-                    noisy_lowlight ? "off" : (baseline_sharpen ? "on" : "off"),
+                    noisy_gamma ? "off" : (baseline_gamma ? "on" : "off"),
+                    noisy_sharpen ? "off" : (baseline_sharpen ? "on" : "off"),
                     (unsigned)iso, (unsigned)expi.u32DGain, (unsigned)expi.u32ISPDGain);
             }
         }
