@@ -2638,16 +2638,22 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 // Reduce overall DRC and shadow mixing: keep snow/lamps controlled and reduce visible noise.
                 // In "fast lowlight" (brighter scenes where we cap shutter to reduce blur),
                 // allow a bit more DRC strength to compress highlights (lamps/snow) without lifting shadows.
-                HI_U16 max_strength = (expi.u8AveLum >= ll_fast_lum) ? 160 : 140;
+                const HI_BOOL fast_ll = (expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
+                HI_U16 max_strength = fast_ll ? 180 : 140;
                 if (cur.strength > max_strength) cur.strength = max_strength;
                 // Also reduce bright-side mixing/gain to avoid highlight "bloom" on snow and lamps.
                 if (cur.localMixBrightMax > 10) cur.localMixBrightMax = 10;
                 if (cur.localMixBrightMin > 4)  cur.localMixBrightMin = 4;
                 if (cur.brightGainLmt > 3)      cur.brightGainLmt = 3;
                 if (cur.brightGainLmtStep > 4)  cur.brightGainLmtStep = 4;
-                if (cur.localMixDarkMax > 28) cur.localMixDarkMax = 28;
-                if (cur.localMixDarkMin > 20) cur.localMixDarkMin = 20;
-                if (cur.contrastControl > 8) cur.contrastControl = 8;
+                // Keep shadows from becoming too dark after we lower AE target for lamp control.
+                // In fast lowlight we can lift shadows a bit (scene is brighter, noise is manageable).
+                HI_U8 dark_max_cap = fast_ll ? 32 : 28;
+                HI_U8 dark_min_cap = fast_ll ? 24 : 20;
+                HI_U8 contrast_cap = fast_ll ? 10 : 8;
+                if (cur.localMixDarkMax > dark_max_cap) cur.localMixDarkMax = dark_max_cap;
+                if (cur.localMixDarkMin > dark_min_cap) cur.localMixDarkMin = dark_min_cap;
+                if (cur.contrastControl > contrast_cap) cur.contrastControl = contrast_cap;
             }
 
             if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
