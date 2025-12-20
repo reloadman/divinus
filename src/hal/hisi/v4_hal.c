@@ -2541,6 +2541,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
 
         // Linear DRC by ISO
+        // NOTE: In low-light (DAY-at-night) we intentionally reduce shadow lift to avoid amplifying noise.
         if (!drc_disabled && drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
             HI_U32 u16vals[V4_IQ_DYN_MAX_POINTS];
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->strength[i];
@@ -2586,6 +2587,14 @@ static void *v4_iq_dynamic_thread(void *arg) {
             cur.compress = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->stretch[i];
             cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
+
+            if (is_lowlight) {
+                // Reduce overall DRC and shadow mixing: keep snow/lamps controlled and reduce visible noise.
+                if (cur.strength > 140) cur.strength = 140;
+                if (cur.localMixDarkMax > 28) cur.localMixDarkMax = 28;
+                if (cur.localMixDarkMin > 20) cur.localMixDarkMin = 20;
+                if (cur.contrastControl > 8) cur.contrastControl = 8;
+            }
 
             if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
                 ISP_DRC_ATTR_S da;
