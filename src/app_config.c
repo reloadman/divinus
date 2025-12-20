@@ -250,6 +250,24 @@ int save_app_config(void) {
 enum ConfigError parse_app_config(void) {
     memset(&app_config, 0, sizeof(struct AppConfig));
 
+    // Initialize OSD defaults early so partial configs (e.g. only reg0_text)
+    // still render with sane font/color/position/outline.
+    for (char i = 0; i < MAX_OSD; i++) {
+        osds[i].hand = -1;
+        osds[i].color = DEF_COLOR;
+        osds[i].opal = DEF_OPAL;
+        osds[i].size = DEF_SIZE;
+        osds[i].posx = DEF_POSX;
+        osds[i].posy = DEF_POSY + (DEF_SIZE * 3 / 2) * i;
+        osds[i].updt = 0;
+        strncpy(osds[i].font, DEF_FONT, sizeof(osds[i].font) - 1);
+        osds[i].font[sizeof(osds[i].font) - 1] = '\0';
+        osds[i].text[0] = '\0';
+        osds[i].img[0] = '\0';
+        osds[i].outl = DEF_OUTL;
+        osds[i].thick = DEF_THICK;
+    }
+
     app_config.web_port = 8080;
     *app_config.web_whitelist[0] = '\0';
     app_config.web_enable_auth = false;

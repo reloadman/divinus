@@ -137,6 +137,10 @@ This document describes the fields that can be found within a configuration file
 - **regX_outl**: Outline color of the text in OSD region X.
 - **regX_thick**: Thickness of the text outline in OSD region X.
 
+Notes:
+- If you only set `regX_text` (and omit styling fields), Divinus uses built-in defaults for
+  **color/position/font/outline** so the OSD stays readable on bright backgrounds.
+
 ## JPEG section
 
 This section controls the **MJPEG stream** (`/mjpeg`, `multipart/x-mixed-replace`).

@@ -20,7 +20,8 @@
 #define DEF_POSX 16
 #define DEF_POSY 16
 #define DEF_SIZE 32.0f
-#define DEF_THICK 0.0f
+// Default outline thickness in pixels. Non-zero greatly improves readability on bright scenes.
+#define DEF_THICK 2.0f
 #define DEF_TIMEFMT "%Y/%m/%d %H:%M:%S"
 #define MAX_OSD 10
 

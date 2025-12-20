@@ -19,6 +19,14 @@ isp:
 
 osd:
   enable: true
+  # Pretty, readable defaults (outline + safe margins). Uncomment to enable.
+  #reg0_text: "$t"
+  #reg0_posx: 16
+  #reg0_posy: 16
+  #reg0_size: 32
+  #reg0_color: 0xffff      # white (ARGB1555)
+  #reg0_outl: 0x8000       # black outline (ARGB1555)
+  #reg0_thick: 2.0         # outline thickness in px
 
 mdns:
   enable: false
