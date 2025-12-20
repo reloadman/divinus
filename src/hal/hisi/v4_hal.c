@@ -2638,10 +2638,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 // Reduce overall DRC and shadow mixing: keep snow/lamps controlled and reduce visible noise.
                 if (cur.strength > 140) cur.strength = 140;
                 // Also reduce bright-side mixing/gain to avoid highlight "bloom" on snow and lamps.
-                if (cur.localMixBrightMax > 12) cur.localMixBrightMax = 12;
-                if (cur.localMixBrightMin > 6)  cur.localMixBrightMin = 6;
-                if (cur.brightGainLmt > 4)      cur.brightGainLmt = 4;
-                if (cur.brightGainLmtStep > 6)  cur.brightGainLmtStep = 6;
+                if (cur.localMixBrightMax > 10) cur.localMixBrightMax = 10;
+                if (cur.localMixBrightMin > 4)  cur.localMixBrightMin = 4;
+                if (cur.brightGainLmt > 3)      cur.brightGainLmt = 3;
+                if (cur.brightGainLmtStep > 4)  cur.brightGainLmtStep = 4;
                 if (cur.localMixDarkMax > 28) cur.localMixDarkMax = 28;
                 if (cur.localMixDarkMin > 20) cur.localMixDarkMin = 20;
                 if (cur.contrastControl > 8) cur.contrastControl = 8;
