@@ -1628,6 +1628,7 @@ typedef struct {
     HI_U8  ae_day_comp, ae_low_comp;
     HI_U32 ae_day_expmax, ae_low_expmax;
     HI_U32 ae_day_sysgainmax, ae_low_sysgainmax;
+    HI_U32 ae_day_againmax, ae_low_againmax;
     HI_U8  ae_day_histoff, ae_low_histoff;
     HI_U16 ae_day_histslope, ae_low_histslope;
     HI_U8  ae_day_speed, ae_low_speed;
@@ -2159,7 +2160,7 @@ static void v4_iq_dyn_parse_iso_list(struct IniConfig *ini, const char *section,
 }
 
 static void v4_iq_dyn_load_ae_profile(struct IniConfig *ini, const char *sec,
-                                      HI_BOOL *have, HI_U8 *comp, HI_U32 *expmax, HI_U32 *sysgainmax,
+                                      HI_BOOL *have, HI_U8 *comp, HI_U32 *expmax, HI_U32 *sysgainmax, HI_U32 *againmax,
                                       HI_U8 *histoff, HI_U16 *histslope, HI_U8 *speed) {
     int sec_s = 0, sec_e = 0;
     if (section_pos(ini, sec, &sec_s, &sec_e) != CONFIG_OK) return;
@@ -2167,6 +2168,7 @@ static void v4_iq_dyn_load_ae_profile(struct IniConfig *ini, const char *sec,
     if (parse_int(ini, sec, "AutoCompensation", 0, 255, &v) == CONFIG_OK) *comp = (HI_U8)v;
     if (parse_int(ini, sec, "AutoExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK) *expmax = (HI_U32)v;
     if (parse_int(ini, sec, "AutoSysGainMax", 0, INT_MAX, &v) == CONFIG_OK) *sysgainmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoAGainMax", 0, INT_MAX, &v) == CONFIG_OK) *againmax = (HI_U32)v;
     if (parse_int(ini, sec, "AutoMaxHistOffset", 0, 255, &v) == CONFIG_OK) *histoff = (HI_U8)v;
     if (parse_int(ini, sec, "AutoHistRatioSlope", 0, 65535, &v) == CONFIG_OK) *histslope = (HI_U16)v;
     if (parse_int(ini, sec, "AutoSpeed", 0, 255, &v) == CONFIG_OK) *speed = (HI_U8)v;
@@ -2239,17 +2241,18 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HI_U8 day_comp = 0, low_comp = 0;
         HI_U32 day_expmax = 0, low_expmax = 0;
         HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U32 day_againmax = 0, low_againmax = 0;
         HI_U8 day_histoff = 0, low_histoff = 0;
         HI_U16 day_histslope = 0, low_histslope = 0;
         HI_U8 day_speed = 0, low_speed = 0;
-        v4_iq_dyn_load_ae_profile(ini, "static_ae", &have_day, &day_comp, &day_expmax, &day_sysgainmax,
+        v4_iq_dyn_load_ae_profile(ini, "static_ae", &have_day, &day_comp, &day_expmax, &day_sysgainmax, &day_againmax,
                                   &day_histoff, &day_histslope, &day_speed);
         // Prefer dedicated low-light color profile (for "DAY-at-night") if present.
         // Fallback to ir_static_ae for legacy configs.
-        v4_iq_dyn_load_ae_profile(ini, "lowlight_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
+        v4_iq_dyn_load_ae_profile(ini, "lowlight_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax, &low_againmax,
                                   &low_histoff, &low_histslope, &low_speed);
         if (!have_low) {
-            v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
+            v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax, &low_againmax,
                                       &low_histoff, &low_histslope, &low_speed);
         }
         if (!have_low) {
@@ -2257,6 +2260,7 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
             low_comp = day_comp;
             low_expmax = day_expmax;
             low_sysgainmax = day_sysgainmax;
+            low_againmax = day_againmax;
             low_histoff = day_histoff;
             low_histslope = day_histslope;
             low_speed = day_speed;
@@ -2277,6 +2281,8 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         _v4_iq_dyn.ae_low_expmax = low_expmax;
         _v4_iq_dyn.ae_day_sysgainmax = day_sysgainmax;
         _v4_iq_dyn.ae_low_sysgainmax = low_sysgainmax;
+        _v4_iq_dyn.ae_day_againmax = day_againmax;
+        _v4_iq_dyn.ae_low_againmax = low_againmax;
         _v4_iq_dyn.ae_day_histoff = day_histoff;
         _v4_iq_dyn.ae_low_histoff = low_histoff;
         _v4_iq_dyn.ae_day_histslope = day_histslope;
@@ -2422,6 +2428,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
         HI_U8 day_comp = 0, low_comp = 0;
         HI_U32 day_expmax = 0, low_expmax = 0;
         HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U32 day_againmax = 0, low_againmax = 0;
         HI_U8 day_histoff = 0, low_histoff = 0;
         HI_U16 day_histslope = 0, low_histslope = 0;
         HI_U8 day_speed = 0, low_speed = 0;
@@ -2454,6 +2461,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
         low_expmax = _v4_iq_dyn.ae_low_expmax;
         day_sysgainmax = _v4_iq_dyn.ae_day_sysgainmax;
         low_sysgainmax = _v4_iq_dyn.ae_low_sysgainmax;
+        day_againmax = _v4_iq_dyn.ae_day_againmax;
+        low_againmax = _v4_iq_dyn.ae_low_againmax;
         day_histoff = _v4_iq_dyn.ae_day_histoff;
         low_histoff = _v4_iq_dyn.ae_low_histoff;
         day_histslope = _v4_iq_dyn.ae_day_histslope;
@@ -2696,6 +2705,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 const HI_U8 want_comp = is_lowlight ? low_comp : day_comp;
                 const HI_U32 want_expmax = is_lowlight ? low_expmax : day_expmax;
                 const HI_U32 want_sysgainmax = is_lowlight ? low_sysgainmax : day_sysgainmax;
+                const HI_U32 want_againmax = is_lowlight ? low_againmax : day_againmax;
                 const HI_U8 want_histoff = is_lowlight ? low_histoff : day_histoff;
                 const HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
                 const HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
@@ -2705,6 +2715,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     (ea.stAuto.u8Compensation != want_comp) ||
                     (ea.stAuto.stExpTimeRange.u32Max != want_expmax) ||
                     (ea.stAuto.stSysGainRange.u32Max != want_sysgainmax) ||
+                    ((want_againmax != 0) && (ea.stAuto.stAGainRange.u32Max != want_againmax)) ||
                     (ea.stAuto.u8MaxHistOffset != want_histoff) ||
                     (ea.stAuto.u16HistRatioSlope != want_histslope) ||
                     (ea.stAuto.u8Speed != want_speed);
@@ -2721,6 +2732,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     ea.stAuto.u8Compensation = want_comp;
                     ea.stAuto.stExpTimeRange.u32Max = want_expmax;
                     ea.stAuto.stSysGainRange.u32Max = want_sysgainmax;
+                    if (want_againmax != 0)
+                        ea.stAuto.stAGainRange.u32Max = want_againmax;
                     ea.stAuto.u8MaxHistOffset = want_histoff;
                     ea.stAuto.u16HistRatioSlope = want_histslope;
                     ea.stAuto.u8Speed = want_speed;
@@ -2731,9 +2744,9 @@ static void *v4_iq_dynamic_thread(void *arg) {
                         _v4_iq_dyn.last_ae_lowlight = is_lowlight;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq",
-                            "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u sysGainMax=%u\n",
+                            "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u aGainMax=%u sysGainMax=%u\n",
                             (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime,
-                            (unsigned)want_comp, (unsigned)want_expmax, (unsigned)want_sysgainmax);
+                            (unsigned)want_comp, (unsigned)want_expmax, (unsigned)want_againmax, (unsigned)want_sysgainmax);
                     } else {
                         HAL_WARNING("v4_iq",
                             "Dynamic AE: SetExposureAttr failed with %#x (lowlight=%d wantComp=%u wantExpMax=%u)\n",
