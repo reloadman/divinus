@@ -2763,12 +2763,12 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     }
                 }
 
-                if (v4_isp.fnGetSharpenAttr && v4_isp.fnSetSharpenAttr) {
+                if (v4_isp.fnGetIspSharpenAttr && v4_isp.fnSetIspSharpenAttr) {
                     ISP_SHARPEN_ATTR_S sh;
                     memset(&sh, 0, sizeof(sh));
-                    if (!v4_isp.fnGetSharpenAttr(pipe, &sh)) {
+                    if (!v4_isp.fnGetIspSharpenAttr(pipe, &sh)) {
                         sh.bEnable = is_lowlight ? HI_FALSE : HI_TRUE;
-                        (void)v4_isp.fnSetSharpenAttr(pipe, &sh);
+                        (void)v4_isp.fnSetIspSharpenAttr(pipe, &sh);
                     }
                 }
 
