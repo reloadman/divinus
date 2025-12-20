@@ -2734,6 +2734,43 @@ static void *v4_iq_dynamic_thread(void *arg) {
             }
         }
 
+        // When lowlight is active, reduce "marketing" processing that amplifies noise:
+        // - Disable custom gamma (raises shadows and reveals noise)
+        // - Disable sharpening (turns noise into grain)
+        {
+            static HI_BOOL last_lowlight_fx = HI_FALSE;
+            static time_t last_fx_try = 0;
+            time_t now3 = time(NULL);
+            HI_BOOL allow_fx = (now3 == (time_t)-1) ? HI_TRUE : ((now3 - last_fx_try) >= 2);
+            if (allow_fx && is_lowlight != last_lowlight_fx) {
+                last_fx_try = now3;
+
+                if (v4_isp.fnGetGammaAttr && v4_isp.fnSetGammaAttr) {
+                    ISP_GAMMA_ATTR_S ga;
+                    memset(&ga, 0, sizeof(ga));
+                    if (!v4_isp.fnGetGammaAttr(pipe, &ga)) {
+                        ga.bEnable = is_lowlight ? HI_FALSE : HI_TRUE;
+                        (void)v4_isp.fnSetGammaAttr(pipe, &ga);
+                    }
+                }
+
+                if (v4_isp.fnGetSharpenAttr && v4_isp.fnSetSharpenAttr) {
+                    ISP_SHARPEN_ATTR_S sh;
+                    memset(&sh, 0, sizeof(sh));
+                    if (!v4_isp.fnGetSharpenAttr(pipe, &sh)) {
+                        sh.bEnable = is_lowlight ? HI_FALSE : HI_TRUE;
+                        (void)v4_isp.fnSetSharpenAttr(pipe, &sh);
+                    }
+                }
+
+                last_lowlight_fx = is_lowlight;
+                HAL_INFO("v4_iq", "Dynamic FX: lowlight=%d gamma=%s sharpen=%s\n",
+                    (int)is_lowlight,
+                    is_lowlight ? "off" : "on",
+                    is_lowlight ? "off" : "on");
+            }
+        }
+
         // 3DNR (VPSS NRX) by ISO + night mode
         {
             if (nr3d_disabled) {
