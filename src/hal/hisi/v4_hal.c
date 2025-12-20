@@ -2244,8 +2244,14 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HI_U8 day_speed = 0, low_speed = 0;
         v4_iq_dyn_load_ae_profile(ini, "static_ae", &have_day, &day_comp, &day_expmax, &day_sysgainmax,
                                   &day_histoff, &day_histslope, &day_speed);
-        v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
+        // Prefer dedicated low-light color profile (for "DAY-at-night") if present.
+        // Fallback to ir_static_ae for legacy configs.
+        v4_iq_dyn_load_ae_profile(ini, "lowlight_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
                                   &low_histoff, &low_histslope, &low_speed);
+        if (!have_low) {
+            v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
+                                      &low_histoff, &low_histslope, &low_speed);
+        }
         if (!have_low) {
             have_low = have_day;
             low_comp = day_comp;
