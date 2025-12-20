@@ -1619,6 +1619,8 @@ typedef struct {
     HI_BOOL have_last;
     HI_U8  last_dehaze_strength;
     v4_iq_dyn_drc_sig last_drc;
+    int drc_fail_count;
+    HI_BOOL drc_disabled;
 } v4_iq_dyn_state;
 
 static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
@@ -1632,7 +1634,14 @@ static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U
         if (x >= x0 && x <= x1) {
             HI_U32 y0 = yp[i], y1 = yp[i + 1];
             if (x1 == x0) return y1;
-            return (HI_U32)(y0 + (HI_U64)(y1 - y0) * (x - x0) / (x1 - x0));
+            // IMPORTANT: y can be decreasing (e.g. Strength 260->250->...).
+            // Use signed math to avoid unsigned underflow producing garbage.
+            HI_S64 dy = (HI_S64)y1 - (HI_S64)y0;
+            HI_S64 num = dy * (HI_S64)(x - x0);
+            HI_S64 den = (HI_S64)(x1 - x0);
+            HI_S64 val = (HI_S64)y0 + (den ? (num / den) : 0);
+            if (val < 0) val = 0;
+            return (HI_U32)val;
         }
     }
     return yp[n - 1];
@@ -2329,6 +2338,12 @@ static void *v4_iq_dynamic_thread(void *arg) {
         const bool is_ir_mode = night_mode_on();
         const v4_iq_dyn_dehaze_cfg *deh = is_ir_mode ? &deh_ir : &deh_day;
         const v4_iq_dyn_linear_drc_cfg *drc = is_ir_mode ? &drc_ir : &drc_day;
+        int drc_fail_count = 0;
+        HI_BOOL drc_disabled = HI_FALSE;
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        drc_fail_count = _v4_iq_dyn.drc_fail_count;
+        drc_disabled = _v4_iq_dyn.drc_disabled;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
         // Dehaze by ISO
         if (deh->enabled && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
@@ -2354,7 +2369,7 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
 
         // Linear DRC by ISO
-        if (drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
+        if (!drc_disabled && drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
             HI_U32 u16vals[V4_IQ_DYN_MAX_POINTS];
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->strength[i];
             HI_U16 strength = (HI_U16)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
@@ -2441,6 +2456,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                         pthread_mutex_lock(&_v4_iq_dyn.lock);
                         _v4_iq_dyn.last_drc = cur;
                         _v4_iq_dyn.have_last = HI_TRUE;
+                        _v4_iq_dyn.drc_fail_count = 0;
+                        _v4_iq_dyn.drc_disabled = HI_FALSE;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u contrast=%u\n",
                             (unsigned)iso, (unsigned)cur.strength, (unsigned)cur.contrastControl);
@@ -2463,6 +2480,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                             pthread_mutex_lock(&_v4_iq_dyn.lock);
                             _v4_iq_dyn.last_drc = cur;
                             _v4_iq_dyn.have_last = HI_TRUE;
+                            _v4_iq_dyn.drc_fail_count = 0;
+                            _v4_iq_dyn.drc_disabled = HI_FALSE;
                             pthread_mutex_unlock(&_v4_iq_dyn.lock);
                             HAL_INFO("v4_iq", "Dynamic Linear DRC: applied via fallback (curve=%d strength=%u)\n",
                                 (int)fb.enCurveSelect, (unsigned)cur.strength);
@@ -2470,6 +2489,16 @@ static void *v4_iq_dynamic_thread(void *arg) {
                             HAL_WARNING("v4_iq",
                                 "Dynamic Linear DRC: fallback SetDRCAttr failed with %#x (curve=%d strength=%u)\n",
                                 sr, (int)fb.enCurveSelect, (unsigned)cur.strength);
+
+                            pthread_mutex_lock(&_v4_iq_dyn.lock);
+                            _v4_iq_dyn.drc_fail_count++;
+                            int fc = _v4_iq_dyn.drc_fail_count;
+                            if (fc >= 3) {
+                                _v4_iq_dyn.drc_disabled = HI_TRUE;
+                                HAL_WARNING("v4_iq",
+                                    "Dynamic Linear DRC: disabling due to repeated failures (last=%#x)\n", sr);
+                            }
+                            pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         }
                     }
                 }
