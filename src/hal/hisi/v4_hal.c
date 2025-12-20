@@ -3527,6 +3527,14 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
+    // Allow disabling custom gamma from IQ.
+    // Some scenes (e.g. snowy dawn) are extremely sensitive to tone curve choice.
+    int en = 1;
+    if (parse_int(ini, "dynamic_gamma", "Enable", 0, 1, &en) == CONFIG_OK && en == 0) {
+        HAL_INFO("v4_iq", "Gamma: disabled by dynamic_gamma/Enable=0\n");
+        return EXIT_SUCCESS;
+    }
+
     ISP_GAMMA_ATTR_S gamma;
     memset(&gamma, 0, sizeof(gamma));
     int ret = v4_isp.fnGetGammaAttr(pipe, &gamma);
@@ -3535,10 +3543,20 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
         return ret;
     }
 
-    // This IQ format uses [dynamic_gamma] with Table_0..; apply Table_0 as a user-defined gamma curve at init.
+    // This IQ format uses [dynamic_gamma] with Table_0..; apply a user-defined gamma curve at init.
+    // We support selecting which table to use via dynamic_gamma/UseTable (0..2).
     HI_U32 tmp[GAMMA_NODE_NUM];
     memset(tmp, 0, sizeof(tmp));
-    int n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", "Table_0", tmp, GAMMA_NODE_NUM);
+    int use_table = 0;
+    (void)parse_int(ini, "dynamic_gamma", "UseTable", 0, 2, &use_table);
+    char key[32];
+    snprintf(key, sizeof(key), "Table_%d", use_table);
+
+    int n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", key, tmp, GAMMA_NODE_NUM);
+    if (n <= 0 && use_table != 0) {
+        // Backward compatible fallback
+        n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", "Table_0", tmp, GAMMA_NODE_NUM);
+    }
     if (n <= 0) {
         // Some IQ files may have a static section.
         n = v4_iq_parse_multiline_u32(ini, "static_gamma", "Table", tmp, GAMMA_NODE_NUM);
@@ -3559,12 +3577,13 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
             memset(&rb, 0, sizeof(rb));
             int gr = v4_isp.fnGetGammaAttr(pipe, &rb);
             if (!gr) {
-                HAL_INFO("v4_iq", "Gamma: applied (type=%d node0=%u nodeLast=%u)\n",
+                HAL_INFO("v4_iq", "Gamma: applied (table=%d type=%d node0=%u nodeLast=%u)\n",
+                    use_table,
                     (int)rb.enCurveType,
                     (unsigned)rb.u16Table[0],
                     (unsigned)rb.u16Table[GAMMA_NODE_NUM - 1]);
             } else {
-                HAL_INFO("v4_iq", "Gamma: applied (%d nodes)\n", n);
+                HAL_INFO("v4_iq", "Gamma: applied (table=%d %d nodes)\n", use_table, n);
             }
         }
         return ret;
