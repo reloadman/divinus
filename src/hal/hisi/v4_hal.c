@@ -2404,6 +2404,17 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 ISP_DRC_ATTR_S da;
                 memset(&da, 0, sizeof(da));
                 if (!v4_isp.fnGetDRCAttr(pipe, &da)) {
+                    // Ensure DRC module isn't bypassed (some firmwares default to bypass in linear mode).
+                    if (v4_isp.fnGetModuleControl && v4_isp.fnSetModuleControl) {
+                        ISP_MODULE_CTRL_U mc;
+                        memset(&mc, 0, sizeof(mc));
+                        if (!v4_isp.fnGetModuleControl(pipe, &mc)) {
+                            mc.u64Key &= ~(1ULL << 8); // bitBypassDRC
+                            (void)v4_isp.fnSetModuleControl(pipe, &mc);
+                        }
+                    }
+
+                    ISP_DRC_ATTR_S orig = da;
                     da.bEnable = HI_TRUE;
                     da.enOpType = OP_TYPE_AUTO;
                     da.enCurveSelect = DRC_CURVE_ASYMMETRY;
@@ -2425,13 +2436,41 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     da.stAsymmetryCurve.u8Compress = cur.compress;
                     da.stAsymmetryCurve.u8Stretch = cur.stretch;
 
-                    if (!v4_isp.fnSetDRCAttr(pipe, &da)) {
+                    int sr = v4_isp.fnSetDRCAttr(pipe, &da);
+                    if (!sr) {
                         pthread_mutex_lock(&_v4_iq_dyn.lock);
                         _v4_iq_dyn.last_drc = cur;
                         _v4_iq_dyn.have_last = HI_TRUE;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u contrast=%u\n",
                             (unsigned)iso, (unsigned)cur.strength, (unsigned)cur.contrastControl);
+                    } else {
+                        // Some SDK builds reject ASYMMETRY params (enum/layout differences).
+                        // Fallback: enable DRC with minimal fields and keep existing curve select.
+                        HAL_WARNING("v4_iq",
+                            "Dynamic Linear DRC: SetDRCAttr(ASYMMETRY) failed with %#x (iso=%u strength=%u); retrying minimal\n",
+                            sr, (unsigned)iso, (unsigned)cur.strength);
+
+                        ISP_DRC_ATTR_S fb = orig;
+                        fb.bEnable = HI_TRUE;
+                        fb.enOpType = OP_TYPE_AUTO;
+                        fb.stAuto.u16Strength = cur.strength;
+                        // Try a safer curve select if orig is out of range.
+                        if (fb.enCurveSelect < DRC_CURVE_ASYMMETRY || fb.enCurveSelect > DRC_CURVE_USER)
+                            fb.enCurveSelect = DRC_CURVE_CUBIC;
+                        sr = v4_isp.fnSetDRCAttr(pipe, &fb);
+                        if (!sr) {
+                            pthread_mutex_lock(&_v4_iq_dyn.lock);
+                            _v4_iq_dyn.last_drc = cur;
+                            _v4_iq_dyn.have_last = HI_TRUE;
+                            pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                            HAL_INFO("v4_iq", "Dynamic Linear DRC: applied via fallback (curve=%d strength=%u)\n",
+                                (int)fb.enCurveSelect, (unsigned)cur.strength);
+                        } else {
+                            HAL_WARNING("v4_iq",
+                                "Dynamic Linear DRC: fallback SetDRCAttr failed with %#x (curve=%d strength=%u)\n",
+                                sr, (int)fb.enCurveSelect, (unsigned)cur.strength);
+                        }
                     }
                 }
             }
