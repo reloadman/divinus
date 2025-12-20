@@ -2636,7 +2636,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
             if (is_lowlight) {
                 // Reduce overall DRC and shadow mixing: keep snow/lamps controlled and reduce visible noise.
-                if (cur.strength > 140) cur.strength = 140;
+                // In "fast lowlight" (brighter scenes where we cap shutter to reduce blur),
+                // allow a bit more DRC strength to compress highlights (lamps/snow) without lifting shadows.
+                HI_U16 max_strength = (expi.u8AveLum >= ll_fast_lum) ? 160 : 140;
+                if (cur.strength > max_strength) cur.strength = max_strength;
                 // Also reduce bright-side mixing/gain to avoid highlight "bloom" on snow and lamps.
                 if (cur.localMixBrightMax > 10) cur.localMixBrightMax = 10;
                 if (cur.localMixBrightMin > 4)  cur.localMixBrightMin = 4;
