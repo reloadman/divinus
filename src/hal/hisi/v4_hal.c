@@ -2642,10 +2642,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 HI_U16 max_strength = fast_ll ? 180 : 140;
                 if (cur.strength > max_strength) cur.strength = max_strength;
                 // Also reduce bright-side mixing/gain to avoid highlight "bloom" on snow and lamps.
-                if (cur.localMixBrightMax > 10) cur.localMixBrightMax = 10;
-                if (cur.localMixBrightMin > 4)  cur.localMixBrightMin = 4;
-                if (cur.brightGainLmt > 3)      cur.brightGainLmt = 3;
-                if (cur.brightGainLmtStep > 4)  cur.brightGainLmtStep = 4;
+                if (cur.localMixBrightMax > 8) cur.localMixBrightMax = 8;
+                if (cur.localMixBrightMin > 3)  cur.localMixBrightMin = 3;
+                if (cur.brightGainLmt > 2)      cur.brightGainLmt = 2;
+                if (cur.brightGainLmtStep > 3)  cur.brightGainLmtStep = 3;
                 // Keep shadows from becoming too dark after we lower AE target for lamp control.
                 // In fast lowlight we can lift shadows a bit (scene is brighter, noise is manageable).
                 HI_U8 dark_max_cap = fast_ll ? 32 : 28;
