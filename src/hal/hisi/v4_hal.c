@@ -2761,22 +2761,33 @@ static void *v4_iq_dynamic_thread(void *arg) {
             }
         }
 
-        // When lowlight is active, reduce "marketing" processing that amplifies noise:
-        // - Disable custom gamma (raises shadows and reveals noise)
-        // - Disable sharpening (turns noise into grain)
+        // When lowlight is active and the image is truly noisy, reduce "marketing" processing:
+        // - Gamma often raises shadows and reveals noise
+        // - Sharpen turns noise into grain
+        // But if ISO/gains are low (clean image), keep original IQ look.
         {
-            static HI_BOOL last_lowlight_fx = HI_FALSE;
+            static HI_BOOL baseline_init = HI_FALSE;
+            static HI_BOOL baseline_gamma = HI_TRUE;
+            static HI_BOOL baseline_sharpen = HI_TRUE;
+            static HI_BOOL last_noisy_fx = HI_FALSE;
             static time_t last_fx_try = 0;
             time_t now3 = time(NULL);
             HI_BOOL allow_fx = (now3 == (time_t)-1) ? HI_TRUE : ((now3 - last_fx_try) >= 2);
-            if (allow_fx && is_lowlight != last_lowlight_fx) {
+            // Consider it "noisy lowlight" only when we actually need to hide noise.
+            // Thresholds are conservative; tune later if needed.
+            const HI_BOOL noisy_lowlight =
+                (is_lowlight == HI_TRUE) &&
+                (iso >= 800 || expi.u32DGain > 1200 || expi.u32ISPDGain > 1200);
+
+            if (allow_fx && (!baseline_init || noisy_lowlight != last_noisy_fx)) {
                 last_fx_try = now3;
 
                 if (v4_isp.fnGetGammaAttr && v4_isp.fnSetGammaAttr) {
                     ISP_GAMMA_ATTR_S ga;
                     memset(&ga, 0, sizeof(ga));
                     if (!v4_isp.fnGetGammaAttr(pipe, &ga)) {
-                        ga.bEnable = is_lowlight ? HI_FALSE : HI_TRUE;
+                        if (!baseline_init) baseline_gamma = ga.bEnable;
+                        ga.bEnable = noisy_lowlight ? HI_FALSE : baseline_gamma;
                         (void)v4_isp.fnSetGammaAttr(pipe, &ga);
                     }
                 }
@@ -2785,16 +2796,19 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     ISP_SHARPEN_ATTR_S sh;
                     memset(&sh, 0, sizeof(sh));
                     if (!v4_isp.fnGetIspSharpenAttr(pipe, &sh)) {
-                        sh.bEnable = is_lowlight ? HI_FALSE : HI_TRUE;
+                        if (!baseline_init) baseline_sharpen = sh.bEnable;
+                        sh.bEnable = noisy_lowlight ? HI_FALSE : baseline_sharpen;
                         (void)v4_isp.fnSetIspSharpenAttr(pipe, &sh);
                     }
                 }
 
-                last_lowlight_fx = is_lowlight;
-                HAL_INFO("v4_iq", "Dynamic FX: lowlight=%d gamma=%s sharpen=%s\n",
-                    (int)is_lowlight,
-                    is_lowlight ? "off" : "on",
-                    is_lowlight ? "off" : "on");
+                baseline_init = HI_TRUE;
+                last_noisy_fx = noisy_lowlight;
+                HAL_INFO("v4_iq", "Dynamic FX: lowlight=%d noisy=%d gamma=%s sharpen=%s (iso=%u dg=%u ispdg=%u)\n",
+                    (int)is_lowlight, (int)noisy_lowlight,
+                    noisy_lowlight ? "off" : (baseline_gamma ? "on" : "off"),
+                    noisy_lowlight ? "off" : (baseline_sharpen ? "on" : "off"),
+                    (unsigned)iso, (unsigned)expi.u32DGain, (unsigned)expi.u32ISPDGain);
             }
         }
 
