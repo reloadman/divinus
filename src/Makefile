@@ -32,6 +32,17 @@ INCLUDES = -I../3dparty -I../3dparty/metalang99/include -I../3dparty/smolrtsp/in
 # Put all objects into a per-toolchain/per-ABI directory to avoid mixing .o
 # built with different float ABIs (soft/softfp/hard) across toolchains.
 TOOLCHAIN ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo unknown)
+
+# NOTE ABOUT LTO CACHES:
+# If LTO is enabled, cached static libraries (like libfaac.a) contain GCC LTO
+# bytecode. GCC 10+ cannot read LTO bytecode produced by GCC <10, so upgrading
+# the toolchain while reusing cached archives can fail at link with:
+#   "bytecode stream ... generated with GCC compiler older than 10.0"
+# To make builds robust across toolchain upgrades, include an LTO/compiler tag
+# in cache directories.
+GCC_VERSION := $(shell $(CC) -dumpfullversion 2>/dev/null || $(CC) -dumpversion 2>/dev/null || echo unknown)
+GCC_MAJOR := $(shell echo "$(GCC_VERSION)" | sed 's/\..*//')
+CACHE_TAG = $(if $(filter 1,$(LTO)),lto-gcc$(GCC_MAJOR),nolto)
 FLOATABI ?= unknown
 ifneq (,$(findstring -mfloat-abi=hard,$(CFLAGS) $(CPPFLAGS)))
   FLOATABI := hard
@@ -51,21 +62,21 @@ ifeq ($(FLOATABI),unknown)
     endif
   endif
 endif
-OBJDIR ?= ../build/$(TOOLCHAIN)-$(FLOATABI)
+OBJDIR ?= ../build/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG)
 
 # Cache FAAC separately so switching/cleaning app objects doesn't rebuild it.
-FAAC_CACHEDIR ?= ../build/faac/$(TOOLCHAIN)-$(FLOATABI)
+FAAC_CACHEDIR ?= ../build/faac/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG)
 FAAC_LIB = $(FAAC_CACHEDIR)/libfaac.a
 
 # Cache smolrtsp + smolrtsp-libevent separately as static archives.
-SMOLRTSP_CACHEDIR ?= ../build/smolrtsp/$(TOOLCHAIN)-$(FLOATABI)
+SMOLRTSP_CACHEDIR ?= ../build/smolrtsp/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG)
 SMOLRTSP_LIB = $(SMOLRTSP_CACHEDIR)/libsmolrtsp.a
-SMOLLE_CACHEDIR ?= ../build/smolrtsp-libevent/$(TOOLCHAIN)-$(FLOATABI)
+SMOLLE_CACHEDIR ?= ../build/smolrtsp-libevent/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG)
 SMOLLE_LIB = $(SMOLLE_CACHEDIR)/libsmolrtsp-libevent.a
 
 # Cache libevent separately as a per-toolchain/per-ABI static build.
 LIBEVENT_SRCDIR := $(abspath ../3dparty/libevent-2.1.12)
-LIBEVENT_CACHEDIR ?= $(abspath ../build/libevent/$(TOOLCHAIN)-$(FLOATABI))
+LIBEVENT_CACHEDIR ?= $(abspath ../build/libevent/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG))
 LIBEVENT_CONFIG_H := $(LIBEVENT_CACHEDIR)/include/event2/event-config.h
 LIBEVENT_CORE_LIB := $(LIBEVENT_CACHEDIR)/.libs/libevent_core.a
 LIBEVENT_EXTRA_LIB := $(LIBEVENT_CACHEDIR)/.libs/libevent_extra.a
@@ -81,7 +92,7 @@ INCLUDES += -I$(LIBEVENT_CACHEDIR)/include -I$(LIBEVENT_SRCDIR)/include
 LDLIBS = $(LIBEVENT_LIBS) -lpthread -lm
 
 # Cache SpeexDSP separately as a static archive.
-SPEEXDSP_CACHEDIR ?= ../build/speexdsp/$(TOOLCHAIN)-$(FLOATABI)
+SPEEXDSP_CACHEDIR ?= ../build/speexdsp/$(TOOLCHAIN)-$(FLOATABI)-$(CACHE_TAG)
 SPEEXDSP_LIB = $(SPEEXDSP_CACHEDIR)/libspeexdsp.a
 
 DIVINUS_OBJS = $(patsubst %.c,$(OBJDIR)/%.o,$(SRC))
