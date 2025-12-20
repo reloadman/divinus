@@ -1603,6 +1603,20 @@ typedef struct {
     HI_U32 upFrameIso;
     HI_U32 downFrameIso;
 
+    // Low-light auto AE (works even if user keeps DAY mode at night)
+    HI_BOOL lowlight_auto_ae;
+    HI_U32 lowlight_iso;
+    HI_U32 lowlight_exptime;
+    HI_BOOL have_ae_day;
+    HI_BOOL have_ae_low;
+    HI_BOOL last_ae_lowlight;
+    HI_U8  ae_day_comp, ae_low_comp;
+    HI_U32 ae_day_expmax, ae_low_expmax;
+    HI_U32 ae_day_sysgainmax, ae_low_sysgainmax;
+    HI_U8  ae_day_histoff, ae_low_histoff;
+    HI_U16 ae_day_histslope, ae_low_histslope;
+    HI_U8  ae_day_speed, ae_low_speed;
+
     // 3DNR (VPSS NRX) day/ir profiles
     v4_iq_3dnr_cfg nr3d_day;
     v4_iq_3dnr_cfg nr3d_ir;
@@ -2094,6 +2108,21 @@ static void v4_iq_dyn_parse_iso_list(struct IniConfig *ini, const char *section,
     if (*ioN == 0 || n < *ioN) *ioN = n;
 }
 
+static void v4_iq_dyn_load_ae_profile(struct IniConfig *ini, const char *sec,
+                                      HI_BOOL *have, HI_U8 *comp, HI_U32 *expmax, HI_U32 *sysgainmax,
+                                      HI_U8 *histoff, HI_U16 *histslope, HI_U8 *speed) {
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, sec, &sec_s, &sec_e) != CONFIG_OK) return;
+    int v;
+    if (parse_int(ini, sec, "AutoCompensation", 0, 255, &v) == CONFIG_OK) *comp = (HI_U8)v;
+    if (parse_int(ini, sec, "AutoExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK) *expmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoSysGainMax", 0, INT_MAX, &v) == CONFIG_OK) *sysgainmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoMaxHistOffset", 0, 255, &v) == CONFIG_OK) *histoff = (HI_U8)v;
+    if (parse_int(ini, sec, "AutoHistRatioSlope", 0, 65535, &v) == CONFIG_OK) *histslope = (HI_U16)v;
+    if (parse_int(ini, sec, "AutoSpeed", 0, 255, &v) == CONFIG_OK) *speed = (HI_U8)v;
+    *have = HI_TRUE;
+}
+
 static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze, bool enableDynLinearDRC) {
     v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
     v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
@@ -2136,7 +2165,7 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
     }
 
     // dynamic_linear_drc
-    // all_param hysteresis
+    // all_param hysteresis + low-light auto AE (even when user keeps DAY mode at night)
     {
         HI_U32 up = 0, down = 0;
         int v;
@@ -2144,12 +2173,67 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
             up = (HI_U32)v;
         if (parse_int(ini, "all_param", "DownFrameIso", 0, INT_MAX, &v) == CONFIG_OK)
             down = (HI_U32)v;
+
+        HI_BOOL ll_en = HI_FALSE;
+        HI_U32 ll_iso = 1500;
+        HI_U32 ll_exptime = 15000;
+        if (parse_int(ini, "all_param", "LowLightAutoAE", 0, 1, &v) == CONFIG_OK)
+            ll_en = (v != 0) ? HI_TRUE : HI_FALSE;
+        if (parse_int(ini, "all_param", "LowLightIso", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_iso = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightExpTime", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_exptime = (HI_U32)v;
+
+        // Load AE profiles (day + low-light)
+        HI_BOOL have_day = HI_FALSE, have_low = HI_FALSE;
+        HI_U8 day_comp = 0, low_comp = 0;
+        HI_U32 day_expmax = 0, low_expmax = 0;
+        HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U8 day_histoff = 0, low_histoff = 0;
+        HI_U16 day_histslope = 0, low_histslope = 0;
+        HI_U8 day_speed = 0, low_speed = 0;
+        v4_iq_dyn_load_ae_profile(ini, "static_ae", &have_day, &day_comp, &day_expmax, &day_sysgainmax,
+                                  &day_histoff, &day_histslope, &day_speed);
+        v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax,
+                                  &low_histoff, &low_histslope, &low_speed);
+        if (!have_low) {
+            have_low = have_day;
+            low_comp = day_comp;
+            low_expmax = day_expmax;
+            low_sysgainmax = day_sysgainmax;
+            low_histoff = day_histoff;
+            low_histslope = day_histslope;
+            low_speed = day_speed;
+        }
+
         pthread_mutex_lock(&_v4_iq_dyn.lock);
         _v4_iq_dyn.upFrameIso = up;
         _v4_iq_dyn.downFrameIso = down;
+        _v4_iq_dyn.lowlight_auto_ae = ll_en;
+        _v4_iq_dyn.lowlight_iso = ll_iso;
+        _v4_iq_dyn.lowlight_exptime = ll_exptime;
+        _v4_iq_dyn.have_ae_day = have_day;
+        _v4_iq_dyn.have_ae_low = have_low;
+        _v4_iq_dyn.last_ae_lowlight = HI_FALSE;
+        _v4_iq_dyn.ae_day_comp = day_comp;
+        _v4_iq_dyn.ae_low_comp = low_comp;
+        _v4_iq_dyn.ae_day_expmax = day_expmax;
+        _v4_iq_dyn.ae_low_expmax = low_expmax;
+        _v4_iq_dyn.ae_day_sysgainmax = day_sysgainmax;
+        _v4_iq_dyn.ae_low_sysgainmax = low_sysgainmax;
+        _v4_iq_dyn.ae_day_histoff = day_histoff;
+        _v4_iq_dyn.ae_low_histoff = low_histoff;
+        _v4_iq_dyn.ae_day_histslope = day_histslope;
+        _v4_iq_dyn.ae_low_histslope = low_histslope;
+        _v4_iq_dyn.ae_day_speed = day_speed;
+        _v4_iq_dyn.ae_low_speed = low_speed;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
         if (up || down)
             HAL_INFO("v4_iq", "all_param: UpFrameIso=%u DownFrameIso=%u\n", (unsigned)up, (unsigned)down);
+        if (ll_en)
+            HAL_INFO("v4_iq", "all_param: LowLightAutoAE=1 LowLightIso=%u LowLightExpTime=%u\n",
+                     (unsigned)ll_iso, (unsigned)ll_exptime);
     }
 
     // static_3dnr (day) and ir_static_3dnr (night)
@@ -2275,6 +2359,16 @@ static void *v4_iq_dynamic_thread(void *arg) {
         v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
         v4_iq_3dnr_cfg nr_day, nr_ir;
         HI_U32 upIso = 0, downIso = 0;
+        HI_BOOL ll_ae = HI_FALSE;
+        HI_U32 ll_iso = 0, ll_exptime = 0;
+        HI_BOOL have_ae_day = HI_FALSE, have_ae_low = HI_FALSE;
+        HI_BOOL last_ae_low = HI_FALSE;
+        HI_U8 day_comp = 0, low_comp = 0;
+        HI_U32 day_expmax = 0, low_expmax = 0;
+        HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U8 day_histoff = 0, low_histoff = 0;
+        HI_U16 day_histslope = 0, low_histslope = 0;
+        HI_U8 day_speed = 0, low_speed = 0;
         int last_nr_idx = -1;
         HI_BOOL last_nr_ir = HI_FALSE;
         int nr3d_fail_count = 0;
@@ -2292,6 +2386,24 @@ static void *v4_iq_dynamic_thread(void *arg) {
         nr_ir = _v4_iq_dyn.nr3d_ir;
         upIso = _v4_iq_dyn.upFrameIso;
         downIso = _v4_iq_dyn.downFrameIso;
+        ll_ae = _v4_iq_dyn.lowlight_auto_ae;
+        ll_iso = _v4_iq_dyn.lowlight_iso;
+        ll_exptime = _v4_iq_dyn.lowlight_exptime;
+        have_ae_day = _v4_iq_dyn.have_ae_day;
+        have_ae_low = _v4_iq_dyn.have_ae_low;
+        last_ae_low = _v4_iq_dyn.last_ae_lowlight;
+        day_comp = _v4_iq_dyn.ae_day_comp;
+        low_comp = _v4_iq_dyn.ae_low_comp;
+        day_expmax = _v4_iq_dyn.ae_day_expmax;
+        low_expmax = _v4_iq_dyn.ae_low_expmax;
+        day_sysgainmax = _v4_iq_dyn.ae_day_sysgainmax;
+        low_sysgainmax = _v4_iq_dyn.ae_low_sysgainmax;
+        day_histoff = _v4_iq_dyn.ae_day_histoff;
+        low_histoff = _v4_iq_dyn.ae_low_histoff;
+        day_histslope = _v4_iq_dyn.ae_day_histslope;
+        low_histslope = _v4_iq_dyn.ae_low_histslope;
+        day_speed = _v4_iq_dyn.ae_day_speed;
+        low_speed = _v4_iq_dyn.ae_low_speed;
         last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
         last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
         nr3d_fail_count = _v4_iq_dyn.nr3d_fail_count;
@@ -2303,7 +2415,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
         if (!deh_day.enabled && !deh_ir.enabled &&
             !drc_day.enabled && !drc_ir.enabled &&
-            !nr_day.enabled && !nr_ir.enabled) {
+            !nr_day.enabled && !nr_ir.enabled &&
+            !(ll_ae && have_ae_day && have_ae_low)) {
             usleep(1000 * 1000);
             continue;
         }
@@ -2315,6 +2428,9 @@ static void *v4_iq_dynamic_thread(void *arg) {
             continue;
         }
         HI_U32 iso = expi.u32ISO;
+        const HI_BOOL is_lowlight =
+            (ll_ae && have_ae_day && have_ae_low &&
+             (iso >= ll_iso || expi.u32ExpTime >= ll_exptime)) ? HI_TRUE : HI_FALSE;
 
         // Debug: log exposure state periodically, and always when very bright (snow clipping).
         // This makes AE/DRC tuning deterministic.
@@ -2505,6 +2621,41 @@ static void *v4_iq_dynamic_thread(void *arg) {
             }
         }
 
+        // Auto AE switching by low-light (even if user keeps DAY mode at night)
+        if (ll_ae && have_ae_day && have_ae_low &&
+            v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+            if (is_lowlight != last_ae_low) {
+                ISP_EXPOSURE_ATTR_S ea;
+                memset(&ea, 0, sizeof(ea));
+                if (!v4_isp.fnGetExposureAttr(pipe, &ea)) {
+                    if (is_lowlight) {
+                        ea.stAuto.u8Compensation = low_comp;
+                        ea.stAuto.stExpTimeRange.u32Max = low_expmax;
+                        ea.stAuto.stSysGainRange.u32Max = low_sysgainmax;
+                        ea.stAuto.u8MaxHistOffset = low_histoff;
+                        ea.stAuto.u16HistRatioSlope = low_histslope;
+                        ea.stAuto.u8Speed = low_speed;
+                    } else {
+                        ea.stAuto.u8Compensation = day_comp;
+                        ea.stAuto.stExpTimeRange.u32Max = day_expmax;
+                        ea.stAuto.stSysGainRange.u32Max = day_sysgainmax;
+                        ea.stAuto.u8MaxHistOffset = day_histoff;
+                        ea.stAuto.u16HistRatioSlope = day_histslope;
+                        ea.stAuto.u8Speed = day_speed;
+                    }
+                    if (!v4_isp.fnSetExposureAttr(pipe, &ea)) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_ae_lowlight = is_lowlight;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq", "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u\n",
+                            (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime,
+                            (unsigned)ea.stAuto.u8Compensation,
+                            (unsigned)ea.stAuto.stExpTimeRange.u32Max);
+                    }
+                }
+            }
+        }
+
         // 3DNR (VPSS NRX) by ISO + night mode
         {
             if (nr3d_disabled) {
@@ -2584,7 +2735,8 @@ static void v4_iq_dyn_maybe_start(int pipe) {
     pthread_mutex_lock(&_v4_iq_dyn.lock);
     need = (_v4_iq_dyn.dehaze_day.enabled || _v4_iq_dyn.dehaze_ir.enabled ||
             _v4_iq_dyn.linear_drc_day.enabled || _v4_iq_dyn.linear_drc_ir.enabled ||
-            _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled);
+            _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled ||
+            (_v4_iq_dyn.lowlight_auto_ae && _v4_iq_dyn.have_ae_day && _v4_iq_dyn.have_ae_low));
     if (need && !_v4_iq_dyn.thread_started) {
         _v4_iq_dyn.thread_started = true;
         start = true;
