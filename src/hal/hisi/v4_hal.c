@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <strings.h>
 #include <pthread.h>
+#include <time.h>
 
 // Night mode state is implemented in src/night.c. We only need this one symbol here.
 extern bool night_mode_on(void);
@@ -2306,6 +2307,25 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
         HI_U32 iso = expi.u32ISO;
 
+        // Debug: log exposure state periodically, and always when very bright (snow clipping).
+        // This makes AE/DRC tuning deterministic.
+        static time_t last_dbg = 0;
+        time_t now = time(NULL);
+        HI_BOOL very_bright = (expi.u8AveLum >= 210) ? HI_TRUE : HI_FALSE;
+        if (now != (time_t)-1 && (very_bright || (now - last_dbg) >= 5)) {
+            last_dbg = now;
+            HAL_INFO("v4_iq",
+                "ISP exp: iso=%u expTime=%u again=%u dgain=%u ispdgain=%u aveLum=%u expIsMax=%d (mode=%s)\n",
+                (unsigned)expi.u32ISO,
+                (unsigned)expi.u32ExpTime,
+                (unsigned)expi.u32AGain,
+                (unsigned)expi.u32DGain,
+                (unsigned)expi.u32ISPDGain,
+                (unsigned)expi.u8AveLum,
+                (int)expi.bExposureIsMAX,
+                night_mode_on() ? "IR" : "DAY");
+        }
+
         const bool is_ir_mode = night_mode_on();
         const v4_iq_dyn_dehaze_cfg *deh = is_ir_mode ? &deh_ir : &deh_day;
         const v4_iq_dyn_linear_drc_cfg *drc = is_ir_mode ? &drc_ir : &drc_day;
@@ -2645,8 +2665,16 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetExposureAttr(pipe, &rb);
         if (!gr) {
-            HAL_INFO("v4_iq", "AE: applied (runInt=%u routeExValid=%d)\n",
-                (unsigned)rb.u8AERunInterval, (int)rb.bAERouteExValid);
+            HAL_INFO("v4_iq",
+                "AE: applied (runInt=%u routeExValid=%d comp=%u expMax=%u sysGainMax=%u speed=%u histOff=%u histSlope=%u)\n",
+                (unsigned)rb.u8AERunInterval,
+                (int)rb.bAERouteExValid,
+                (unsigned)rb.stAuto.u8Compensation,
+                (unsigned)rb.stAuto.stExpTimeRange.u32Max,
+                (unsigned)rb.stAuto.stSysGainRange.u32Max,
+                (unsigned)rb.stAuto.u8Speed,
+                (unsigned)rb.stAuto.u8MaxHistOffset,
+                (unsigned)rb.stAuto.u16HistRatioSlope);
         } else {
             HAL_INFO("v4_iq", "AE: applied\n");
         }
