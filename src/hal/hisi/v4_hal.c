@@ -2827,6 +2827,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
             static HI_BOOL baseline_init = HI_FALSE;
             static HI_BOOL baseline_gamma = HI_TRUE;
             static HI_BOOL baseline_sharpen = HI_TRUE;
+            static HI_BOOL baseline_sh_attr_valid = HI_FALSE;
+            static ISP_SHARPEN_ATTR_S baseline_sh_attr;
             static HI_BOOL last_noisy_fx = HI_FALSE;
             static time_t last_fx_try = 0;
             time_t now3 = time(NULL);
@@ -2860,7 +2862,42 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     memset(&sh, 0, sizeof(sh));
                     if (!v4_isp.fnGetIspSharpenAttr(pipe, &sh)) {
                         if (!baseline_init) baseline_sharpen = sh.bEnable;
-                        sh.bEnable = noisy_sharpen ? HI_FALSE : baseline_sharpen;
+                        if (!baseline_sh_attr_valid) {
+                            baseline_sh_attr = sh;
+                            baseline_sh_attr_valid = HI_TRUE;
+                        }
+
+                        // Start from baseline each time to avoid accumulating modifications.
+                        if (baseline_sh_attr_valid) sh = baseline_sh_attr;
+
+                        // Anti-halo sharpen in lowlight:
+                        // keep sharpening ON for marketing, but reduce overshoot/undershoot which causes glow around lamps.
+                        if (is_lowlight && !noisy_sharpen) {
+                            sh.bEnable = baseline_sharpen;
+                            if (sh.enOpType == OP_TYPE_AUTO) {
+                                for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+                                    // Soften ringing/halos
+                                    sh.stAuto.au8OverShoot[i]  = (HI_U8)((sh.stAuto.au8OverShoot[i]  * 3) / 5); // ~60%
+                                    sh.stAuto.au8UnderShoot[i] = (HI_U8)((sh.stAuto.au8UnderShoot[i] * 3) / 5);
+                                    if (sh.stAuto.au8OverShoot[i] < 8)  sh.stAuto.au8OverShoot[i] = 8;
+                                    if (sh.stAuto.au8UnderShoot[i] < 8) sh.stAuto.au8UnderShoot[i] = 8;
+                                    // Increase suppression/filter a bit to reduce edge glow
+                                    if (sh.stAuto.au8ShootSupStr[i] < 10) sh.stAuto.au8ShootSupStr[i] = 10;
+                                    if (sh.stAuto.au8EdgeFiltStr[i]  < 60) sh.stAuto.au8EdgeFiltStr[i] = 60;
+                                    if (sh.stAuto.au16MaxSharpGain[i] > 72) sh.stAuto.au16MaxSharpGain[i] = 72;
+                                }
+                                // Slightly reduce overall edge/texture strength to reduce halos, but keep crispness.
+                                for (int g = 0; g < ISP_SHARPEN_GAIN_NUM; g++) {
+                                    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+                                        sh.stAuto.au16TextureStr[g][i] = (HI_U16)((sh.stAuto.au16TextureStr[g][i] * 85) / 100);
+                                        sh.stAuto.au16EdgeStr[g][i]    = (HI_U16)((sh.stAuto.au16EdgeStr[g][i]    * 85) / 100);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Noisy: disable sharpening to avoid turning noise into grain
+                            sh.bEnable = noisy_sharpen ? HI_FALSE : baseline_sharpen;
+                        }
                         (void)v4_isp.fnSetIspSharpenAttr(pipe, &sh);
                     }
                 }
