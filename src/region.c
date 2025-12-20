@@ -29,22 +29,14 @@ static void region_setup_isp_debug_osd(void) {
     if (!app_config.osd_enable || !app_config.osd_isp_debug)
         return;
 
-    // Allocate 2 free slots (prefer high indices to avoid clobbering common reg0 usage).
-    int id2 = region_find_free_osd_slot_from_end(); // bottom line
-    if (id2 < 0) {
-        HAL_WARNING("region", "OSD ISP debug enabled but no free OSD slots available\n");
+    // HiSilicon v4 often supports only a small number of regions reliably.
+    // User requested fixed slots: use regions 2 and 3.
+    const int id1 = 2; // top line
+    const int id2 = 3; // bottom line
+    if (id1 < 0 || id2 < 0 || id1 >= MAX_OSD || id2 >= MAX_OSD) {
+        HAL_WARNING("region", "OSD ISP debug: requested slots out of range (MAX_OSD=%d)\n", MAX_OSD);
         return;
     }
-    // Temporarily mark it used so the second search doesn't return the same slot.
-    strncpy(osds[id2].text, " ", sizeof(osds[id2].text) - 1);
-    int id1 = region_find_free_osd_slot_from_end(); // top line
-    // Restore if second slot can't be found.
-    if (id1 < 0) {
-        osds[id2].text[0] = '\0';
-        HAL_WARNING("region", "OSD ISP debug enabled but only 1 free OSD slot available\n");
-        return;
-    }
-    osds[id2].text[0] = '\0';
 
     const int h = region_guess_frame_height();
     const int margin = 16;
