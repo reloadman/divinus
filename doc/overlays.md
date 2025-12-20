@@ -48,3 +48,21 @@ curl http://192.168.1.17/api/time?ts=1712320920
 curl -F data=@.\Desktop\myimage.bmp http://192.168.1.17/api/osd/3
 ```
 N.B. curl already implies "-X POST" when passing a file with "-F"
+
+### Faceter logo mask (PNG)
+
+This repository includes a ready-to-upload Faceter logo mask:
+- `res/faceter_mask.png` (transparent background, opaque logo; gradient is baked into RGB)
+
+Generate it (and the reference SVG) locally:
+```
+python3 tools/gen_faceter_osd.py
+```
+
+Upload to OSD region 3 and place it (example):
+```
+curl -F data=@res/faceter_mask.png "http://192.168.1.17/api/osd/3?posx=16&posy=16&opal=255"
+```
+
+Tip: to show a local image on boot, set `osd.regN_img` to a filesystem path (e.g. `/tmp/osd3.png`)
+and keep `osd.regN_text` empty.

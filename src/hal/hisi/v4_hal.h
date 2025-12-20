@@ -47,6 +47,14 @@ int v4_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
     unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
     int *exposure_is_max);
 
+// Returns 0 on success and writes current DRC strength into *strength.
+// Best-effort: may return non-zero if the platform/SDK doesn't expose it.
+int v4_get_drc_strength(unsigned int *strength);
+
+// Returns 0 on success and writes 0/1 into *active depending on whether
+// the low-light auto-AE path is currently considered active (v4 dynamic IQ).
+int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active);
+
 int v4_pipeline_create(const char *iqConfig);
 void v4_pipeline_destroy(void);
 

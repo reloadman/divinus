@@ -1,9 +1,129 @@
 #include "region.h"
 
+#include <ctype.h>
+
+#include "media.h"
+#include "night.h"
+
 osd osds[MAX_OSD];
 pthread_t regionPid = 0;
 char timefmt[64];
 unsigned int rxb_l, txb_l, cpu_l[6];
+
+static int region_guess_frame_height(void) {
+    // Best-effort: use configured main stream dimensions if present.
+    if (app_config.mp4_height > 0) return (int)app_config.mp4_height;
+    if (app_config.jpeg_height > 0) return (int)app_config.jpeg_height;
+    return 1080;
+}
+
+static int region_find_free_osd_slot_from_end(void) {
+    for (int id = MAX_OSD - 1; id >= 0; id--) {
+        if (EMPTY(osds[id].text) && EMPTY(osds[id].img))
+            return id;
+    }
+    return -1;
+}
+
+static void region_setup_isp_debug_osd(void) {
+    if (!app_config.osd_enable || !app_config.osd_isp_debug)
+        return;
+
+    // Allocate 2 free slots (prefer high indices to avoid clobbering common reg0 usage).
+    int id2 = region_find_free_osd_slot_from_end(); // bottom line
+    if (id2 < 0) {
+        HAL_WARNING("region", "OSD ISP debug enabled but no free OSD slots available\n");
+        return;
+    }
+    // Temporarily mark it used so the second search doesn't return the same slot.
+    strncpy(osds[id2].text, " ", sizeof(osds[id2].text) - 1);
+    int id1 = region_find_free_osd_slot_from_end(); // top line
+    // Restore if second slot can't be found.
+    if (id1 < 0) {
+        osds[id2].text[0] = '\0';
+        HAL_WARNING("region", "OSD ISP debug enabled but only 1 free OSD slot available\n");
+        return;
+    }
+    osds[id2].text[0] = '\0';
+
+    const int h = region_guess_frame_height();
+    const int margin = 16;
+
+    // Use a bit smaller font than the default to keep the overlay compact.
+    const double size = 24.0;
+    const int line_h = (int)(size * 3.0 / 2.0);
+
+    // Configure top line (id1) and bottom line (id2).
+    const struct {
+        int id;
+        const char *macro;
+        int posy;
+    } lines[2] = {
+        { id1, "$I1", h - margin - 2 * line_h },
+        { id2, "$I2", h - margin - 1 * line_h },
+    };
+
+    for (int i = 0; i < 2; i++) {
+        int id = lines[i].id;
+        osds[id].hand = -1;
+        osds[id].color = DEF_COLOR;
+        osds[id].outl = DEF_OUTL;
+        osds[id].thick = DEF_THICK;
+        osds[id].opal = DEF_OPAL;
+        osds[id].size = size;
+        osds[id].posx = DEF_POSX;
+        osds[id].posy = (short)MAX(0, lines[i].posy);
+        strncpy(osds[id].font, DEF_FONT, sizeof(osds[id].font) - 1);
+        osds[id].font[sizeof(osds[id].font) - 1] = '\0';
+        strncpy(osds[id].text, lines[i].macro, sizeof(osds[id].text) - 1);
+        osds[id].text[sizeof(osds[id].text) - 1] = '\0';
+        osds[id].img[0] = '\0';
+        osds[id].updt = 1;
+    }
+}
+
+static void region_format_isp_debug_line(int line_no, char *dst, size_t dst_sz) {
+    if (!dst || dst_sz == 0) return;
+    dst[0] = '\0';
+
+    unsigned int iso = 0, exptime = 0, again = 0, dgain = 0, ispdgain = 0;
+    int ismax = 0;
+    if (get_isp_exposure_info(&iso, &exptime, &again, &dgain, &ispdgain, &ismax) != EXIT_SUCCESS) {
+        snprintf(dst, dst_sz, "ISP: n/a");
+        return;
+    }
+
+    if (line_no == 1) {
+        snprintf(dst, dst_sz, "ISO=%u T=%uus AG=%u DG=%u ISP=%u",
+            iso, exptime, again, dgain, ispdgain);
+        return;
+    }
+
+    unsigned char lum_u8 = 0;
+    int have_lum = (get_isp_avelum(&lum_u8) == EXIT_SUCCESS);
+
+    unsigned int drc = 0;
+    int have_drc = (get_isp_drc_strength(&drc) == EXIT_SUCCESS);
+
+    int ll = 0;
+    int have_ll = (get_iq_lowlight_state(iso, exptime, &ll) == EXIT_SUCCESS);
+
+    const char *mode = night_mode_on() ? "IR" : "DAY";
+
+    // Keep it compact to fit into the 80-char OSD text buffer.
+    if (have_lum && have_drc && have_ll) {
+        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s LL=%d DRC=%u",
+            (unsigned)lum_u8, ismax, mode, ll, drc);
+    } else if (have_lum && have_drc) {
+        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s DRC=%u",
+            (unsigned)lum_u8, ismax, mode, drc);
+    } else if (have_lum) {
+        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s",
+            (unsigned)lum_u8, ismax, mode);
+    } else {
+        snprintf(dst, dst_sz, "Max=%d Mode=%s", ismax, mode);
+    }
+}
 
 void region_fill_formatted(char* str) {
     char out[80] = "";
@@ -105,6 +225,19 @@ void region_fill_formatted(char* str) {
                 tm_info = gmtime(&t);
             } else tm_info = localtime_r(&t, &tm_buf);
             strftime(s, 64, timefmt, tm_info);
+            strcat(out, s);
+            opos += strlen(s);
+        }
+        else if (str[ipos + 1] == 'I')
+        {
+            ipos++;
+            int line_no = 1;
+            if (isdigit((unsigned char)str[ipos + 1])) {
+                line_no = str[ipos + 1] - '0';
+                ipos++;
+            }
+            char s[80];
+            region_format_isp_debug_line(line_no, s, sizeof(s));
             strcat(out, s);
             opos += strlen(s);
         }
@@ -351,6 +484,10 @@ void *region_thread(void) {
         osds[id].outl = DEF_OUTL;
         osds[id].thick = DEF_THICK;
     }
+
+    // Optionally auto-add ISP debug overlay if enabled in config.
+    // This runs after defaults/config have been applied and only uses free slots.
+    region_setup_isp_debug_osd();
 
     while (keepRunning) {
         for (char id = 0; id < MAX_OSD; id++) {

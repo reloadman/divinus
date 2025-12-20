@@ -202,6 +202,7 @@ int save_app_config(void) {
 
     fprintf(file, "osd:\n");
     fprintf(file, "  enable: %s\n", app_config.osd_enable ? "true" : "false");
+    fprintf(file, "  isp_debug: %s\n", app_config.osd_isp_debug ? "true" : "false");
     for (char i = 0; i < MAX_OSD; i++) {
         char imgEmpty = EMPTY(osds[i].img);
         char textEmpty = EMPTY(osds[i].text);
@@ -281,6 +282,7 @@ enum ConfigError parse_app_config(void) {
     app_config.mdns_enable = false;
 
     app_config.osd_enable = false;
+    app_config.osd_isp_debug = false;
 
     app_config.onvif_enable = false;
     app_config.onvif_enable_auth = false;
@@ -487,6 +489,7 @@ enum ConfigError parse_app_config(void) {
     parse_bool(&ini, "mdns", "enable", &app_config.mdns_enable);
 
     parse_bool(&ini, "osd", "enable", &app_config.osd_enable);
+    parse_bool(&ini, "osd", "isp_debug", &app_config.osd_isp_debug);
     if (app_config.osd_enable) {
         for (char i = 0; i < MAX_OSD; i++) {
             char param[16];

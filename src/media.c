@@ -998,6 +998,30 @@ int get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
     }
 }
 
+int get_isp_drc_strength(unsigned int *strength) {
+    if (!strength) return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_drc_strength(strength);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
+}
+
+int get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active) {
+    if (!active) return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_iq_lowlight_state(iso, exp_time, active);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
+}
+
 int take_next_free_channel(bool mainLoop) {
     pthread_mutex_lock(&chnMtx);
     for (int i = 0; i < chnCount; i++) {

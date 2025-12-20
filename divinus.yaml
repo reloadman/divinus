@@ -19,6 +19,10 @@ isp:
 
 osd:
   enable: true
+  # ISP/AE/IQ debug OSD (updates once per second; uses 2 free OSD regions).
+  # Shows ISO, exposure time (us), gains, average luminance, exposure-max flag,
+  # day/IR mode, low-light auto-AE flag (if available), and DRC strength (if available).
+  isp_debug: false
   # Pretty, readable defaults (outline + safe margins). Uncomment to enable.
   #reg0_text: "$t"
   #reg0_posx: 16
@@ -27,6 +31,14 @@ osd:
   #reg0_color: 0xffff      # white (ARGB1555)
   #reg0_outl: 0x8000       # black outline (ARGB1555)
   #reg0_thick: 2.0         # outline thickness in px
+  #
+  # Image OSD example (PNG/BMP): upload via /api/osd/{id} and keep text empty.
+  # The repo includes a sample mask: `res/faceter_mask.png` (upload it to create /tmp/osd3.png).
+  #reg3_img: "/tmp/osd3.png"
+  #reg3_text: ""
+  #reg3_posx: 16
+  #reg3_posy: 16
+  #reg3_opal: 255
 
 mdns:
   enable: false

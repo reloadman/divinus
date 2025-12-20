@@ -1228,6 +1228,21 @@ typedef struct {
     ISP_DRC_ASYMMETRY_CURVE_ATTR_S stAsymmetryCurve;
 } ISP_DRC_ATTR_S;
 
+int v4_get_drc_strength(unsigned int *strength) {
+    if (!strength) return EXIT_FAILURE;
+    if (!v4_isp.fnGetDRCAttr) return EXIT_FAILURE;
+    ISP_DRC_ATTR_S da;
+    memset(&da, 0, sizeof(da));
+    if (v4_isp.fnGetDRCAttr(_v4_vi_pipe, &da))
+        return EXIT_FAILURE;
+    // Prefer the currently-selected op type.
+    if (da.enOpType == OP_TYPE_AUTO)
+        *strength = (unsigned int)da.stAuto.u16Strength;
+    else
+        *strength = (unsigned int)da.stManual.u16Strength;
+    return EXIT_SUCCESS;
+}
+
 // ---- NR ----
 #ifndef ISP_BAYER_CHN_NUM
 #define ISP_BAYER_CHN_NUM 4
@@ -1638,6 +1653,28 @@ typedef struct {
 } v4_iq_dyn_state;
 
 static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active) {
+    if (!active) return EXIT_FAILURE;
+
+    HI_BOOL ll_ae = HI_FALSE;
+    HI_BOOL have_day = HI_FALSE;
+    HI_BOOL have_low = HI_FALSE;
+    HI_U32 ll_iso = 0;
+    HI_U32 ll_exptime = 0;
+
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    ll_ae = _v4_iq_dyn.lowlight_auto_ae;
+    have_day = _v4_iq_dyn.have_ae_day;
+    have_low = _v4_iq_dyn.have_ae_low;
+    ll_iso = _v4_iq_dyn.lowlight_iso;
+    ll_exptime = _v4_iq_dyn.lowlight_exptime;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+    *active = (ll_ae && have_day && have_low &&
+        ((HI_U32)iso >= ll_iso || (HI_U32)exp_time >= ll_exptime)) ? 1 : 0;
+    return EXIT_SUCCESS;
+}
 
 static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U32 *yp, int n) {
     if (n <= 1) return (n == 1) ? yp[0] : 0;

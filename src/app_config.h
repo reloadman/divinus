@@ -60,6 +60,8 @@ struct AppConfig {
 
     // [osd]
     bool osd_enable;
+    // If true, show ISP/AE/IQ debug text in bottom-left (1 Hz).
+    bool osd_isp_debug;
 
     // [mdns]
     bool mdns_enable;
