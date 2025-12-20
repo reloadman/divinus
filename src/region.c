@@ -100,20 +100,26 @@ static void region_format_isp_debug_line(int line_no, char *dst, size_t dst_sz) 
     int ll = 0;
     int have_ll = (get_iq_lowlight_state(iso, exptime, &ll) == EXIT_SUCCESS);
 
+    unsigned int comp = 0, expmax = 0, sysgainmax = 0;
+    int have_ae = (get_isp_ae_auto_params(&comp, &expmax, &sysgainmax) == EXIT_SUCCESS);
+
     const char *mode = night_mode_on() ? "IR" : "DAY";
 
     // Keep it compact to fit into the 80-char OSD text buffer.
-    if (have_lum && have_drc && have_ll) {
-        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s LL=%d DRC=%u",
+    if (have_lum && have_drc && have_ll && have_ae) {
+        snprintf(dst, dst_sz, "Lum=%u Max=%d %s LL=%d DRC=%u C=%u EM=%u",
+            (unsigned)lum_u8, ismax, mode, ll, drc, comp, expmax);
+    } else if (have_lum && have_drc && have_ll) {
+        snprintf(dst, dst_sz, "Lum=%u Max=%d %s LL=%d DRC=%u",
             (unsigned)lum_u8, ismax, mode, ll, drc);
     } else if (have_lum && have_drc) {
-        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s DRC=%u",
+        snprintf(dst, dst_sz, "Lum=%u Max=%d %s DRC=%u",
             (unsigned)lum_u8, ismax, mode, drc);
     } else if (have_lum) {
-        snprintf(dst, dst_sz, "Lum=%u Max=%d Mode=%s",
+        snprintf(dst, dst_sz, "Lum=%u Max=%d %s",
             (unsigned)lum_u8, ismax, mode);
     } else {
-        snprintf(dst, dst_sz, "Max=%d Mode=%s", ismax, mode);
+        snprintf(dst, dst_sz, "Max=%d %s", ismax, mode);
     }
 }
 

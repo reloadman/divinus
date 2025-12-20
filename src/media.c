@@ -1022,6 +1022,18 @@ int get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active) 
     }
 }
 
+int get_isp_ae_auto_params(unsigned int *comp, unsigned int *expmax, unsigned int *sysgainmax) {
+    if (!comp || !expmax || !sysgainmax) return EXIT_FAILURE;
+    switch (plat) {
+#if defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            return v4_get_ae_auto_params(comp, expmax, sysgainmax);
+#endif
+        default:
+            return EXIT_FAILURE;
+    }
+}
+
 int take_next_free_channel(bool mainLoop) {
     pthread_mutex_lock(&chnMtx);
     for (int i = 0; i < chnCount; i++) {

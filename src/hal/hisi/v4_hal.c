@@ -1676,6 +1676,19 @@ int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *activ
     return EXIT_SUCCESS;
 }
 
+int v4_get_ae_auto_params(unsigned int *comp, unsigned int *expmax, unsigned int *sysgainmax) {
+    if (!comp || !expmax || !sysgainmax) return EXIT_FAILURE;
+    if (!v4_isp.fnGetExposureAttr) return EXIT_FAILURE;
+    ISP_EXPOSURE_ATTR_S ea;
+    memset(&ea, 0, sizeof(ea));
+    if (v4_isp.fnGetExposureAttr(_v4_vi_pipe, &ea))
+        return EXIT_FAILURE;
+    *comp = (unsigned int)ea.stAuto.u8Compensation;
+    *expmax = (unsigned int)ea.stAuto.stExpTimeRange.u32Max;
+    *sysgainmax = (unsigned int)ea.stAuto.stSysGainRange.u32Max;
+    return EXIT_SUCCESS;
+}
+
 static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U32 *yp, int n) {
     if (n <= 1) return (n == 1) ? yp[0] : 0;
     if (x <= xp[0]) return yp[0];
@@ -2661,33 +2674,55 @@ static void *v4_iq_dynamic_thread(void *arg) {
         // Auto AE switching by low-light (even if user keeps DAY mode at night)
         if (ll_ae && have_ae_day && have_ae_low &&
             v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
-            if (is_lowlight != last_ae_low) {
-                ISP_EXPOSURE_ATTR_S ea;
-                memset(&ea, 0, sizeof(ea));
-                if (!v4_isp.fnGetExposureAttr(pipe, &ea)) {
-                    if (is_lowlight) {
-                        ea.stAuto.u8Compensation = low_comp;
-                        ea.stAuto.stExpTimeRange.u32Max = low_expmax;
-                        ea.stAuto.stSysGainRange.u32Max = low_sysgainmax;
-                        ea.stAuto.u8MaxHistOffset = low_histoff;
-                        ea.stAuto.u16HistRatioSlope = low_histslope;
-                        ea.stAuto.u8Speed = low_speed;
-                    } else {
-                        ea.stAuto.u8Compensation = day_comp;
-                        ea.stAuto.stExpTimeRange.u32Max = day_expmax;
-                        ea.stAuto.stSysGainRange.u32Max = day_sysgainmax;
-                        ea.stAuto.u8MaxHistOffset = day_histoff;
-                        ea.stAuto.u16HistRatioSlope = day_histslope;
-                        ea.stAuto.u8Speed = day_speed;
-                    }
-                    if (!v4_isp.fnSetExposureAttr(pipe, &ea)) {
+            ISP_EXPOSURE_ATTR_S ea;
+            memset(&ea, 0, sizeof(ea));
+            if (v4_isp.fnGetExposureAttr(pipe, &ea) == 0) {
+                // Compute desired knobs for current lowlight state
+                const HI_U8 want_comp = is_lowlight ? low_comp : day_comp;
+                const HI_U32 want_expmax = is_lowlight ? low_expmax : day_expmax;
+                const HI_U32 want_sysgainmax = is_lowlight ? low_sysgainmax : day_sysgainmax;
+                const HI_U8 want_histoff = is_lowlight ? low_histoff : day_histoff;
+                const HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
+                const HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
+
+                // Apply if state changed OR if current params don't match desired
+                const HI_BOOL mismatch =
+                    (ea.stAuto.u8Compensation != want_comp) ||
+                    (ea.stAuto.stExpTimeRange.u32Max != want_expmax) ||
+                    (ea.stAuto.stSysGainRange.u32Max != want_sysgainmax) ||
+                    (ea.stAuto.u8MaxHistOffset != want_histoff) ||
+                    (ea.stAuto.u16HistRatioSlope != want_histslope) ||
+                    (ea.stAuto.u8Speed != want_speed);
+
+                // Rate limit retries to avoid log spam
+                static time_t last_ae_try = 0;
+                time_t now2 = time(NULL);
+                const HI_BOOL allow_try =
+                    (now2 == (time_t)-1) ? HI_TRUE : ((now2 - last_ae_try) >= 2);
+
+                if ((is_lowlight != last_ae_low || mismatch) && allow_try) {
+                    last_ae_try = now2;
+
+                    ea.stAuto.u8Compensation = want_comp;
+                    ea.stAuto.stExpTimeRange.u32Max = want_expmax;
+                    ea.stAuto.stSysGainRange.u32Max = want_sysgainmax;
+                    ea.stAuto.u8MaxHistOffset = want_histoff;
+                    ea.stAuto.u16HistRatioSlope = want_histslope;
+                    ea.stAuto.u8Speed = want_speed;
+
+                    int sr = v4_isp.fnSetExposureAttr(pipe, &ea);
+                    if (!sr) {
                         pthread_mutex_lock(&_v4_iq_dyn.lock);
                         _v4_iq_dyn.last_ae_lowlight = is_lowlight;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
-                        HAL_INFO("v4_iq", "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u\n",
+                        HAL_INFO("v4_iq",
+                            "Dynamic AE: lowlight=%d iso=%u expTime=%u comp=%u expMax=%u sysGainMax=%u\n",
                             (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime,
-                            (unsigned)ea.stAuto.u8Compensation,
-                            (unsigned)ea.stAuto.stExpTimeRange.u32Max);
+                            (unsigned)want_comp, (unsigned)want_expmax, (unsigned)want_sysgainmax);
+                    } else {
+                        HAL_WARNING("v4_iq",
+                            "Dynamic AE: SetExposureAttr failed with %#x (lowlight=%d wantComp=%u wantExpMax=%u)\n",
+                            sr, (int)is_lowlight, (unsigned)want_comp, (unsigned)want_expmax);
                     }
                 }
             }

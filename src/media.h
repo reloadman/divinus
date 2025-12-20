@@ -44,6 +44,10 @@ int get_isp_drc_strength(unsigned int *strength);
 // low-light auto-AE is currently considered active (platform-dependent).
 // Currently implemented only for hisi/v4.
 int get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active);
+
+// Returns 0 on success and writes current AUTO AE knobs.
+// Useful to confirm which AE profile is actually active.
+int get_isp_ae_auto_params(unsigned int *comp, unsigned int *expmax, unsigned int *sysgainmax);
 int take_next_free_channel(bool mainLoop);
 
 int create_channel(char index, short width, short height, char framerate, char jpeg);
