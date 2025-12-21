@@ -336,9 +336,11 @@ char *memstr(char *haystack, char *needle, int size, char needlesize) {
 }
 
 unsigned int millis() {
-    struct timeval t;
-    gettimeofday(&t, NULL);
-    return t.tv_sec * 1000 + (t.tv_usec + 500) / 1000;
+    // Use monotonic clock: immune to NTP/clock_settime jumps.
+    // This function is used for relative timing (timeouts/ticks), not wall time.
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned int)((uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec + 500000ULL) / 1000000ULL);
 }
 
 void reverse(void *arr, size_t width) {

@@ -148,13 +148,33 @@ static int region_find_free_osd_slot_from_end(void) {
 }
 
 static void region_setup_isp_debug_osd(void) {
-    if (!app_config.osd_enable || !app_config.osd_isp_debug)
+    // These are the reserved slots for ISP debug overlay.
+    const int id1 = 2; // top line
+    const int id2 = 3; // bottom line
+
+    if (!app_config.osd_enable)
         return;
+
+    // If ISP debug is disabled, but the reserved regions still contain $I macros
+    // (e.g. persisted from a previous enable), clear them so they don't show up.
+    if (!app_config.osd_isp_debug) {
+        if (id1 >= 0 && id1 < MAX_OSD) {
+            if (EQUALS(osds[id1].text, "$I1") || EQUALS(osds[id1].text, "$I2")) {
+                osds[id1].text[0] = '\0';
+                osds[id1].updt = 1;
+            }
+        }
+        if (id2 >= 0 && id2 < MAX_OSD) {
+            if (EQUALS(osds[id2].text, "$I1") || EQUALS(osds[id2].text, "$I2")) {
+                osds[id2].text[0] = '\0';
+                osds[id2].updt = 1;
+            }
+        }
+        return;
+    }
 
     // HiSilicon v4 often supports only a small number of regions reliably.
     // User requested fixed slots: use regions 2 and 3.
-    const int id1 = 2; // top line
-    const int id2 = 3; // bottom line
     if (id1 < 0 || id2 < 0 || id1 >= MAX_OSD || id2 >= MAX_OSD) {
         HAL_WARNING("region", "OSD ISP debug: requested slots out of range (MAX_OSD=%d)\n", MAX_OSD);
         return;
