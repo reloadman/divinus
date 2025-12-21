@@ -1,6 +1,8 @@
 #include "region.h"
 
 #include <ctype.h>
+#include <string.h>
+#include <strings.h>
 
 #include "media.h"
 #include "night.h"
@@ -9,6 +11,67 @@ osd osds[MAX_OSD];
 pthread_t regionPid = 0;
 char timefmt[64];
 unsigned int rxb_l, txb_l, cpu_l[6];
+
+static bool region_font_has_supported_ext(const char *s) {
+    if (!s) return false;
+    const char *ext = strrchr(s, '.');
+    if (!ext) return false;
+    return strcasecmp(ext, ".ttf") == 0 ||
+           strcasecmp(ext, ".otf") == 0 ||
+           strcasecmp(ext, ".ttc") == 0;
+}
+
+// Resolves configured font string into a filesystem path usable by `sft_loadfile()`.
+// - If `cfg` contains '/', treat it as a path (absolute or relative) and use as-is.
+// - Otherwise treat it as a font name (legacy) and search common directories.
+// Returns 0 on success, -1 on failure.
+static int region_resolve_font_path(const char *cfg, char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return -1;
+    out[0] = '\0';
+
+    if (EMPTY(cfg))
+        cfg = DEF_FONT;
+
+    // Explicit path: allow both absolute and relative paths.
+    if (strchr(cfg, '/')) {
+        if (!access(cfg, F_OK)) {
+            snprintf(out, out_sz, "%s", cfg);
+            return 0;
+        }
+        return -1;
+    }
+
+    const char *dirs[] = {
+        ".",
+        "/oem/usr/share",
+        "/usr/local/share/fonts",
+        "/usr/share/fonts/truetype",
+        "/usr/share/fonts",
+        NULL
+    };
+
+    const bool has_ext = region_font_has_supported_ext(cfg);
+    for (const char **dir = dirs; *dir; dir++) {
+        // If caller specified filename with extension (e.g. "Ubuntu.ttf"), try directly.
+        if (has_ext) {
+            snprintf(out, out_sz, "%s/%s", *dir, cfg);
+            if (!access(out, F_OK)) return 0;
+        }
+
+        // Legacy lookup: name without extension (e.g. "UbuntuMono-Regular").
+        snprintf(out, out_sz, "%s/%s.ttf", *dir, cfg);
+        if (!access(out, F_OK)) return 0;
+        snprintf(out, out_sz, "%s/%s2.ttf", *dir, cfg);
+        if (!access(out, F_OK)) return 0;
+        snprintf(out, out_sz, "%s/%s.otf", *dir, cfg);
+        if (!access(out, F_OK)) return 0;
+        snprintf(out, out_sz, "%s/%s.ttc", *dir, cfg);
+        if (!access(out, F_OK)) return 0;
+    }
+
+    out[0] = '\0';
+    return -1;
+}
 
 static int region_guess_frame_height(void) {
     // Best-effort: use configured main stream dimensions if present.
@@ -500,25 +563,12 @@ void *region_thread(void) {
                 }
 
                 if (osds[id].updt) {
-                    char font[256];
-                    char *dirs[] = {
-                        ".",
-                        "/oem/usr/share",
-                        "/usr/local/share/fonts",
-                        "/usr/share/fonts/truetype",
-                        "/usr/share/fonts",
-                        NULL};
-                    char **dir = dirs;
-                    while (*dir) {
-                        sprintf(font, "%s/%s.ttf", *dir, osds[id].font);
-                        if (!access(font, F_OK)) goto found_font;
-                        sprintf(font, "%s/%s2.ttf", *dir++, osds[id].font);
-                        if (!access(font, F_OK)) goto found_font;
+                    char font_path[512];
+                    if (region_resolve_font_path(osds[id].font, font_path, sizeof(font_path)) != 0) {
+                        HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
+                        continue;
                     }
-                    HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
-                    continue;
-found_font:;
-                    hal_bitmap bitmap = text_create_rendered(font, osds[id].size, out, osds[id].color,
+                    hal_bitmap bitmap = text_create_rendered(font_path, osds[id].size, out, osds[id].color,
                         osds[id].outl, osds[id].thick);
                     hal_rect rect = { .height = bitmap.dim.height, .width = bitmap.dim.width,
                         .x = osds[id].posx, .y = osds[id].posy };

@@ -65,7 +65,9 @@ typedef struct {
     int hand, color;
     short opal, posx, posy;
     char updt;
-    char font[32];
+    // Font name (legacy) or full font file path (preferred).
+    // Keep this large enough to hold absolute paths.
+    char font[256];
     char text[80];
     char img[64];
     int outl;

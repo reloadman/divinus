@@ -243,7 +243,7 @@ Configures text or image overlays by their ID (0-9 at the moment).
 |--------|------------|----------------------------------------------------|
 | GET    | `text`     | Text to display (special specifiers supported)     |
 | GET    | `img`      | Local image path to display (`text` must be empty) |
-| GET    | `font`     | Font name to be used                               |
+| GET    | `font`     | Font path (preferred) or legacy font name          |
 | GET    | `size`     | Font size (decimal in pt)                          |
 | GET    | `color`    | Font color (hex format, RGB555 format)             |
 | GET    | `opal`     | Opacity level (0-255)                              |

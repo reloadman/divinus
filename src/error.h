@@ -1,6 +1,6 @@
 #pragma once
 
 #include "hal/support.h"
-#include "hal/hisi/v4_sys.h"
+#include "hal/sys_mod.h"
 
 char *errstr(int error);
