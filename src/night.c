@@ -346,6 +346,10 @@ int enable_night(void) {
     // Hardware may already be in a different state; the first evaluation will reconcile it.
     night_reset_state();
 
+    // Sync manual mode from config on (re)start so it is effective immediately after boot
+    // and also after any thread restarts triggered via /api/night.
+    night_manual(app_config.night_mode_manual);
+
     pthread_attr_t thread_attr;
     pthread_attr_init(&thread_attr);
     size_t stacksize;
