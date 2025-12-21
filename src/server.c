@@ -1310,6 +1310,10 @@ void respond_request(http_request_t *req) {
                 if (app_config.night_mode_enable)
                     enable_night();
             } else if (!(enable_seen && !enable_value)) {
+                // If user enables manual mode without explicit hardware params, treat it as
+                // "manual night": switch to IR mode immediately and keep automatics disabled.
+                if (manual_seen && manual_value && !set_ircut && !set_irled && !set_grayscale)
+                    night_mode(true);
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
                 if (set_whiteled) night_whiteled(whiteled_value);

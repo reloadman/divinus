@@ -1,43 +1,46 @@
 #include "app_config.h"
 #include <ctype.h>
+#include <errno.h>
 
 const char *appconf_paths[] = {"./divinus.yaml", "/etc/divinus.yaml"};
 
 struct AppConfig app_config;
 
-static inline void open_app_config(FILE **file, const char *flags) {
-    const char **path = appconf_paths;
+static bool find_app_config_path(char *out, size_t out_sz) {
     char conf_path[PATH_MAX], exe_path[PATH_MAX];
-    *file = NULL;
+
+    if (!out || out_sz == 0)
+        return false;
 
     ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     if (exe_len != -1) {
-        char *dir = dirname(exe_path);
         exe_path[exe_len] = '\0';
+        char *dir = dirname(exe_path);
         snprintf(conf_path, sizeof(conf_path), "%s/divinus.yaml", dir);
         if (!access(conf_path, F_OK)) {
-            if (*flags == 'w') {
-                char bak_path[PATH_MAX];
-                sprintf(bak_path, "%s.bak", conf_path);
-                remove(bak_path);
-                rename(conf_path, bak_path);
-            }
-            *file = fopen(conf_path, flags);
-            return;
+            strncpy(out, conf_path, out_sz - 1);
+            out[out_sz - 1] = '\0';
+            return true;
         }
     }
 
-    while (*path) {
-        if (access(*path++, F_OK)) continue;
-        if (*flags == 'w') {
-            char bak_path[PATH_MAX];
-            sprintf(bak_path, "%s.bak", *(path - 1));
-            remove(bak_path);
-            rename(*(path - 1), bak_path);
+    for (const char **path = appconf_paths; *path; path++) {
+        if (!access(*path, F_OK)) {
+            strncpy(out, *path, out_sz - 1);
+            out[out_sz - 1] = '\0';
+            return true;
         }
-        *file = fopen(*(path - 1), flags);
-        break;
     }
+
+    return false;
+}
+
+static inline void open_app_config(FILE **file, const char *flags) {
+    char conf_path[PATH_MAX];
+    *file = NULL;
+    if (!find_app_config_path(conf_path, sizeof(conf_path)))
+        return;
+    *file = fopen(conf_path, flags);
 }
 
 void restore_app_config(void) {
@@ -50,9 +53,13 @@ void restore_app_config(void) {
         snprintf(conf_path, sizeof(conf_path), "%s/divinus.yaml", dir);
         sprintf(bak_path, "%s.bak", conf_path);
         if (!access(bak_path, F_OK)) {
-            remove(conf_path);
-            rename(bak_path, conf_path);
-            return;
+            // Only restore if the main config is missing.
+            // If config exists, treat .bak as stale and remove it to avoid accidental rollback.
+            if (access(conf_path, F_OK)) {
+                rename(bak_path, conf_path);
+                return;
+            }
+            remove(bak_path);
         }
     }
 
@@ -61,19 +68,34 @@ void restore_app_config(void) {
         char bak_path[PATH_MAX];
         sprintf(bak_path, "%s.bak", *path);
         if (!access(bak_path, F_OK)) {
-            remove(*path);
-            rename(bak_path, *path);
+            if (access(*path, F_OK))
+                rename(bak_path, *path);
+            else
+                remove(bak_path);
         }
         path++;
     }
 }
 
 int save_app_config(void) {
-    FILE *file;
+    char conf_path[PATH_MAX];
+    if (!find_app_config_path(conf_path, sizeof(conf_path)))
+        HAL_ERROR("app_config", "Can't find config file for writing\n");
 
-    open_app_config(&file, "w");
-    if (!file)
-        HAL_ERROR("app_config", "Can't open config file for writing\n");
+    // Atomic save: write into a temp file in the same directory, then rename over target.
+    // This avoids partially-written configs and removes the need for persistent *.bak files.
+    char tmp_template[PATH_MAX];
+    snprintf(tmp_template, sizeof(tmp_template), "%s.tmpXXXXXX", conf_path);
+    int tfd = mkstemp(tmp_template);
+    if (tfd < 0)
+        HAL_ERROR("app_config", "Can't create temp config '%s': %s\n", tmp_template, strerror(errno));
+
+    FILE *file = fdopen(tfd, "w");
+    if (!file) {
+        close(tfd);
+        remove(tmp_template);
+        HAL_ERROR("app_config", "Can't open temp config '%s': %s\n", tmp_template, strerror(errno));
+    }
 
     fprintf(file, "system:\n");
     fprintf(file, "  sensor_config: %s\n", app_config.sensor_config);
@@ -246,7 +268,22 @@ int save_app_config(void) {
     fprintf(file, "  interval: %d\n", app_config.http_post_interval);
     fprintf(file, "  qfactor: %d\n", app_config.http_post_qfactor);
 
-    fclose(file);
+    // Ensure content hits storage before we swap the file name.
+    int flush_rc = fflush(file);
+    int fsync_rc = fsync(fileno(file));
+    int close_rc = fclose(file);
+    if (flush_rc || fsync_rc || close_rc) {
+        remove(tmp_template);
+        HAL_ERROR("app_config", "Failed to write config (flush=%d fsync=%d close=%d)\n",
+            flush_rc, fsync_rc, close_rc);
+    }
+
+    // Atomic replacement (POSIX rename).
+    if (rename(tmp_template, conf_path)) {
+        remove(tmp_template);
+        HAL_ERROR("app_config", "Failed to replace config '%s': %s\n", conf_path, strerror(errno));
+    }
+
     return EXIT_SUCCESS;
 }
 
@@ -439,6 +476,8 @@ enum ConfigError parse_app_config(void) {
     err =
         parse_bool(&ini, "night_mode", "enable", &app_config.night_mode_enable);
     #define PIN_MAX 95
+    #define PIN_SENTINEL 999u
+    #define PIN_CFG_MAX 999
     {
         // Parse night_mode fields regardless of `enable`, because some features
         // (e.g. IR-cut exercise on startup) need pin definitions even when the
@@ -446,15 +485,43 @@ enum ConfigError parse_app_config(void) {
         int lum;
         parse_bool(&ini, "night_mode", "manual", &app_config.night_mode_manual);
         parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
-        parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX, &app_config.ir_sensor_pin);
+        // Pins: allow sentinel 999 ("disabled") in config.
+        parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_CFG_MAX, &app_config.ir_sensor_pin);
         parse_int(&ini, "night_mode", "check_interval_s", 0, 600, &app_config.check_interval_s);
-        parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX, &app_config.ir_cut_pin1);
-        parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX, &app_config.ir_cut_pin2);
-        parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_MAX, &app_config.ir_led_pin);
-        parse_int(&ini, "night_mode", "white_led_pin", 0, PIN_MAX, &app_config.white_led_pin);
+        parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_CFG_MAX, &app_config.ir_cut_pin1);
+        parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_CFG_MAX, &app_config.ir_cut_pin2);
+        parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_CFG_MAX, &app_config.ir_led_pin);
+        parse_int(&ini, "night_mode", "white_led_pin", 0, PIN_CFG_MAX, &app_config.white_led_pin);
         parse_int(&ini, "night_mode", "pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
         parse_param_value(&ini, "night_mode", "adc_device", app_config.adc_device);
         parse_int(&ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);
+
+        // Normalize pins: values outside the supported range are treated as "disabled".
+        if (app_config.ir_sensor_pin != PIN_SENTINEL && app_config.ir_sensor_pin > PIN_MAX) {
+            HAL_WARNING("app_config", "night_mode.ir_sensor_pin=%u out of range (0..%u or %u), disabling\n",
+                app_config.ir_sensor_pin, PIN_MAX, PIN_SENTINEL);
+            app_config.ir_sensor_pin = PIN_SENTINEL;
+        }
+        if (app_config.ir_cut_pin1 != PIN_SENTINEL && app_config.ir_cut_pin1 > PIN_MAX) {
+            HAL_WARNING("app_config", "night_mode.ir_cut_pin1=%u out of range (0..%u or %u), disabling\n",
+                app_config.ir_cut_pin1, PIN_MAX, PIN_SENTINEL);
+            app_config.ir_cut_pin1 = PIN_SENTINEL;
+        }
+        if (app_config.ir_cut_pin2 != PIN_SENTINEL && app_config.ir_cut_pin2 > PIN_MAX) {
+            HAL_WARNING("app_config", "night_mode.ir_cut_pin2=%u out of range (0..%u or %u), disabling\n",
+                app_config.ir_cut_pin2, PIN_MAX, PIN_SENTINEL);
+            app_config.ir_cut_pin2 = PIN_SENTINEL;
+        }
+        if (app_config.ir_led_pin != PIN_SENTINEL && app_config.ir_led_pin > PIN_MAX) {
+            HAL_WARNING("app_config", "night_mode.ir_led_pin=%u out of range (0..%u or %u), disabling\n",
+                app_config.ir_led_pin, PIN_MAX, PIN_SENTINEL);
+            app_config.ir_led_pin = PIN_SENTINEL;
+        }
+        if (app_config.white_led_pin != PIN_SENTINEL && app_config.white_led_pin > PIN_MAX) {
+            HAL_WARNING("app_config", "night_mode.white_led_pin=%u out of range (0..%u or %u), disabling\n",
+                app_config.white_led_pin, PIN_MAX, PIN_SENTINEL);
+            app_config.white_led_pin = PIN_SENTINEL;
+        }
         // Optional ISP-derived day/night hysteresis thresholds (hisi/v4 only).
         if (parse_int(&ini, "night_mode", "isp_lum_low", 0, 255, &lum) == CONFIG_OK)
             app_config.isp_lum_low = lum;

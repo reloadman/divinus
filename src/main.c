@@ -127,8 +127,13 @@ int main(int argc, char *argv[]) {
     if (start_sdk())
         HAL_ERROR("hal", "Failed to start SDK!\n");
 
-    if (app_config.night_mode_enable)
+    if (app_config.night_mode_enable) {
         enable_night();
+        // If persisted manual mode is enabled, user expects "manual night" on boot:
+        // force IR mode immediately and keep automatics disabled.
+        if (app_config.night_mode_manual)
+            night_mode(true);
+    }
 
     if (app_config.http_post_enable)
         start_http_post_send();
