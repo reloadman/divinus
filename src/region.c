@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 #include "media.h"
 #include "night.h"
@@ -48,6 +49,26 @@ static hal_bitmap region_pad_bitmap(const hal_bitmap *src, unsigned short target
     out.dim.height = target_h;
     if (out_allocated) *out_allocated = true;
     return out;
+}
+
+// Sleep until the next second boundary (best-effort), in small chunks so shutdown is responsive.
+static void region_sleep_to_next_second(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        // Fallback.
+        usleep(1000 * 1000);
+        return;
+    }
+    long ns_to_next = 1000000000L - ts.tv_nsec;
+    if (ns_to_next < 0) ns_to_next = 0;
+    // Cap to 1s.
+    if (ns_to_next > 1000000000L) ns_to_next = 1000000000L;
+    unsigned int us = (unsigned int)(ns_to_next / 1000L);
+    while (keepRunning && us) {
+        unsigned int step = (us > 50000u) ? 50000u : us; // 50ms
+        usleep(step);
+        us -= step;
+    }
 }
 
 static bool region_font_has_supported_ext(const char *s) {
@@ -783,7 +804,7 @@ void *region_thread(void) {
             }
             osds[id].updt = 0;
         }
-        sleep(1);
+        region_sleep_to_next_second();
     }
 
     switch (plat) {

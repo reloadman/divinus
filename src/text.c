@@ -7,6 +7,11 @@ SFT_Image canvas;
 SFT_LMetrics lmtx;
 hal_bitmap bitmap;
 
+// Loading/parsing a TTF from storage every second can occasionally stall on embedded
+// systems and cause OSD updates to skip a second. Cache the last loaded font.
+static SFT_Font *g_cached_font = NULL;
+static char g_cached_font_path[512] = {0};
+
 int utf8_to_utf32(const unsigned char *utf8, 
     unsigned int *utf32, int max)
 {
@@ -87,10 +92,23 @@ void text_copy_rendered(SFT_Image *dest, const SFT_Image *source, int x0, int y0
 
 int text_load_font(SFT *sft, const char *path, double size, SFT_LMetrics *lmtx)
 {
-    SFT_Font *font = sft_loadfile(path);
-    if (font == NULL)
-        HAL_ERROR("text", "sft_loadfile failed");
-    sft->font = font;
+    if (!path || !*path)
+        HAL_ERROR("text", "font path is empty");
+
+    // Reload only when the path changes.
+    if (!g_cached_font || strcmp(g_cached_font_path, path) != 0) {
+        if (g_cached_font) {
+            sft_freefont(g_cached_font);
+            g_cached_font = NULL;
+            g_cached_font_path[0] = '\0';
+        }
+        g_cached_font = sft_loadfile(path);
+        if (g_cached_font == NULL)
+            HAL_ERROR("text", "sft_loadfile failed");
+        snprintf(g_cached_font_path, sizeof(g_cached_font_path), "%s", path);
+    }
+
+    sft->font = g_cached_font;
     sft->xScale = size;
     sft->yScale = size;
     sft->xOffset = 0.0;
@@ -268,6 +286,6 @@ noOutline:;
     bitmap.dim.height = canvas.height;
     bitmap.data = canvas.pixels;
 
-    sft_freefont(sft.font);
+    // Font is cached globally; do not free here.
     return bitmap;
 }
