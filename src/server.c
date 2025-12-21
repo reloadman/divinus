@@ -1355,6 +1355,83 @@ void respond_request(http_request_t *req) {
         return;
     }
 
+    // ISP orientation controls (persisted): mirror / flip (+ optional antiflicker).
+    // NOTE: These settings are applied at SDK/pipeline creation time on most platforms.
+    // This endpoint persists changes to divinus.yaml; runtime application may require a process restart.
+    if (EQUALS(req->uri, "/api/isp")) {
+        bool changed = false;
+        int save_rc = 0;
+        bool saved = false;
+
+        if (!EMPTY(req->query)) {
+            bool mirror_seen = false, flip_seen = false, antiflicker_seen = false;
+            bool mirror_val = app_config.mirror;
+            bool flip_val = app_config.flip;
+            int antiflicker_val = app_config.antiflicker;
+
+            char *remain;
+            while (req->query) {
+                char *value = split(&req->query, "&");
+                if (!value || !*value) continue;
+                unescape_uri(value);
+                char *key = split(&value, "=");
+                if (!key || !*key || !value || !*value) continue;
+
+                if (EQUALS(key, "mirror")) {
+                    mirror_seen = true;
+                    mirror_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "flip")) {
+                    flip_seen = true;
+                    flip_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "antiflicker")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        antiflicker_seen = true;
+                        antiflicker_val = (int)result;
+                    }
+                }
+            }
+
+            if (mirror_seen && (app_config.mirror != mirror_val)) {
+                app_config.mirror = mirror_val;
+                changed = true;
+            }
+            if (flip_seen && (app_config.flip != flip_val)) {
+                app_config.flip = flip_val;
+                changed = true;
+            }
+            if (antiflicker_seen && (app_config.antiflicker != antiflicker_val)) {
+                app_config.antiflicker = antiflicker_val;
+                changed = true;
+            }
+
+            if (changed) {
+                save_rc = save_app_config();
+                saved = (save_rc == 0);
+                if (!saved)
+                    HAL_WARNING("server", "Failed to save config after isp change (ret=%d)\n", save_rc);
+            }
+        }
+
+        int respLen = sprintf(response,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json;charset=UTF-8\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{\"mirror\":%s,\"flip\":%s,\"antiflicker\":%d,"
+            "\"changed\":%s,\"saved\":%s,\"save_code\":%d,"
+            "\"needs_restart\":%s}",
+            app_config.mirror ? "true" : "false",
+            app_config.flip ? "true" : "false",
+            app_config.antiflicker,
+            changed ? "true" : "false",
+            saved ? "true" : "false",
+            save_rc,
+            changed ? "true" : "false");
+        send_and_close(req->clntFd, response, respLen);
+        return;
+    }
+
     if (app_config.osd_enable && STARTS_WITH(req->uri, "/api/osd/")) {
         char *remain;
         int respLen;
