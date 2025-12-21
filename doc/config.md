@@ -25,6 +25,7 @@ This document describes the fields that can be found within a configuration file
 - **ir_cut_pin1**: GPIO number for IR cut filter control (normal state pin).
 - **ir_cut_pin2**: GPIO number for IR cut filter control (inverted state pin).
 - **ir_led_pin**: GPIO number for IR LED control.
+- **white_led_pin**: GPIO number for white LED control (manual; optional).
 - **ir_sensor_pin**: GPIO number for PIR motion sensor or similar digital toggle.
 - **check_interval_s**: Interval in seconds to check night mode conditions.
 - **pin_switch_delay_us**: Delay in microseconds before switching GPIO pins, must be used to protect cut filter coils from burning.

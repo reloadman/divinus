@@ -5,7 +5,7 @@
 #include <string.h>
 
 char nightOn = 0;
-static bool grayscale = false, ircut = true, irled = false, manual = false;
+static bool grayscale = false, ircut = true, irled = false, whiteled = false, manual = false;
 pthread_t nightPid = 0;
 
 bool night_grayscale_on(void) { return grayscale; }
@@ -13,6 +13,8 @@ bool night_grayscale_on(void) { return grayscale; }
 bool night_ircut_on(void) { return ircut; }
 
 bool night_irled_on(void) { return irled; }
+
+bool night_whiteled_on(void) { return whiteled; }
 
 bool night_manual_on(void) { return manual; }
 
@@ -97,6 +99,21 @@ void night_irled(bool enable) {
     else
         HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_led_pin, enable);
     irled = enable;
+}
+
+void night_whiteled(bool enable) {
+    if (app_config.white_led_pin == 999) {
+        HAL_WARNING("night", "White LED pin not configured, skipping\n");
+        whiteled = enable;
+        return;
+    }
+    int r = gpio_write(app_config.white_led_pin, enable);
+    if (r != EXIT_SUCCESS)
+        HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
+            app_config.white_led_pin, enable, errno, strerror(errno));
+    else
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.white_led_pin, enable);
+    whiteled = enable;
 }
 
 void night_manual(bool enable) { manual = enable; }

@@ -117,6 +117,7 @@ int save_app_config(void) {
         fprintf(file, "  isp_exptime_low: %d\n", app_config.isp_exptime_low);
     fprintf(file, "  isp_switch_lockout_s: %u\n", app_config.isp_switch_lockout_s);
     fprintf(file, "  ir_led_pin: %d\n", app_config.ir_led_pin);
+    fprintf(file, "  white_led_pin: %d\n", app_config.white_led_pin);
     fprintf(file, "  pin_switch_delay_us: %d\n", app_config.pin_switch_delay_us);
     fprintf(file, "  adc_device: %s\n", app_config.adc_device);
     fprintf(file, "  adc_threshold: %d\n", app_config.adc_threshold);
@@ -359,6 +360,7 @@ enum ConfigError parse_app_config(void) {
     app_config.ir_cut_pin1 = 999;
     app_config.ir_cut_pin2 = 999;
     app_config.ir_led_pin = 999;
+    app_config.white_led_pin = 999;
     app_config.pin_switch_delay_us = 250;
     app_config.check_interval_s = 10;
     app_config.adc_device[0] = 0;
@@ -446,6 +448,7 @@ enum ConfigError parse_app_config(void) {
         parse_int(&ini, "night_mode", "ir_cut_pin1", 0, PIN_MAX, &app_config.ir_cut_pin1);
         parse_int(&ini, "night_mode", "ir_cut_pin2", 0, PIN_MAX, &app_config.ir_cut_pin2);
         parse_int(&ini, "night_mode", "ir_led_pin", 0, PIN_MAX, &app_config.ir_led_pin);
+        parse_int(&ini, "night_mode", "white_led_pin", 0, PIN_MAX, &app_config.white_led_pin);
         parse_int(&ini, "night_mode", "pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
         parse_param_value(&ini, "night_mode", "adc_device", app_config.adc_device);
         parse_int(&ini, "night_mode", "adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);

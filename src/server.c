@@ -1183,8 +1183,8 @@ void respond_request(http_request_t *req) {
             bool manual_seen = false;
             bool manual_value = night_manual_on();
 
-            bool set_grayscale = false, set_ircut = false, set_irled = false;
-            bool grayscale_value = false, ircut_value = false, irled_value = false;
+            bool set_grayscale = false, set_ircut = false, set_irled = false, set_whiteled = false;
+            bool grayscale_value = false, ircut_value = false, irled_value = false, whiteled_value = false;
 
             char *remain;
             while (req->query) {
@@ -1259,6 +1259,9 @@ void respond_request(http_request_t *req) {
                 } else if (EQUALS(key, "irled")) {
                     set_irled = true;
                     irled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "whiteled")) {
+                    set_whiteled = true;
+                    whiteled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1308,6 +1311,7 @@ void respond_request(http_request_t *req) {
             } else if (!(enable_seen && !enable_value)) {
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
+                if (set_whiteled) night_whiteled(whiteled_value);
                 if (set_grayscale) night_grayscale(grayscale_value);
             }
         }
@@ -1338,7 +1342,8 @@ void respond_request(http_request_t *req) {
             "Connection: close\r\n"
             "\r\n"
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
-            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
+            "\"irled\":%s,\"irled_pin\":%d,\"whiteled\":%s,\"whiteled_pin\":%d,\"irsense_pin\":%d,"
+            "\"adc_device\":\"%s\",\"adc_threshold\":%d,"
             "\"isp_lum\":%d,\"isp_lum_low\":%d,\"isp_lum_hi\":%d,"
             "\"isp_iso_low\":%d,\"isp_iso_hi\":%d,\"isp_exptime_low\":%d,\"isp_switch_lockout_s\":%u,"
             "\"isp_iso\":%d,\"isp_exptime\":%d,\"isp_again\":%d,\"isp_dgain\":%d,\"isp_ispdgain\":%d,"
@@ -1346,7 +1351,9 @@ void respond_request(http_request_t *req) {
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
             night_grayscale_on() ? "true" : "false",
             night_ircut_on() ? "true" : "false", app_config.ir_cut_pin1, app_config.ir_cut_pin2,
-            night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
+            night_irled_on() ? "true" : "false", app_config.ir_led_pin,
+            night_whiteled_on() ? "true" : "false", app_config.white_led_pin,
+            app_config.ir_sensor_pin,
             app_config.adc_device, app_config.adc_threshold, isp_lum,
             app_config.isp_lum_low, app_config.isp_lum_hi,
             app_config.isp_iso_low, app_config.isp_iso_hi, app_config.isp_exptime_low, app_config.isp_switch_lockout_s,
