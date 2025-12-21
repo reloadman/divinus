@@ -1624,10 +1624,47 @@ typedef struct {
     HI_U32 lowlight_exptime;
     // Optional "fast lowlight" overrides to reduce motion blur in bright-enough lowlight scenes.
     // Triggered when u8AveLum >= lowlight_fast_lum.
+    HI_BOOL have_lowlight_fast;
     HI_U8  lowlight_fast_lum;
     HI_U32 lowlight_fast_expmax;
     HI_U32 lowlight_fast_againmax;
     HI_U8  lowlight_fast_comp_boost;
+
+    // Optional lowlight FX/marketing logic (enabled only if config section exists in IQ).
+    HI_BOOL have_lowlight_fx;
+    HI_U32 noisy_gamma_iso;
+    HI_U32 noisy_gamma_dgain;
+    HI_U32 noisy_gamma_ispdgain;
+    HI_U32 noisy_sharpen_iso;
+    HI_U32 noisy_sharpen_dgain;
+    HI_U32 noisy_sharpen_ispdgain;
+
+    // Optional lowlight anti-halo sharpen tuning (enabled only if section exists).
+    HI_BOOL have_lowlight_sharpen_ah;
+    HI_U8  ah_over_pct;
+    HI_U8  ah_under_pct;
+    HI_U8  ah_min_over;
+    HI_U8  ah_min_under;
+    HI_U8  ah_shootsup_min;
+    HI_U8  ah_edgefilt_min;
+    HI_U16 ah_maxsharpgain_cap;
+    HI_U8  ah_edgestr_pct;
+    HI_U8  ah_texstr_pct;
+
+    // Optional lowlight DRC caps (enabled only if section exists).
+    HI_BOOL have_lowlight_drc_caps;
+    HI_U16 ll_drc_strength_max;
+    HI_U16 fast_drc_strength_max;
+    HI_U8  ll_bright_mix_max;
+    HI_U8  ll_bright_mix_min;
+    HI_U8  ll_bright_gain_lmt;
+    HI_U8  ll_bright_gain_step;
+    HI_U8  ll_dark_mix_max;
+    HI_U8  ll_dark_mix_min;
+    HI_U8  ll_contrast_max;
+    HI_U8  fast_dark_mix_max;
+    HI_U8  fast_dark_mix_min;
+    HI_U8  fast_contrast_max;
     HI_BOOL have_ae_day;
     HI_BOOL have_ae_low;
     HI_BOOL last_ae_lowlight;
@@ -2242,24 +2279,105 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HI_BOOL ll_en = HI_FALSE;
         HI_U32 ll_iso = 1500;
         HI_U32 ll_exptime = 15000;
-        HI_U8  ll_fast_lum = 24;
-        HI_U32 ll_fast_expmax = 20000;
-        HI_U32 ll_fast_againmax = 2048;
-        HI_U8  ll_fast_comp_boost = 2;
+        HI_BOOL have_fast = HI_FALSE;
+        HI_U8  ll_fast_lum = 0;
+        HI_U32 ll_fast_expmax = 0;
+        HI_U32 ll_fast_againmax = 0;
+        HI_U8  ll_fast_comp_boost = 0;
         if (parse_int(ini, "all_param", "LowLightAutoAE", 0, 1, &v) == CONFIG_OK)
             ll_en = (v != 0) ? HI_TRUE : HI_FALSE;
         if (parse_int(ini, "all_param", "LowLightIso", 0, INT_MAX, &v) == CONFIG_OK)
             ll_iso = (HI_U32)v;
         if (parse_int(ini, "all_param", "LowLightExpTime", 0, INT_MAX, &v) == CONFIG_OK)
             ll_exptime = (HI_U32)v;
-        if (parse_int(ini, "all_param", "LowLightFastLum", 0, 255, &v) == CONFIG_OK)
+        if (parse_int(ini, "all_param", "LowLightFastLum", 0, 255, &v) == CONFIG_OK) {
             ll_fast_lum = (HI_U8)v;
-        if (parse_int(ini, "all_param", "LowLightFastExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK)
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK) {
             ll_fast_expmax = (HI_U32)v;
-        if (parse_int(ini, "all_param", "LowLightFastAGainMax", 0, INT_MAX, &v) == CONFIG_OK)
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastAGainMax", 0, INT_MAX, &v) == CONFIG_OK) {
             ll_fast_againmax = (HI_U32)v;
-        if (parse_int(ini, "all_param", "LowLightFastCompBoost", 0, 64, &v) == CONFIG_OK)
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastCompBoost", 0, 64, &v) == CONFIG_OK) {
             ll_fast_comp_boost = (HI_U8)v;
+            have_fast = HI_TRUE;
+        }
+
+        // Optional lowlight FX thresholds (only if section exists).
+        HI_BOOL have_fx = HI_FALSE;
+        HI_U32 noisy_gamma_iso = 0, noisy_gamma_dg = 0, noisy_gamma_ispg = 0;
+        HI_U32 noisy_sh_iso = 0, noisy_sh_dg = 0, noisy_sh_ispg = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_fx", &sec_s, &sec_e) == CONFIG_OK) {
+                have_fx = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_fx", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_fx = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaIso", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_iso = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_dg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaISPDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_ispg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenIso", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_iso = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_dg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenISPDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_ispg = (HI_U32)v;
+            }
+        }
+
+        // Optional anti-halo sharpen (only if section exists).
+        HI_BOOL have_ah = HI_FALSE;
+        HI_U8 ah_over_pct = 0, ah_under_pct = 0, ah_min_over = 0, ah_min_under = 0;
+        HI_U8 ah_shootsup_min = 0, ah_edgefilt_min = 0, ah_edgestr_pct = 0, ah_texstr_pct = 0;
+        HI_U16 ah_maxsharp_cap = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_sharpen", &sec_s, &sec_e) == CONFIG_OK) {
+                have_ah = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_sharpen", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_ah = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_sharpen", "OverShootScalePct", 0, 100, &v) == CONFIG_OK) ah_over_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "UnderShootScalePct", 0, 100, &v) == CONFIG_OK) ah_under_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MinOverShoot", 0, 255, &v) == CONFIG_OK) ah_min_over = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MinUnderShoot", 0, 255, &v) == CONFIG_OK) ah_min_under = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "ShootSupStrMin", 0, 255, &v) == CONFIG_OK) ah_shootsup_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "EdgeFiltStrMin", 0, 255, &v) == CONFIG_OK) ah_edgefilt_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MaxSharpGainCap", 0, INT_MAX, &v) == CONFIG_OK) ah_maxsharp_cap = (HI_U16)v;
+                if (parse_int(ini, "lowlight_sharpen", "EdgeStrScalePct", 0, 100, &v) == CONFIG_OK) ah_edgestr_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "TextureStrScalePct", 0, 100, &v) == CONFIG_OK) ah_texstr_pct = (HI_U8)v;
+            }
+        }
+
+        // Optional lowlight DRC caps (only if section exists).
+        HI_BOOL have_drc_caps = HI_FALSE;
+        HI_U16 ll_str_max = 0, fast_str_max = 0;
+        HI_U8 ll_bm_max = 0, ll_bm_min = 0, ll_bg_lmt = 0, ll_bg_step = 0;
+        HI_U8 ll_dm_max = 0, ll_dm_min = 0, ll_cc_max = 0;
+        HI_U8 fast_dm_max = 0, fast_dm_min = 0, fast_cc_max = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_drc_caps", &sec_s, &sec_e) == CONFIG_OK) {
+                have_drc_caps = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_drc_caps", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_drc_caps = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_drc_caps", "LowLightStrengthMax", 0, INT_MAX, &v) == CONFIG_OK) ll_str_max = (HI_U16)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastLowLightStrengthMax", 0, INT_MAX, &v) == CONFIG_OK) fast_str_max = (HI_U16)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightMixMax", 0, 255, &v) == CONFIG_OK) ll_bm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightMixMin", 0, 255, &v) == CONFIG_OK) ll_bm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightGainLmt", 0, 255, &v) == CONFIG_OK) ll_bg_lmt = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightGainStep", 0, 255, &v) == CONFIG_OK) ll_bg_step = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "DarkMixMax", 0, 255, &v) == CONFIG_OK) ll_dm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "DarkMixMin", 0, 255, &v) == CONFIG_OK) ll_dm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "ContrastMax", 0, 255, &v) == CONFIG_OK) ll_cc_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastDarkMixMax", 0, 255, &v) == CONFIG_OK) fast_dm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastDarkMixMin", 0, 255, &v) == CONFIG_OK) fast_dm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastContrastMax", 0, 255, &v) == CONFIG_OK) fast_cc_max = (HI_U8)v;
+            }
+        }
 
         // Load AE profiles (day + low-light)
         HI_BOOL have_day = HI_FALSE, have_low = HI_FALSE;
@@ -2297,10 +2415,41 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         _v4_iq_dyn.lowlight_auto_ae = ll_en;
         _v4_iq_dyn.lowlight_iso = ll_iso;
         _v4_iq_dyn.lowlight_exptime = ll_exptime;
+        _v4_iq_dyn.have_lowlight_fast = have_fast;
         _v4_iq_dyn.lowlight_fast_lum = ll_fast_lum;
         _v4_iq_dyn.lowlight_fast_expmax = ll_fast_expmax;
         _v4_iq_dyn.lowlight_fast_againmax = ll_fast_againmax;
         _v4_iq_dyn.lowlight_fast_comp_boost = ll_fast_comp_boost;
+        _v4_iq_dyn.have_lowlight_fx = have_fx;
+        _v4_iq_dyn.noisy_gamma_iso = noisy_gamma_iso;
+        _v4_iq_dyn.noisy_gamma_dgain = noisy_gamma_dg;
+        _v4_iq_dyn.noisy_gamma_ispdgain = noisy_gamma_ispg;
+        _v4_iq_dyn.noisy_sharpen_iso = noisy_sh_iso;
+        _v4_iq_dyn.noisy_sharpen_dgain = noisy_sh_dg;
+        _v4_iq_dyn.noisy_sharpen_ispdgain = noisy_sh_ispg;
+        _v4_iq_dyn.have_lowlight_sharpen_ah = have_ah;
+        _v4_iq_dyn.ah_over_pct = ah_over_pct;
+        _v4_iq_dyn.ah_under_pct = ah_under_pct;
+        _v4_iq_dyn.ah_min_over = ah_min_over;
+        _v4_iq_dyn.ah_min_under = ah_min_under;
+        _v4_iq_dyn.ah_shootsup_min = ah_shootsup_min;
+        _v4_iq_dyn.ah_edgefilt_min = ah_edgefilt_min;
+        _v4_iq_dyn.ah_maxsharpgain_cap = ah_maxsharp_cap;
+        _v4_iq_dyn.ah_edgestr_pct = ah_edgestr_pct;
+        _v4_iq_dyn.ah_texstr_pct = ah_texstr_pct;
+        _v4_iq_dyn.have_lowlight_drc_caps = have_drc_caps;
+        _v4_iq_dyn.ll_drc_strength_max = ll_str_max;
+        _v4_iq_dyn.fast_drc_strength_max = fast_str_max;
+        _v4_iq_dyn.ll_bright_mix_max = ll_bm_max;
+        _v4_iq_dyn.ll_bright_mix_min = ll_bm_min;
+        _v4_iq_dyn.ll_bright_gain_lmt = ll_bg_lmt;
+        _v4_iq_dyn.ll_bright_gain_step = ll_bg_step;
+        _v4_iq_dyn.ll_dark_mix_max = ll_dm_max;
+        _v4_iq_dyn.ll_dark_mix_min = ll_dm_min;
+        _v4_iq_dyn.ll_contrast_max = ll_cc_max;
+        _v4_iq_dyn.fast_dark_mix_max = fast_dm_max;
+        _v4_iq_dyn.fast_dark_mix_min = fast_dm_min;
+        _v4_iq_dyn.fast_contrast_max = fast_cc_max;
         _v4_iq_dyn.have_ae_day = have_day;
         _v4_iq_dyn.have_ae_low = have_low;
         _v4_iq_dyn.last_ae_lowlight = HI_FALSE;
@@ -2461,10 +2610,23 @@ static void *v4_iq_dynamic_thread(void *arg) {
         HI_U8 day_histoff = 0, low_histoff = 0;
         HI_U16 day_histslope = 0, low_histslope = 0;
         HI_U8 day_speed = 0, low_speed = 0;
-        HI_U8 ll_fast_lum = 24;
-        HI_U32 ll_fast_expmax = 20000;
-        HI_U32 ll_fast_againmax = 2048;
-        HI_U8 ll_fast_comp_boost = 2;
+        HI_BOOL have_fast = HI_FALSE;
+        HI_U8 ll_fast_lum = 0;
+        HI_U32 ll_fast_expmax = 0;
+        HI_U32 ll_fast_againmax = 0;
+        HI_U8 ll_fast_comp_boost = 0;
+        HI_BOOL have_fx = HI_FALSE;
+        HI_U32 noisy_gamma_iso = 0, noisy_gamma_dg = 0, noisy_gamma_ispg = 0;
+        HI_U32 noisy_sh_iso = 0, noisy_sh_dg = 0, noisy_sh_ispg = 0;
+        HI_BOOL have_ah = HI_FALSE;
+        HI_U8 ah_over_pct = 0, ah_under_pct = 0, ah_min_over = 0, ah_min_under = 0;
+        HI_U8 ah_shootsup_min = 0, ah_edgefilt_min = 0, ah_edgestr_pct = 0, ah_texstr_pct = 0;
+        HI_U16 ah_maxsharp_cap = 0;
+        HI_BOOL have_drc_caps = HI_FALSE;
+        HI_U16 ll_str_max = 0, fast_str_max = 0;
+        HI_U8 ll_bm_max = 0, ll_bm_min = 0, ll_bg_lmt = 0, ll_bg_step = 0;
+        HI_U8 ll_dm_max = 0, ll_dm_min = 0, ll_cc_max = 0;
+        HI_U8 fast_dm_max = 0, fast_dm_min = 0, fast_cc_max = 0;
         int last_nr_idx = -1;
         HI_BOOL last_nr_ir = HI_FALSE;
         int nr3d_fail_count = 0;
@@ -2502,10 +2664,41 @@ static void *v4_iq_dynamic_thread(void *arg) {
         low_histslope = _v4_iq_dyn.ae_low_histslope;
         day_speed = _v4_iq_dyn.ae_day_speed;
         low_speed = _v4_iq_dyn.ae_low_speed;
+        have_fast = _v4_iq_dyn.have_lowlight_fast;
         ll_fast_lum = _v4_iq_dyn.lowlight_fast_lum;
         ll_fast_expmax = _v4_iq_dyn.lowlight_fast_expmax;
         ll_fast_againmax = _v4_iq_dyn.lowlight_fast_againmax;
         ll_fast_comp_boost = _v4_iq_dyn.lowlight_fast_comp_boost;
+        have_fx = _v4_iq_dyn.have_lowlight_fx;
+        noisy_gamma_iso = _v4_iq_dyn.noisy_gamma_iso;
+        noisy_gamma_dg = _v4_iq_dyn.noisy_gamma_dgain;
+        noisy_gamma_ispg = _v4_iq_dyn.noisy_gamma_ispdgain;
+        noisy_sh_iso = _v4_iq_dyn.noisy_sharpen_iso;
+        noisy_sh_dg = _v4_iq_dyn.noisy_sharpen_dgain;
+        noisy_sh_ispg = _v4_iq_dyn.noisy_sharpen_ispdgain;
+        have_ah = _v4_iq_dyn.have_lowlight_sharpen_ah;
+        ah_over_pct = _v4_iq_dyn.ah_over_pct;
+        ah_under_pct = _v4_iq_dyn.ah_under_pct;
+        ah_min_over = _v4_iq_dyn.ah_min_over;
+        ah_min_under = _v4_iq_dyn.ah_min_under;
+        ah_shootsup_min = _v4_iq_dyn.ah_shootsup_min;
+        ah_edgefilt_min = _v4_iq_dyn.ah_edgefilt_min;
+        ah_maxsharp_cap = _v4_iq_dyn.ah_maxsharpgain_cap;
+        ah_edgestr_pct = _v4_iq_dyn.ah_edgestr_pct;
+        ah_texstr_pct = _v4_iq_dyn.ah_texstr_pct;
+        have_drc_caps = _v4_iq_dyn.have_lowlight_drc_caps;
+        ll_str_max = _v4_iq_dyn.ll_drc_strength_max;
+        fast_str_max = _v4_iq_dyn.fast_drc_strength_max;
+        ll_bm_max = _v4_iq_dyn.ll_bright_mix_max;
+        ll_bm_min = _v4_iq_dyn.ll_bright_mix_min;
+        ll_bg_lmt = _v4_iq_dyn.ll_bright_gain_lmt;
+        ll_bg_step = _v4_iq_dyn.ll_bright_gain_step;
+        ll_dm_max = _v4_iq_dyn.ll_dark_mix_max;
+        ll_dm_min = _v4_iq_dyn.ll_dark_mix_min;
+        ll_cc_max = _v4_iq_dyn.ll_contrast_max;
+        fast_dm_max = _v4_iq_dyn.fast_dark_mix_max;
+        fast_dm_min = _v4_iq_dyn.fast_dark_mix_min;
+        fast_cc_max = _v4_iq_dyn.fast_contrast_max;
         last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
         last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
         nr3d_fail_count = _v4_iq_dyn.nr3d_fail_count;
@@ -2634,26 +2827,25 @@ static void *v4_iq_dynamic_thread(void *arg) {
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->stretch[i];
             cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
 
-            if (is_lowlight) {
-                // Reduce overall DRC and shadow mixing: keep snow/lamps controlled and reduce visible noise.
-                // In "fast lowlight" (brighter scenes where we cap shutter to reduce blur),
-                // allow a bit more DRC strength to compress highlights (lamps/snow) without lifting shadows.
-                const HI_BOOL fast_ll = (expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
-                HI_U16 max_strength = fast_ll ? 180 : 140;
-                if (cur.strength > max_strength) cur.strength = max_strength;
-                // Also reduce bright-side mixing/gain to avoid highlight "bloom" on snow and lamps.
-                if (cur.localMixBrightMax > 8) cur.localMixBrightMax = 8;
-                if (cur.localMixBrightMin > 3)  cur.localMixBrightMin = 3;
-                if (cur.brightGainLmt > 2)      cur.brightGainLmt = 2;
-                if (cur.brightGainLmtStep > 3)  cur.brightGainLmtStep = 3;
-                // Keep shadows from becoming too dark after we lower AE target for lamp control.
-                // In fast lowlight we can lift shadows a bit (scene is brighter, noise is manageable).
-                HI_U8 dark_max_cap = fast_ll ? 32 : 28;
-                HI_U8 dark_min_cap = fast_ll ? 24 : 20;
-                HI_U8 contrast_cap = fast_ll ? 10 : 8;
-                if (cur.localMixDarkMax > dark_max_cap) cur.localMixDarkMax = dark_max_cap;
-                if (cur.localMixDarkMin > dark_min_cap) cur.localMixDarkMin = dark_min_cap;
-                if (cur.contrastControl > contrast_cap) cur.contrastControl = contrast_cap;
+            if (is_lowlight && have_drc_caps) {
+                const HI_BOOL fast_ll = (have_fast && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
+                // Choose caps (fast caps fallback to normal caps if not provided)
+                HI_U16 max_strength = fast_ll ? fast_str_max : ll_str_max;
+                if (max_strength == 0) max_strength = cur.strength; // no cap if not configured
+
+                HI_U8 bm_max = ll_bm_max, bm_min = ll_bm_min, bg_lmt = ll_bg_lmt, bg_step = ll_bg_step;
+                HI_U8 dm_max = fast_ll ? (fast_dm_max ? fast_dm_max : ll_dm_max) : ll_dm_max;
+                HI_U8 dm_min = fast_ll ? (fast_dm_min ? fast_dm_min : ll_dm_min) : ll_dm_min;
+                HI_U8 cc_max = fast_ll ? (fast_cc_max ? fast_cc_max : ll_cc_max) : ll_cc_max;
+
+                if (max_strength && cur.strength > max_strength) cur.strength = max_strength;
+                if (bm_max && cur.localMixBrightMax > bm_max) cur.localMixBrightMax = bm_max;
+                if (bm_min && cur.localMixBrightMin > bm_min) cur.localMixBrightMin = bm_min;
+                if (bg_lmt && cur.brightGainLmt > bg_lmt) cur.brightGainLmt = bg_lmt;
+                if (bg_step && cur.brightGainLmtStep > bg_step) cur.brightGainLmtStep = bg_step;
+                if (dm_max && cur.localMixDarkMax > dm_max) cur.localMixDarkMax = dm_max;
+                if (dm_min && cur.localMixDarkMin > dm_min) cur.localMixDarkMin = dm_min;
+                if (cc_max && cur.contrastControl > cc_max) cur.contrastControl = cc_max;
             }
 
             if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
@@ -2761,9 +2953,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
                 HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
 
-                // Fast lowlight: if scene is bright enough, prefer shorter shutter to reduce motion blur.
+                // Fast lowlight: if configured and scene is bright enough, prefer shorter shutter to reduce motion blur.
                 // Comp boost helps keep the image from looking "too dark" when we cut shutter time.
-                if (is_lowlight && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) {
+                const HI_BOOL fast_ll = (is_lowlight && have_fast && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
+                if (fast_ll) {
                     if (want_expmax > ll_fast_expmax) want_expmax = ll_fast_expmax;
                     if (ll_fast_againmax > 0) want_againmax = ll_fast_againmax;
                     if (ll_fast_comp_boost > 0) {
@@ -2819,11 +3012,16 @@ static void *v4_iq_dynamic_thread(void *arg) {
             }
         }
 
+        // Optional lowlight FX/marketing processing (enabled only if configured in IQ):
         // When lowlight is active and the image is truly noisy, reduce "marketing" processing:
         // - Gamma often raises shadows and reveals noise
         // - Sharpen turns noise into grain
         // But if ISO/gains are low (clean image), keep original IQ look.
         {
+            if (!have_fx) {
+                // No lowlight FX section in IQ => do not touch gamma/sharpen dynamically.
+                goto fx_done;
+            }
             static HI_BOOL baseline_init = HI_FALSE;
             static HI_BOOL baseline_gamma = HI_TRUE;
             static HI_BOOL baseline_sharpen = HI_TRUE;
@@ -2838,10 +3036,14 @@ static void *v4_iq_dynamic_thread(void *arg) {
             // Separate thresholds: keep gamma longer, disable sharpen earlier.
             const HI_BOOL noisy_gamma =
                 (is_lowlight == HI_TRUE) &&
-                (iso >= 800 || expi.u32DGain > 1200 || expi.u32ISPDGain > 1200);
+                ((noisy_gamma_iso && iso >= noisy_gamma_iso) ||
+                 (noisy_gamma_dg && expi.u32DGain > noisy_gamma_dg) ||
+                 (noisy_gamma_ispg && expi.u32ISPDGain > noisy_gamma_ispg));
             const HI_BOOL noisy_sharpen =
                 (is_lowlight == HI_TRUE) &&
-                (iso >= 400 || expi.u32DGain > 1100 || expi.u32ISPDGain > 1150);
+                ((noisy_sh_iso && iso >= noisy_sh_iso) ||
+                 (noisy_sh_dg && expi.u32DGain > noisy_sh_dg) ||
+                 (noisy_sh_ispg && expi.u32ISPDGain > noisy_sh_ispg));
             const HI_BOOL noisy_lowlight = (noisy_gamma || noisy_sharpen) ? HI_TRUE : HI_FALSE;
 
             if (allow_fx && (!baseline_init || noisy_lowlight != last_noisy_fx)) {
@@ -2870,27 +3072,27 @@ static void *v4_iq_dynamic_thread(void *arg) {
                         // Start from baseline each time to avoid accumulating modifications.
                         if (baseline_sh_attr_valid) sh = baseline_sh_attr;
 
-                        // Anti-halo sharpen in lowlight:
+                        // Anti-halo sharpen in lowlight (optional, enabled only if configured):
                         // keep sharpening ON for marketing, but reduce overshoot/undershoot which causes glow around lamps.
-                        if (is_lowlight && !noisy_sharpen) {
+                        if (is_lowlight && !noisy_sharpen && have_ah) {
                             sh.bEnable = baseline_sharpen;
                             if (sh.enOpType == OP_TYPE_AUTO) {
                                 for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
                                     // Soften ringing/halos
-                                    sh.stAuto.au8OverShoot[i]  = (HI_U8)((sh.stAuto.au8OverShoot[i]  * 3) / 5); // ~60%
-                                    sh.stAuto.au8UnderShoot[i] = (HI_U8)((sh.stAuto.au8UnderShoot[i] * 3) / 5);
-                                    if (sh.stAuto.au8OverShoot[i] < 8)  sh.stAuto.au8OverShoot[i] = 8;
-                                    if (sh.stAuto.au8UnderShoot[i] < 8) sh.stAuto.au8UnderShoot[i] = 8;
+                                    if (ah_over_pct)  sh.stAuto.au8OverShoot[i]  = (HI_U8)((sh.stAuto.au8OverShoot[i]  * ah_over_pct) / 100);
+                                    if (ah_under_pct) sh.stAuto.au8UnderShoot[i] = (HI_U8)((sh.stAuto.au8UnderShoot[i] * ah_under_pct) / 100);
+                                    if (ah_min_over && sh.stAuto.au8OverShoot[i] < ah_min_over)   sh.stAuto.au8OverShoot[i] = ah_min_over;
+                                    if (ah_min_under && sh.stAuto.au8UnderShoot[i] < ah_min_under) sh.stAuto.au8UnderShoot[i] = ah_min_under;
                                     // Increase suppression/filter a bit to reduce edge glow
-                                    if (sh.stAuto.au8ShootSupStr[i] < 10) sh.stAuto.au8ShootSupStr[i] = 10;
-                                    if (sh.stAuto.au8EdgeFiltStr[i]  < 60) sh.stAuto.au8EdgeFiltStr[i] = 60;
-                                    if (sh.stAuto.au16MaxSharpGain[i] > 72) sh.stAuto.au16MaxSharpGain[i] = 72;
+                                    if (ah_shootsup_min && sh.stAuto.au8ShootSupStr[i] < ah_shootsup_min) sh.stAuto.au8ShootSupStr[i] = ah_shootsup_min;
+                                    if (ah_edgefilt_min && sh.stAuto.au8EdgeFiltStr[i]  < ah_edgefilt_min) sh.stAuto.au8EdgeFiltStr[i] = ah_edgefilt_min;
+                                    if (ah_maxsharp_cap && sh.stAuto.au16MaxSharpGain[i] > ah_maxsharp_cap) sh.stAuto.au16MaxSharpGain[i] = ah_maxsharp_cap;
                                 }
                                 // Slightly reduce overall edge/texture strength to reduce halos, but keep crispness.
                                 for (int g = 0; g < ISP_SHARPEN_GAIN_NUM; g++) {
                                     for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
-                                        sh.stAuto.au16TextureStr[g][i] = (HI_U16)((sh.stAuto.au16TextureStr[g][i] * 85) / 100);
-                                        sh.stAuto.au16EdgeStr[g][i]    = (HI_U16)((sh.stAuto.au16EdgeStr[g][i]    * 85) / 100);
+                                        if (ah_texstr_pct)  sh.stAuto.au16TextureStr[g][i] = (HI_U16)((sh.stAuto.au16TextureStr[g][i] * ah_texstr_pct) / 100);
+                                        if (ah_edgestr_pct) sh.stAuto.au16EdgeStr[g][i]    = (HI_U16)((sh.stAuto.au16EdgeStr[g][i]    * ah_edgestr_pct) / 100);
                                     }
                                 }
                             }
@@ -2910,6 +3112,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     noisy_sharpen ? "off" : (baseline_sharpen ? "on" : "off"),
                     (unsigned)iso, (unsigned)expi.u32DGain, (unsigned)expi.u32ISPDGain);
             }
+fx_done:
+            ;
         }
 
         // 3DNR (VPSS NRX) by ISO + night mode
