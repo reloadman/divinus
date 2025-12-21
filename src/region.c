@@ -568,10 +568,13 @@ void *region_thread(void) {
                         HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
                         continue;
                     }
+                    // Background box is currently implemented only for HiSilicon v4,
+                    // where ARGB1555 overlay supports separate bgAlpha/fgAlpha.
+                    const int bg_enable = (plat == HAL_PLATFORM_V4) && (osds[id].bgopal > 0);
                     hal_bitmap bitmap = text_create_rendered(
                         font_path, osds[id].size, out,
                         osds[id].color, osds[id].outl, osds[id].thick,
-                        osds[id].bg, osds[id].pad);
+                        osds[id].bg, osds[id].pad, bg_enable);
                     hal_rect rect = { .height = bitmap.dim.height, .width = bitmap.dim.width,
                         .x = osds[id].posx, .y = osds[id].posy };
                     switch (plat) {
@@ -610,7 +613,9 @@ void *region_thread(void) {
                             v3_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_V4:
-                            v4_region_create(id, rect, osds[id].opal);
+                            // For HiSilicon v4: allow semi-transparent background box via bgAlpha.
+                            v4_region_create_ex(id, rect, osds[id].opal,
+                                (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                             v4_region_setbitmap(id, &bitmap);
                             break;
 #elif defined(__mips__)
@@ -677,7 +682,8 @@ void *region_thread(void) {
                                 v3_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_V4:
-                                v4_region_create(id, rect, osds[id].opal);
+                            v4_region_create_ex(id, rect, osds[id].opal,
+                                (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                                 v4_region_setbitmap(id, &bitmap);
                                 break;
 #elif defined(__mips__)

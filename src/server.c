@@ -1585,7 +1585,16 @@ void respond_request(http_request_t *req) {
                 }
                 else if (EQUALS(key, "bg")) {
                     int result = color_parse(value);
-                    osds[id].bg = result;
+                    // bg is RGB555 (alpha ignored). Use bgopal to enable/disable.
+                    osds[id].bg = result & 0x7FFF;
+                }
+                else if (EQUALS(key, "bgopal")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) result = 0;
+                        if (result > 255) result = 255;
+                        osds[id].bgopal = (short)result;
+                    }
                 }
                 else if (EQUALS(key, "pad")) {
                     long result = strtol(value, &remain, 10);
@@ -1608,10 +1617,10 @@ void respond_request(http_request_t *req) {
             "\r\n"
             "{\"id\":%d,\"color\":\"#%x\",\"opal\":%d,\"pos\":[%d,%d],"
             "\"font\":\"%s\",\"size\":%.1f,\"text\":\"%s\",\"img\":\"%s\","
-            "\"outl\":\"#%x\",\"thick\":%.1f,\"bg\":\"#%x\",\"pad\":%d}",
+            "\"outl\":\"#%x\",\"thick\":%.1f,\"bg\":\"#%x\",\"bgopal\":%d,\"pad\":%d}",
             id, color, osds[id].opal, osds[id].posx, osds[id].posy,
             osds[id].font, osds[id].size, osds[id].text, osds[id].img,
-            osds[id].outl, osds[id].thick, osds[id].bg, osds[id].pad);
+            osds[id].outl, osds[id].thick, osds[id].bg, osds[id].bgopal, osds[id].pad);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

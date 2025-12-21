@@ -72,6 +72,8 @@ int v4_pipeline_create(const char *iqConfig);
 void v4_pipeline_destroy(void);
 
 int v4_region_create(char handle, hal_rect rect, short opacity);
+// Extended: allow separate alpha for background (alpha-bit 0) and foreground (alpha-bit 1).
+int v4_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity);
 void v4_region_destroy(char handle);
 int v4_region_setbitmap(int handle, hal_bitmap *bitmap);
 

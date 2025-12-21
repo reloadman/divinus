@@ -138,8 +138,9 @@ This document describes the fields that can be found within a configuration file
 - **regX_color**: Color of the text or image in OSD region X.
 - **regX_outl**: Outline color of the text in OSD region X.
 - **regX_thick**: Thickness of the text outline in OSD region X.
-- **regX_bg**: Background box color behind the text (ARGB1555). When `0` (default), background box is disabled.
-- **regX_pad**: Padding in pixels around the text when `regX_bg` is enabled (default: `6`).
+- **regX_bg**: Background box color behind the text (RGB555, `0..0x7FFF`). Used only when `regX_bgopal > 0`.
+- **regX_bgopal**: Background box opacity (`0..255`). When `0` (default), background box is disabled.
+- **regX_pad**: Padding in pixels around the text when `regX_bgopal > 0` (default: `6`).
 
 Notes:
 - If you only set `regX_text` (and omit styling fields), Divinus uses built-in defaults for

@@ -244,10 +244,11 @@ int save_app_config(void) {
         fprintf(file, "    reg%d_color: %#04x\n", i, osds[i].color);
         fprintf(file, "    reg%d_outl: %#04x\n", i, osds[i].outl);
         fprintf(file, "    reg%d_thick: %.1f\n", i, osds[i].thick);
-        if (osds[i].bg)
-            fprintf(file, "    reg%d_bg: %#04x\n", i, osds[i].bg);
-        if (osds[i].pad)
+        if (osds[i].bgopal > 0) {
+            fprintf(file, "    reg%d_bg: %#04x\n", i, osds[i].bg & 0x7FFF);
+            fprintf(file, "    reg%d_bgopal: %d\n", i, osds[i].bgopal);
             fprintf(file, "    reg%d_pad: %d\n", i, osds[i].pad);
+        }
     }
 
     // NOTE: "jpeg" section represents the MJPEG (multipart JPEG) stream.
@@ -311,6 +312,7 @@ enum ConfigError parse_app_config(void) {
         osds[i].outl = DEF_OUTL;
         osds[i].thick = DEF_THICK;
         osds[i].bg = DEF_BG;
+        osds[i].bgopal = 0;
         osds[i].pad = DEF_PAD;
     }
 
@@ -597,7 +599,17 @@ enum ConfigError parse_app_config(void) {
             sprintf(param, "reg%d_thick", i);
             parse_double(&ini, "osd", param, 0, UCHAR_MAX, &osds[i].thick);
             sprintf(param, "reg%d_bg", i);
-            parse_int(&ini, "osd", param, 0, USHRT_MAX, &osds[i].bg);
+            {
+                int c = 0;
+                if (parse_int(&ini, "osd", param, 0, 0x7FFF, &c) == CONFIG_OK)
+                    osds[i].bg = c & 0x7FFF;
+            }
+            sprintf(param, "reg%d_bgopal", i);
+            {
+                int a = 0;
+                if (parse_int(&ini, "osd", param, 0, 255, &a) == CONFIG_OK)
+                    osds[i].bgopal = (short)a;
+            }
             sprintf(param, "reg%d_pad", i);
             {
                 int p = 0;

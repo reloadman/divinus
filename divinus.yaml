@@ -30,7 +30,8 @@ osd:
   reg0_size: 30
   reg0_color: 0xffff     # white (ARGB1555)
   reg0_thick: 0.0        # outline thickness; 0 when using bg box
-  reg0_bg: 0x8000        # black box (ARGB1555)
+  reg0_bg: 0x0000        # black box color (RGB555)
+  reg0_bgopal: 144       # background opacity (0..255). 0 disables background.
   reg0_pad: 6            # padding around text inside the box
 
 mdns:

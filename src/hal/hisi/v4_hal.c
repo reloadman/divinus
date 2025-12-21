@@ -4727,6 +4727,12 @@ void v4_pipeline_destroy(void)
 
 int v4_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return v4_region_create_ex(handle, rect, opacity, 0);
+}
+
+int v4_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret;
 
     v4_sys_bind dest = { .module = V4_SYS_MOD_VENC, .device = _v4_venc_dev, .channel = 0 };
@@ -4777,8 +4783,8 @@ int v4_region_create(char handle, hal_rect rect, short opacity)
     memset(&attrib, 0, sizeof(attrib));
     attrib.show = 1;
     attrib.type = V4_RGN_TYPE_OVERLAY;
-    attrib.overlay.bgAlpha = 0;
-    attrib.overlay.fgAlpha = opacity >> 1;
+    attrib.overlay.bgAlpha = bg_opacity >> 1;
+    attrib.overlay.fgAlpha = fg_opacity >> 1;
     attrib.overlay.point.x = rect.x;
     attrib.overlay.point.y = rect.y;
     attrib.overlay.layer = 7;

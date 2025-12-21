@@ -155,7 +155,7 @@ void text_dim_rendered(double *margin, double *height, double *width, const char
 
 hal_bitmap text_create_rendered(const char *font, double size, const char *text,
     int color, int outline, double thick,
-    int bg, int pad)
+    int bg, int pad, int bg_enable)
 {
     text_load_font(&sft, font, size, &lmtx);
 
@@ -164,10 +164,13 @@ hal_bitmap text_create_rendered(const char *font, double size, const char *text,
     // Optional background box: expand canvas by padding and fill with bg color.
     // NOTE: Our OSD pixel format is typically ARGB1555, so alpha is effectively 1-bit.
     // We treat `bg==0` as disabled; otherwise fill the whole canvas with `bg`.
-    int ip = (pad > 0) ? pad : 0;
+    const int ip = (bg_enable && pad > 0) ? pad : 0;
     int cw = ((CEILING(width) + 2 * ip) + 3) & ~3;
     int ch = CEILING(height) + 2 * ip;
-    text_new_rendered(&canvas, cw, ch, (bg != 0) ? bg : 0);
+    // For HiSilicon v4 ARGB1555 overlays we want background pixels to have alpha-bit 0,
+    // so the region can apply bgAlpha. Therefore, treat bg as RGB555 and force alpha=0.
+    const int bg_fill = (bg_enable ? (bg & 0x7FFF) : 0);
+    text_new_rendered(&canvas, cw, ch, bg_fill);
 
     unsigned cps[strlen(text) + 1];
     int n = utf8_to_utf32(text, cps, strlen(text) + 1);
