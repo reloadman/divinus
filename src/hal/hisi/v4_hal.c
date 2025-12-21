@@ -1744,6 +1744,13 @@ static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
 int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active) {
     if (!active) return EXIT_FAILURE;
 
+    // LowLightAutoAE is designed for "DAY-at-night" (color) usage.
+    // In true night/IR mode we must NOT activate lowlight switching; instead use [ir_*] sections.
+    if (night_mode_on()) {
+        *active = 0;
+        return EXIT_SUCCESS;
+    }
+
     HI_BOOL ll_ae = HI_FALSE;
     HI_BOOL have_day = HI_FALSE;
     HI_BOOL have_low = HI_FALSE;
@@ -2766,8 +2773,10 @@ static void *v4_iq_dynamic_thread(void *arg) {
             continue;
         }
         HI_U32 iso = expi.u32ISO;
+        const bool is_ir_mode = night_mode_on();
         const HI_BOOL is_lowlight =
-            (ll_ae && have_ae_day && have_ae_low &&
+            (!is_ir_mode &&
+             ll_ae && have_ae_day && have_ae_low &&
              (iso >= ll_iso || expi.u32ExpTime >= ll_exptime)) ? HI_TRUE : HI_FALSE;
 
         // Debug: log exposure state periodically, and always when very bright (snow clipping).
@@ -2789,7 +2798,6 @@ static void *v4_iq_dynamic_thread(void *arg) {
                 night_mode_on() ? "IR" : "DAY");
         }
 
-        const bool is_ir_mode = night_mode_on();
         const v4_iq_dyn_dehaze_cfg *deh = is_ir_mode ? &deh_ir : &deh_day;
         const v4_iq_dyn_linear_drc_cfg *drc = is_ir_mode ? &drc_ir : &drc_day;
         int drc_fail_count = 0;
@@ -2982,7 +2990,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
 
         // Auto AE switching by low-light (even if user keeps DAY mode at night)
-        if (ll_ae && have_ae_day && have_ae_low &&
+        // IMPORTANT: do NOT apply this logic in true IR mode; IR must use [ir_static_ae].
+        if (!is_ir_mode && ll_ae && have_ae_day && have_ae_low &&
             v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
             ISP_EXPOSURE_ATTR_S ea;
             memset(&ea, 0, sizeof(ea));
