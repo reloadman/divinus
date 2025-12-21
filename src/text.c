@@ -153,27 +153,34 @@ void text_dim_rendered(double *margin, double *height, double *width, const char
     *width = MAX(*width, lwidth) + 2 * *margin;
 }
 
-hal_bitmap text_create_rendered(const char *font, double size, const char *text, 
-    int color, int outline, double thick)
+hal_bitmap text_create_rendered(const char *font, double size, const char *text,
+    int color, int outline, double thick,
+    int bg, int pad)
 {
     text_load_font(&sft, font, size, &lmtx);
 
     double margin, height, width;
     text_dim_rendered(&margin, &height, &width, text);
-    text_new_rendered(&canvas, (CEILING(width) + 3) & ~3, CEILING(height), 0);
+    // Optional background box: expand canvas by padding and fill with bg color.
+    // NOTE: Our OSD pixel format is typically ARGB1555, so alpha is effectively 1-bit.
+    // We treat `bg==0` as disabled; otherwise fill the whole canvas with `bg`.
+    int ip = (pad > 0) ? pad : 0;
+    int cw = ((CEILING(width) + 2 * ip) + 3) & ~3;
+    int ch = CEILING(height) + 2 * ip;
+    text_new_rendered(&canvas, cw, ch, (bg != 0) ? bg : 0);
 
     unsigned cps[strlen(text) + 1];
     int n = utf8_to_utf32(text, cps, strlen(text) + 1);
 
-    double x = margin;
-    double y = margin + lmtx.ascender + lmtx.lineGap;
+    double x = margin + ip;
+    double y = margin + ip + lmtx.ascender + lmtx.lineGap;
     SFT_Glyph ogid = 0;
     for (int k = 0; k < n; k++)
     {
         if (cps[k] == '\\' && cps[k + 1] == 'n')
         {
             k++;
-            x = margin;
+            x = margin + ip;
             y += lmtx.ascender - lmtx.descender + lmtx.lineGap;
             ogid = 0;
             continue;

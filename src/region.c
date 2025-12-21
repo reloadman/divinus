@@ -568,8 +568,10 @@ void *region_thread(void) {
                         HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
                         continue;
                     }
-                    hal_bitmap bitmap = text_create_rendered(font_path, osds[id].size, out, osds[id].color,
-                        osds[id].outl, osds[id].thick);
+                    hal_bitmap bitmap = text_create_rendered(
+                        font_path, osds[id].size, out,
+                        osds[id].color, osds[id].outl, osds[id].thick,
+                        osds[id].bg, osds[id].pad);
                     hal_rect rect = { .height = bitmap.dim.height, .width = bitmap.dim.width,
                         .x = osds[id].posx, .y = osds[id].posy };
                     switch (plat) {

@@ -1262,10 +1262,15 @@ void respond_request(http_request_t *req) {
                 } else if (EQUALS(key, "whiteled")) {
                     set_whiteled = true;
                     whiteled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    HAL_INFO("server", "Night API: whiteled=%s (parsed=%d)\n", value, whiteled_value ? 1 : 0);
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         app_config.ir_led_pin = result;
+                } else if (EQUALS(key, "whiteled_pin") || EQUALS(key, "white_led_pin")) {
+                    short result = strtol(value, &remain, 10);
+                    if (remain != value)
+                        app_config.white_led_pin = result;
                 } else if (EQUALS(key, "irsense_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1316,7 +1321,11 @@ void respond_request(http_request_t *req) {
                     night_mode(true);
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
-                if (set_whiteled) night_whiteled(whiteled_value);
+                if (set_whiteled) {
+                    HAL_INFO("server", "Night API: apply whiteled=%d (pin=%u)\n",
+                        whiteled_value ? 1 : 0, app_config.white_led_pin);
+                    night_whiteled(whiteled_value);
+                }
                 if (set_grayscale) night_grayscale(grayscale_value);
             }
 
@@ -1574,6 +1583,18 @@ void respond_request(http_request_t *req) {
                     if (remain == value) continue;
                         osds[id].thick = result;
                 }
+                else if (EQUALS(key, "bg")) {
+                    int result = color_parse(value);
+                    osds[id].bg = result;
+                }
+                else if (EQUALS(key, "pad")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) result = 0;
+                        if (result > 64) result = 64;
+                        osds[id].pad = (short)result;
+                    }
+                }
             }
             osds[id].updt = 1;
         }
@@ -1587,10 +1608,10 @@ void respond_request(http_request_t *req) {
             "\r\n"
             "{\"id\":%d,\"color\":\"#%x\",\"opal\":%d,\"pos\":[%d,%d],"
             "\"font\":\"%s\",\"size\":%.1f,\"text\":\"%s\",\"img\":\"%s\","
-            "\"outl\":\"#%x\",\"thick\":%.1f}",
+            "\"outl\":\"#%x\",\"thick\":%.1f,\"bg\":\"#%x\",\"pad\":%d}",
             id, color, osds[id].opal, osds[id].posx, osds[id].posy,
             osds[id].font, osds[id].size, osds[id].text, osds[id].img,
-            osds[id].outl, osds[id].thick);
+            osds[id].outl, osds[id].thick, osds[id].bg, osds[id].pad);
         send_and_close(req->clntFd, response, respLen);
         return;
     }

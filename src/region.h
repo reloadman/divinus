@@ -22,6 +22,10 @@
 #define DEF_SIZE 32.0f
 // Default outline thickness in pixels. Non-zero greatly improves readability on bright scenes.
 #define DEF_THICK 2.0f
+// Background box (behind text). 0 = disabled; otherwise ARGB1555 color.
+// Minimal "premium" look is a solid black box with small padding.
+#define DEF_BG 0x0000
+#define DEF_PAD 6
 #define DEF_TIMEFMT "%Y/%m/%d %H:%M:%S"
 #define MAX_OSD 10
 
@@ -72,6 +76,8 @@ typedef struct {
     char img[64];
     int outl;
     double thick;
+    int bg;        // ARGB1555 background color (0 = disabled)
+    short pad;     // padding (px) around text when bg is enabled
 } osd;
 
 extern osd osds[MAX_OSD];
