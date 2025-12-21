@@ -49,6 +49,12 @@ python3 -m pip install fonttools
 python3 tools/make_inter_time_font.py --in misc/Inter-Regular.ttf --out build/fonts/InterTime.ttf --subset-time
 ```
 
+By default, `--subset-time` keeps:
+- digits and common separators for time/date
+- **Latin alphabet (A–Z, a–z)** for short labels (e.g. CAM, FRONTDOOR)
+
+You can override the kept character set with `--text=...` if you need extra symbols.
+
 Copy the resulting `InterTime.ttf` onto the device (e.g. `/usr/share/fonts/truetype/InterTime.ttf`)
 and set `reg0_font: InterTime` in `divinus.yaml`.
 

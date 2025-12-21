@@ -26,6 +26,7 @@ osd:
   # - proportional UI (Inter-style) + stable time: generate InterTime.ttf via:
   #     python3 -m pip install fonttools
   #     python3 tools/make_inter_time_font.py --in misc/Inter-Regular.ttf --out build/fonts/InterTime.ttf --subset-time
+  #   (default subset includes A–Z and a–z for short labels; override with --text=... if needed)
   #   then copy InterTime.ttf to the device and set reg0_font: InterTime
   reg0_text: "$t"
   reg0_font: JetBrainsMono-Medium
