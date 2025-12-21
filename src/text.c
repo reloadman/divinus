@@ -161,29 +161,28 @@ hal_bitmap text_create_rendered(const char *font, double size, const char *text,
 
     double margin, height, width;
     text_dim_rendered(&margin, &height, &width, text);
-    // Optional background box: expand canvas by padding and fill with bg color.
-    // NOTE: Our OSD pixel format is typically ARGB1555, so alpha is effectively 1-bit.
-    // We treat `bg==0` as disabled; otherwise fill the whole canvas with `bg`.
-    const int ip = (bg_enable && pad > 0) ? pad : 0;
-    int cw = ((CEILING(width) + 2 * ip) + 3) & ~3;
-    int ch = CEILING(height) + 2 * ip;
-    // For HiSilicon v4 ARGB1555 overlays we want background pixels to have alpha-bit 0,
-    // so the region can apply bgAlpha. Therefore, treat bg as RGB555 and force alpha=0.
-    const int bg_fill = (bg_enable ? (bg & 0x7FFF) : 0);
-    text_new_rendered(&canvas, cw, ch, bg_fill);
+    // Render text on a transparent canvas first, then (optionally) crop to the
+    // tight bounding box of drawn pixels and apply a background box with padding.
+    // This avoids "tall stripes" caused by font ascender/descender/lineGap metrics
+    // and yields a modern-looking badge.
+    const int req_pad = (pad > 0) ? pad : 0;
+    const int bg_fill = (bg_enable ? (bg & 0x7FFF) : 0); // RGB555 with alpha-bit 0
+    const int base_w = (CEILING(width) + 3) & ~3;
+    const int base_h = CEILING(height);
+    text_new_rendered(&canvas, base_w, base_h, 0);
 
     unsigned cps[strlen(text) + 1];
     int n = utf8_to_utf32(text, cps, strlen(text) + 1);
 
-    double x = margin + ip;
-    double y = margin + ip + lmtx.ascender + lmtx.lineGap;
+    double x = margin;
+    double y = margin + lmtx.ascender + lmtx.lineGap;
     SFT_Glyph ogid = 0;
     for (int k = 0; k < n; k++)
     {
         if (cps[k] == '\\' && cps[k + 1] == 'n')
         {
             k++;
-            x = margin + ip;
+            x = margin;
             y += lmtx.ascender - lmtx.descender + lmtx.lineGap;
             ogid = 0;
             continue;
@@ -216,6 +215,53 @@ noOutline:;
         x += mtx.advanceWidth;
         free(image.pixels);
         ogid = gid;
+    }
+
+    // If background is requested, crop to tight bounds of any alpha-bit pixels
+    // (text + outline) and then add padding + background fill.
+    if (bg_enable) {
+        const int ow = canvas.width;
+        const int oh = canvas.height;
+        unsigned short *opx = (unsigned short *)canvas.pixels;
+
+        int minx = ow, miny = oh, maxx = -1, maxy = -1;
+        for (int yy = 0; yy < oh; yy++) {
+            unsigned short *row = opx + yy * ow;
+            for (int xx = 0; xx < ow; xx++) {
+                if (row[xx] & 0x8000) {
+                    if (xx < minx) minx = xx;
+                    if (yy < miny) miny = yy;
+                    if (xx > maxx) maxx = xx;
+                    if (yy > maxy) maxy = yy;
+                }
+            }
+        }
+
+        // If nothing was drawn (shouldn't happen for valid text), keep a small box.
+        if (maxx < minx || maxy < miny) {
+            free(canvas.pixels);
+            const int nw = (req_pad * 2 + 1 + 3) & ~3;
+            const int nh = req_pad * 2 + 1;
+            text_new_rendered(&canvas, nw, nh, bg_fill);
+        } else {
+            const int bw = (maxx - minx + 1);
+            const int bh = (maxy - miny + 1);
+            const int nw = ((bw + 2 * req_pad) + 3) & ~3;
+            const int nh = bh + 2 * req_pad;
+
+            SFT_Image out;
+            text_new_rendered(&out, nw, nh, bg_fill);
+            unsigned short *npx = (unsigned short *)out.pixels;
+
+            for (int yy = 0; yy < bh; yy++) {
+                unsigned short *src = opx + (miny + yy) * ow + minx;
+                unsigned short *dst = npx + (req_pad + yy) * nw + req_pad;
+                memcpy(dst, src, (size_t)bw * 2);
+            }
+
+            free(canvas.pixels);
+            canvas = out;
+        }
     }
 
     bitmap.dim.width = canvas.width;

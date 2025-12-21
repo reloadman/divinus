@@ -19,10 +19,14 @@ isp:
 
 osd:
   enable: true
+  isp_debug: false
   # Minimal "premium" OSD: fixed-width font + black box behind text.
-  # Put your font file as:
-  #   /usr/share/fonts/truetype/JetBrainsMono-Medium.ttf
-  # and set reg0_font accordingly (without .ttf).
+  # Font options:
+  # - fixed-width (no time width dancing): JetBrainsMono-*.ttf
+  # - proportional UI (Inter-style) + stable time: generate InterTime.ttf via:
+  #     python3 -m pip install fonttools
+  #     python3 tools/make_inter_time_font.py --in misc/Inter-Regular.ttf --out build/fonts/InterTime.ttf --subset-time
+  #   then copy InterTime.ttf to the device and set reg0_font: InterTime
   reg0_text: "$t"
   reg0_font: JetBrainsMono-Medium
   reg0_posx: 16

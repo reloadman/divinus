@@ -38,6 +38,20 @@ curl http://192.168.1.17/api/osd/2?text=$t&posy=120
 ```
 N.B. Percent signs have to be escaped with %25 in curl URL syntaxes
 
+### Proportional UI font for time (tabular digits, no shaping engine)
+
+Divinus' current text renderer does not apply OpenType features like `tnum` (tabular numbers).
+If you want a modern proportional UI font (Inter-style) **without the time string width "dancing"**,
+generate a small dedicated TTF with baked tabular digit metrics:
+
+```
+python3 -m pip install fonttools
+python3 tools/make_inter_time_font.py --in misc/Inter-Regular.ttf --out build/fonts/InterTime.ttf --subset-time
+```
+
+Copy the resulting `InterTime.ttf` onto the device (e.g. `/usr/share/fonts/truetype/InterTime.ttf`)
+and set `reg0_font: InterTime` in `divinus.yaml`.
+
 UTC date and time can be set using Unix timestamps:
 ```
 curl http://192.168.1.17/api/time?ts=1712320920
