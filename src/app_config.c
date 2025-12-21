@@ -100,6 +100,7 @@ int save_app_config(void) {
 
     fprintf(file, "night_mode:\n");
     fprintf(file, "  enable: %s\n", app_config.night_mode_enable ? "true" : "false");
+    fprintf(file, "  manual: %s\n", app_config.night_mode_manual ? "true" : "false");
     fprintf(file, "  grayscale: %s\n", app_config.night_mode_grayscale ? "true" : "false");
     fprintf(file, "  ir_sensor_pin: %d\n", app_config.ir_sensor_pin);
     fprintf(file, "  check_interval_s: %d\n", app_config.check_interval_s);
@@ -355,6 +356,7 @@ enum ConfigError parse_app_config(void) {
     app_config.antiflicker = 0;
 
     app_config.night_mode_enable = false;
+    app_config.night_mode_manual = false;
     app_config.night_mode_grayscale = false;
     app_config.ir_sensor_pin = 999;
     app_config.ir_cut_pin1 = 999;
@@ -442,6 +444,7 @@ enum ConfigError parse_app_config(void) {
         // (e.g. IR-cut exercise on startup) need pin definitions even when the
         // background night mode thread is disabled.
         int lum;
+        parse_bool(&ini, "night_mode", "manual", &app_config.night_mode_manual);
         parse_bool(&ini, "night_mode", "grayscale", &app_config.night_mode_grayscale);
         parse_int(&ini, "night_mode", "ir_sensor_pin", 0, PIN_MAX, &app_config.ir_sensor_pin);
         parse_int(&ini, "night_mode", "check_interval_s", 0, 600, &app_config.check_interval_s);

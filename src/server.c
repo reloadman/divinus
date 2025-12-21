@@ -1274,6 +1274,7 @@ void respond_request(http_request_t *req) {
                     manual_seen = true;
                     manual_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                     night_manual(manual_value ? 1 : 0);
+                    app_config.night_mode_manual = manual_value;
                 }
             }
 
@@ -1313,6 +1314,14 @@ void respond_request(http_request_t *req) {
                 if (set_irled) night_irled(irled_value);
                 if (set_whiteled) night_whiteled(whiteled_value);
                 if (set_grayscale) night_grayscale(grayscale_value);
+            }
+
+            // Persist manual toggle (and any other changed fields in app_config).
+            // Best-effort: ignore failures to keep API responsive.
+            if (manual_seen) {
+                int sr = save_app_config();
+                if (sr != 0)
+                    HAL_WARNING("server", "Failed to save config after night manual change (ret=%d)\n", sr);
             }
         }
 

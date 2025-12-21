@@ -30,6 +30,8 @@ struct AppConfig {
 
     // [night_mode]
     bool night_mode_enable;
+    // Persisted manual mode (true disables automatic switching).
+    bool night_mode_manual;
     // If true, enable encoder grayscale when switching to night (IR) mode.
     // If false, stay in color when switching to night (IR) mode.
     bool night_mode_grayscale;

@@ -100,6 +100,9 @@ int main(int argc, char *argv[]) {
     if (parse_app_config() != CONFIG_OK)
         HAL_ERROR("hal", "Can't load app config 'divinus.yaml'\n");
 
+    // Apply persisted night_mode.manual as early as possible.
+    night_manual(app_config.night_mode_manual);
+
     // Always "exercise" IR-cut on startup to reduce chance of a stuck filter.
     // This runs regardless of night_mode.enable.
     night_ircut_exercise_startup();
