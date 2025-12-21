@@ -997,6 +997,29 @@ int media_set_isp_orientation(bool mirror, bool flip) {
     return ret;
 }
 
+int media_reload_iq(void) {
+    int ret = EXIT_FAILURE;
+    pthread_mutex_lock(&chnMtx);
+    switch (plat) {
+#if defined(__ARM_PCS_VFP)
+        default: ret = EXIT_FAILURE; break;
+#elif defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            ret = v4_iq_reload();
+            break;
+        default: ret = EXIT_FAILURE; break;
+#else
+        default: ret = EXIT_FAILURE; break;
+#endif
+    }
+    pthread_mutex_unlock(&chnMtx);
+
+    if (ret == 0)
+        request_idr();
+
+    return ret;
+}
+
 int get_isp_avelum(unsigned char *lum) {
     if (!lum) return EXIT_FAILURE;
     switch (plat) {

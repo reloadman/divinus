@@ -78,6 +78,19 @@ static int v4_iq_apply(const char *path, int pipe);
 static void v4_iq_dyn_update_from_ini(struct IniConfig *ini, int pipe, bool enableDynDehaze, bool enableDynLinearDRC);
 static void v4_iq_dyn_maybe_start(int pipe);
 
+int v4_iq_reload(void) {
+    if (!_v4_iq_cfg_path[0])
+        return EXIT_SUCCESS;
+
+    // Apply immediately using the currently active mode (DAY vs IR).
+    // This ensures ir_* sections take effect right after night_mode() toggles IR.
+    int ret = v4_iq_apply(_v4_iq_cfg_path, _v4_vi_pipe);
+
+    // If dynamic IQ sections exist, ensure the dynamic thread is started.
+    v4_iq_dyn_maybe_start(_v4_vi_pipe);
+    return ret;
+}
+
 typedef struct {
     char path[256];
     int pipe;

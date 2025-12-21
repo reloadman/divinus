@@ -29,6 +29,9 @@ void request_idr(void);
 void set_grayscale(bool active);
 // Best-effort runtime orientation update. Returns 0 on success, non-zero otherwise.
 int media_set_isp_orientation(bool mirror, bool flip);
+// Best-effort runtime IQ reload. Useful after toggling DAY <-> IR.
+// Returns 0 on success, non-zero otherwise.
+int media_reload_iq(void);
 // Returns 0 on success and writes 0..255 average luma into *lum.
 // Currently implemented only for hisi/v4; other platforms return non-zero.
 int get_isp_avelum(unsigned char *lum);

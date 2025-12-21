@@ -117,6 +117,12 @@ void night_mode(bool enable) {
     night_irled(enable);
     if (enable) night_grayscale(night_should_grayscale());
     else night_grayscale(false);
+
+    // Re-apply IQ so that [static_*] vs [ir_static_*] sections take effect immediately.
+    // Without this, AE/DRC/etc may remain from the previous mode until the next restart.
+    int r = media_reload_iq();
+    if (r != 0)
+        HAL_WARNING("night", "IQ reload failed with %#x (continuing)\n", r);
 }
 
 void night_ircut_exercise_startup(void) {

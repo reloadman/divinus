@@ -59,6 +59,11 @@ int v4_get_drc_strength(unsigned int *strength);
 // the low-light auto-AE path is currently considered active (v4 dynamic IQ).
 int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active);
 
+// Re-apply IQ config at runtime (best-effort).
+// Useful when switching DAY <-> IR so that [static_*] vs [ir_static_*] sections take effect.
+// Returns 0 on success, non-zero otherwise.
+int v4_iq_reload(void);
+
 // Returns 0 on success and writes current AUTO AE knobs.
 // Useful for OSD/debug: shows what profile is actually active.
 int v4_get_ae_auto_params(unsigned int *comp, unsigned int *expmax, unsigned int *sysgainmax);
