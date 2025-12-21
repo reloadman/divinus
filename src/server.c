@@ -1360,8 +1360,12 @@ void respond_request(http_request_t *req) {
     // This endpoint persists changes to divinus.yaml; runtime application may require a process restart.
     if (EQUALS(req->uri, "/api/isp")) {
         bool changed = false;
+        bool changed_orient = false;
+        bool changed_antiflicker = false;
         int save_rc = 0;
         bool saved = false;
+        int apply_rc = 0;
+        bool applied = true;
 
         if (!EMPTY(req->query)) {
             bool mirror_seen = false, flip_seen = false, antiflicker_seen = false;
@@ -1395,14 +1399,17 @@ void respond_request(http_request_t *req) {
             if (mirror_seen && (app_config.mirror != mirror_val)) {
                 app_config.mirror = mirror_val;
                 changed = true;
+                changed_orient = true;
             }
             if (flip_seen && (app_config.flip != flip_val)) {
                 app_config.flip = flip_val;
                 changed = true;
+                changed_orient = true;
             }
             if (antiflicker_seen && (app_config.antiflicker != antiflicker_val)) {
                 app_config.antiflicker = antiflicker_val;
                 changed = true;
+                changed_antiflicker = true;
             }
 
             if (changed) {
@@ -1410,9 +1417,17 @@ void respond_request(http_request_t *req) {
                 saved = (save_rc == 0);
                 if (!saved)
                     HAL_WARNING("server", "Failed to save config after isp change (ret=%d)\n", save_rc);
+
+                // Best-effort runtime apply (platform-dependent).
+                // Antiflicker is typically applied at pipeline creation time; we don't attempt runtime update here.
+                if (changed_orient) {
+                    apply_rc = media_set_isp_orientation(app_config.mirror, app_config.flip);
+                    applied = (apply_rc == 0);
+                }
             }
         }
 
+        bool needs_restart = changed_antiflicker || (changed_orient && !applied);
         int respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json;charset=UTF-8\r\n"
@@ -1420,6 +1435,7 @@ void respond_request(http_request_t *req) {
             "\r\n"
             "{\"mirror\":%s,\"flip\":%s,\"antiflicker\":%d,"
             "\"changed\":%s,\"saved\":%s,\"save_code\":%d,"
+            "\"applied\":%s,\"apply_code\":%d,"
             "\"needs_restart\":%s}",
             app_config.mirror ? "true" : "false",
             app_config.flip ? "true" : "false",
@@ -1427,7 +1443,9 @@ void respond_request(http_request_t *req) {
             changed ? "true" : "false",
             saved ? "true" : "false",
             save_rc,
-            changed ? "true" : "false");
+            applied ? "true" : "false",
+            apply_rc,
+            needs_restart ? "true" : "false");
         send_and_close(req->clntFd, response, respLen);
         return;
     }

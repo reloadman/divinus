@@ -405,6 +405,11 @@ int i6c_pipeline_create(char sensor, short width, short height, char mirror, cha
     return EXIT_SUCCESS;
 }
 
+int i6c_set_orientation(char mirror, char flip)
+{
+    return i6c_snr.fnSetOrientation(_i6c_snr_index, mirror, flip);
+}
+
 void i6c_pipeline_destroy(void)
 {
     for (char i = 0; i < 4; i++)

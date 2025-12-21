@@ -671,6 +671,49 @@ int v4_channel_grayscale(char enable)
     return EXIT_SUCCESS;
 }
 
+int v4_channel_set_orientation(char mirror, char flip, char h26x_fps, char mjpeg_fps)
+{
+    int last_ret = EXIT_SUCCESS;
+
+    for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
+        if (!v4_state[i].enable) continue;
+
+        char fps = h26x_fps;
+        if (v4_state[i].payload == HAL_VIDCODEC_MJPG)
+            fps = mjpeg_fps;
+        else if (v4_state[i].payload == HAL_VIDCODEC_JPG)
+            fps = 1;
+        else if (v4_state[i].payload == HAL_VIDCODEC_UNSPEC)
+            continue;
+
+        v4_vpss_chn channel;
+        memset(&channel, 0, sizeof(channel));
+        channel.dest.width = v4_config.isp.capt.width;
+        channel.dest.height = v4_config.isp.capt.height;
+        channel.pixFmt = V4_PIXFMT_YVU420SP;
+        channel.hdr = V4_HDR_SDR8;
+        channel.srcFps = v4_config.isp.framerate;
+        channel.dstFps = fps;
+        channel.mirror = mirror;
+        channel.flip = flip;
+
+        int ret = v4_vpss.fnSetChannelConfig(_v4_vpss_grp, i, &channel);
+        if (ret) {
+            // Some SDKs require the channel to be disabled before updating attrs.
+            v4_vpss.fnDisableChannel(_v4_vpss_grp, i);
+            ret = v4_vpss.fnSetChannelConfig(_v4_vpss_grp, i, &channel);
+            if (!ret)
+                ret = v4_vpss.fnEnableChannel(_v4_vpss_grp, i);
+        }
+
+        if (ret) {
+            last_ret = ret;
+        }
+    }
+
+    return last_ret;
+}
+
 int v4_channel_unbind(char index)
 {
     int ret;

@@ -34,6 +34,9 @@ int m6_config_load(char *path);
 
 int m6_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate);
 void m6_pipeline_destroy(void);
+// Best-effort runtime orientation update (platform support dependent).
+// Returns 0 on success.
+int m6_set_orientation(char mirror, char flip);
 
 int m6_region_create(char handle, hal_rect rect, short opacity);
 void m6_region_deinit(void);

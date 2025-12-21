@@ -35,6 +35,10 @@ int v4_audio_init(int samplerate, int gain_percent);
 int v4_channel_bind(char index);
 int v4_channel_create(char index, char mirror, char flip, char framerate);
 int v4_channel_grayscale(char enable);
+// Best-effort runtime orientation update for all enabled channels.
+// Applies VPSS mirror/flip and may cause a short frame gap, but does not stop RTSP/VENC.
+// Returns 0 on success, non-zero otherwise.
+int v4_channel_set_orientation(char mirror, char flip, char h26x_fps, char mjpeg_fps);
 int v4_channel_unbind(char index);
 
 void *v4_image_thread(void);

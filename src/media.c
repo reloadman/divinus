@@ -971,6 +971,32 @@ void set_grayscale(bool active) {
     pthread_mutex_unlock(&chnMtx);
 }
 
+int media_set_isp_orientation(bool mirror, bool flip) {
+    int ret = EXIT_FAILURE;
+    pthread_mutex_lock(&chnMtx);
+    switch (plat) {
+#if defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_I6:  ret = i6_set_orientation(mirror, flip); break;
+        case HAL_PLATFORM_I6C: ret = i6c_set_orientation(mirror, flip); break;
+        case HAL_PLATFORM_M6:  ret = m6_set_orientation(mirror, flip); break;
+        default: ret = EXIT_FAILURE; break;
+#elif defined(__arm__) && !defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_V4:
+            ret = v4_channel_set_orientation(mirror, flip, (char)app_config.mp4_fps, (char)app_config.jpeg_fps);
+            break;
+        default: ret = EXIT_FAILURE; break;
+#else
+        default: ret = EXIT_FAILURE; break;
+#endif
+    }
+    pthread_mutex_unlock(&chnMtx);
+
+    if (ret == 0)
+        request_idr();
+
+    return ret;
+}
+
 int get_isp_avelum(unsigned char *lum) {
     if (!lum) return EXIT_FAILURE;
     switch (plat) {

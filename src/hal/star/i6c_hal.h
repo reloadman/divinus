@@ -36,6 +36,9 @@ int i6c_config_load(char *path);
 
 int i6c_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate);
 void i6c_pipeline_destroy(void);
+// Best-effort runtime orientation update (platform support dependent).
+// Returns 0 on success.
+int i6c_set_orientation(char mirror, char flip);
 
 int i6c_region_create(char handle, hal_rect rect, short opacity);
 void i6c_region_deinit(void);
