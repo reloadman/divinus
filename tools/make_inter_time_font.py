@@ -29,7 +29,7 @@ from pathlib import Path
 # Default charset for "time OSD + basic labels":
 # - time: digits + separators
 # - labels: Latin alphabet (both cases)
-TIME_CHARS = "0123456789- :/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+TIME_CHARS = "0123456789- :./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 
 def _make_tab_digits(font_path: str, out_path: str) -> None:

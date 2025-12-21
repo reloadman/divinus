@@ -10,7 +10,7 @@ system:
   isp_thread_stack_size: 16384
   venc_stream_thread_stack_size: 16384
   web_server_thread_stack_size: 65536
-  time_format: %Y-%m-%d %H:%M:%S
+  time_format: %d.%m.%Y %H:%M:%S
   watchdog: 0
 night_mode:
   enable: true
@@ -94,16 +94,20 @@ osd:
   enable: true
   isp_debug: true
     reg0_text: $t
-    reg0_font: /oem/usr/share/JetBrainsMono-Medium.ttf  # preferred: full font file path (name-only still supported)
+    reg0_font: InterTime
     reg0_opal: 255
     reg0_posx: 10
     reg0_posy: 10
-    reg0_size: 32.0
-    reg0_color: 0xffff
+    reg0_bg: 0x0000
+    reg0_bgopal: 160
+    reg0_pad: 4
+    reg0_size: 28
+    reg0_thick: 0.0
+    reg0_thick: 0.0
     reg0_outl: 0x8000
-    reg0_thick: 1.0
+    reg0_color: 0xffff     # white (ARGB1555)
     reg1_img: /usr/share/faceter/mask.png
-    reg1_font: /oem/usr/share/UbuntuMono-Regular.ttf
+    reg1_font: InterTime
     reg1_opal: 128
     reg1_posx: 1776
     reg1_posy: 950
@@ -112,7 +116,7 @@ osd:
     reg1_outl: 0x8000
     reg1_thick: 2.0
     reg2_text: $I1
-    reg2_font: /oem/usr/share/UbuntuMono-Regular.ttf
+    reg2_font: InterTime
     reg2_opal: 255
     reg2_posx: 16
     reg2_posy: 992
@@ -121,7 +125,7 @@ osd:
     reg2_outl: 0x8000
     reg2_thick: 2.0
     reg3_text: $I2
-    reg3_font: /oem/usr/share/UbuntuMono-Regular.ttf
+    reg3_font: InterTime
     reg3_opal: 255
     reg3_posx: 16
     reg3_posy: 1028
