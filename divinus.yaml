@@ -101,7 +101,7 @@ osd:
   reg0_posx: 10
   reg0_posy: 10
   reg0_bg: 0x0000
-  reg0_bgopal: 140      # background opacity (0..255). Works on hisi/v4 and star/i6c (infinity6b0).
+  reg0_bgopal: 140      # background opacity (0..255). Works on hisi/v4 and star/i6/i6c/m6.
   reg0_pad: 4
   reg0_size: 28
   reg0_thick: 0.0

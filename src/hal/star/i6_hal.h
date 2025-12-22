@@ -43,6 +43,8 @@ void i6_pipeline_destroy(void);
 int i6_set_orientation(char mirror, char flip);
 
 int i6_region_create(char handle, hal_rect rect, short opacity);
+// Extended: allow separate alpha for background (alpha-bit 0) and foreground (alpha-bit 1).
+int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity);
 void i6_region_deinit(void);
 void i6_region_destroy(char handle);
 void i6_region_init(void);

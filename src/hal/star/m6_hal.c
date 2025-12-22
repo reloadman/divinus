@@ -427,6 +427,12 @@ void m6_pipeline_destroy(void)
 
 int m6_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return m6_region_create_ex(handle, rect, opacity, 0);
+}
+
+int m6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret;
 
     m6_sys_bind dest = { .module = M6_SYS_MOD_VENC, .port = _m6_venc_port };
@@ -461,7 +467,8 @@ int m6_region_create(char handle, hal_rect rect, short opacity)
     if (m6_rgn.fnGetChannelConfig(0, handle, &dest, &attribCurr))
         HAL_INFO("m6_rgn", "Attaching region %d...\n", handle);
     else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
-        attribCurr.osd.bgFgAlpha[1] != opacity) {
+        attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
+        attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("m6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
         for (char i = 0; i < M6_VENC_CHN_NUM; i++) {
@@ -478,8 +485,8 @@ int m6_region_create(char handle, hal_rect rect, short opacity)
     attrib.point.y = rect.y;
     attrib.osd.layer = 0;
     attrib.osd.constAlphaOn = 0;
-    attrib.osd.bgFgAlpha[0] = 0;
-    attrib.osd.bgFgAlpha[1] = opacity;
+    attrib.osd.bgFgAlpha[0] = bg_opacity;
+    attrib.osd.bgFgAlpha[1] = fg_opacity;
 
     for (char i = 0; i < M6_VENC_CHN_NUM; i++) {
         if (!m6_state[i].enable) continue;

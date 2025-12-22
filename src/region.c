@@ -650,7 +650,10 @@ void *region_thread(void) {
                     // Background box is implemented where ARGB1555 overlay supports
                     // separate bgAlpha/fgAlpha (e.g. HiSilicon v4, SigmaStar i6c).
                     const int bg_enable = (osds[id].bgopal > 0) &&
-                        (plat == HAL_PLATFORM_V4 || plat == HAL_PLATFORM_I6C);
+                        (plat == HAL_PLATFORM_V4 ||
+                         plat == HAL_PLATFORM_I6C ||
+                         plat == HAL_PLATFORM_I6 ||
+                         plat == HAL_PLATFORM_M6);
                     hal_bitmap bitmap = text_create_rendered(
                         font_path, osds[id].size, out,
                         osds[id].color, osds[id].outl, osds[id].thick,
@@ -686,7 +689,8 @@ void *region_thread(void) {
                     switch (plat) {
 #if defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_I6:
-                            i6_region_create(id, rect, osds[id].opal);
+                            i6_region_create_ex(id, rect, osds[id].opal,
+                                (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                             i6_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_I6C:
@@ -695,7 +699,8 @@ void *region_thread(void) {
                             i6c_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_M6:
-                            m6_region_create(id, rect, osds[id].opal);
+                            m6_region_create_ex(id, rect, osds[id].opal,
+                                (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                             m6_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_RK:
@@ -759,7 +764,8 @@ void *region_thread(void) {
                         switch (plat) {
 #if defined(__ARM_PCS_VFP)
                             case HAL_PLATFORM_I6:
-                                i6_region_create(id, rect, osds[id].opal);
+                                i6_region_create_ex(id, rect, osds[id].opal,
+                                    (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                                 i6_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_I6C:
@@ -768,7 +774,8 @@ void *region_thread(void) {
                                 i6c_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_M6:
-                                m6_region_create(id, rect, osds[id].opal);
+                                m6_region_create_ex(id, rect, osds[id].opal,
+                                    (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                                 m6_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_RK:

@@ -387,6 +387,12 @@ void i6_pipeline_destroy(void)
 
 int i6_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return i6_region_create_ex(handle, rect, opacity, 0);
+}
+
+int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret;
 
     i6_sys_bind dest = { .module = 0,
@@ -421,7 +427,8 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
     if (i6_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("i6_rgn", "Attaching region %d...\n", handle);
     else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
-        attribCurr.osd.bgFgAlpha[1] != opacity) {
+        attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
+        attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("i6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
@@ -437,8 +444,8 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
     attrib.point.y = rect.y;
     attrib.osd.layer = 0;
     attrib.osd.constAlphaOn = 0;
-    attrib.osd.bgFgAlpha[0] = 0;
-    attrib.osd.bgFgAlpha[1] = opacity;
+    attrib.osd.bgFgAlpha[0] = bg_opacity;
+    attrib.osd.bgFgAlpha[1] = fg_opacity;
 
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
