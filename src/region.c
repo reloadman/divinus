@@ -13,10 +13,11 @@ pthread_t regionPid = 0;
 char timefmt[64];
 unsigned int rxb_l, txb_l, cpu_l[6];
 
-// HiSilicon v4: avoid frequent region recreation due to tiny bitmap size changes.
+// Avoid frequent region recreation due to tiny bitmap size changes.
 // Strategy: grow immediately; shrink only if new area is <= 90% of current.
-static unsigned short v4_rgn_w[MAX_OSD] = {0};
-static unsigned short v4_rgn_h[MAX_OSD] = {0};
+// (Used on platforms where region recreation is expensive/noisy: hisi/v4, star/i6,i6c,m6.)
+static unsigned short osd_rgn_w[MAX_OSD] = {0};
+static unsigned short osd_rgn_h[MAX_OSD] = {0};
 
 static inline unsigned short u16_min(unsigned short a, unsigned short b) { return (a < b) ? a : b; }
 
@@ -661,23 +662,26 @@ void *region_thread(void) {
                     hal_rect rect = { .height = bitmap.dim.height, .width = bitmap.dim.width,
                         .x = osds[id].posx, .y = osds[id].posy };
 
-                    // v4 hysteresis: keep region size stable to avoid constant recreate spam.
+                    // Size hysteresis: keep region size stable to avoid constant recreate spam.
                     hal_bitmap send_bmp = bitmap;
                     bool send_bmp_alloc = false;
-                    if (plat == HAL_PLATFORM_V4) {
-                        unsigned short cw = v4_rgn_w[(unsigned char)id];
-                        unsigned short ch = v4_rgn_h[(unsigned char)id];
+                    if (plat == HAL_PLATFORM_V4 ||
+                        plat == HAL_PLATFORM_I6 ||
+                        plat == HAL_PLATFORM_I6C ||
+                        plat == HAL_PLATFORM_M6) {
+                        unsigned short cw = osd_rgn_w[(unsigned char)id];
+                        unsigned short ch = osd_rgn_h[(unsigned char)id];
                         if (cw == 0 || ch == 0) {
-                            v4_rgn_w[(unsigned char)id] = bitmap.dim.width;
-                            v4_rgn_h[(unsigned char)id] = bitmap.dim.height;
+                            osd_rgn_w[(unsigned char)id] = bitmap.dim.width;
+                            osd_rgn_h[(unsigned char)id] = bitmap.dim.height;
                         } else {
                             const unsigned int cur_area = (unsigned int)cw * (unsigned int)ch;
                             const unsigned int new_area = (unsigned int)bitmap.dim.width * (unsigned int)bitmap.dim.height;
                             const bool need_grow = (bitmap.dim.width > cw) || (bitmap.dim.height > ch);
                             const bool shrink_big = (new_area * 100u) <= (cur_area * 90u);
                             if (need_grow || shrink_big) {
-                                v4_rgn_w[(unsigned char)id] = bitmap.dim.width;
-                                v4_rgn_h[(unsigned char)id] = bitmap.dim.height;
+                                osd_rgn_w[(unsigned char)id] = bitmap.dim.width;
+                                osd_rgn_h[(unsigned char)id] = bitmap.dim.height;
                             } else {
                                 // Keep existing region size and pad the bitmap to match.
                                 send_bmp = region_pad_bitmap(&bitmap, cw, ch, &send_bmp_alloc);
