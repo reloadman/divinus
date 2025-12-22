@@ -1752,6 +1752,28 @@ int start_sdk(void) {
 #endif
         }
 
+#if defined(__ARM_PCS_VFP)
+    if (!EMPTY(app_config.iq_config) &&
+        (plat == HAL_PLATFORM_I6 || plat == HAL_PLATFORM_I6C || plat == HAL_PLATFORM_M6)) {
+        if (!access(app_config.iq_config, F_OK)) {
+            int iq_ret = 0;
+            switch (plat) {
+                case HAL_PLATFORM_I6:  iq_ret = i6_config_load(app_config.iq_config); break;
+                case HAL_PLATFORM_I6C: iq_ret = i6c_config_load(app_config.iq_config); break;
+                case HAL_PLATFORM_M6:  iq_ret = m6_config_load(app_config.iq_config); break;
+                default: break;
+            }
+            if (iq_ret)
+                HAL_WARNING("media", "IQ config '%s' apply failed with %#x\n",
+                    app_config.iq_config, iq_ret);
+            else
+                HAL_INFO("media", "Applied IQ config '%s'\n", app_config.iq_config);
+        } else {
+            HAL_WARNING("media", "IQ config '%s' not found, skipping\n", app_config.iq_config);
+        }
+    }
+#endif
+
     HAL_INFO("media", "SDK has started successfully!\n");
 
     return EXIT_SUCCESS;
