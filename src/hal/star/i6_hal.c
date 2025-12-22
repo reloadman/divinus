@@ -509,6 +509,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
         if (rc) {
             if (dest.module == I6_SYS_MOD_VPE) {
+                HAL_ERROR("i6_rgn", "reg%d attach VPE failed (port=%d rc=%d) -> trying VENC\n",
+                    handle, (int)dest.port, rc);
                 // Fallback: try attaching to VENC instead of VPE (some Sigmastar builds expect that).
                 if (i6_rgn_fill_dest(&dest, I6_SYS_MOD_VENC, i) == 0)
                     rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
@@ -518,6 +520,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
                     mod = I6_SYS_MOD_VENC;
                 }
             } else if (dest.module == I6_SYS_MOD_VENC) {
+                HAL_ERROR("i6_rgn", "reg%d attach VENC failed (port=%d rc=%d) -> trying VPE\n",
+                    handle, (int)dest.port, rc);
                 // If stored as VENC and failed, attempt VPE again.
                 if (i6_rgn_fill_dest(&dest, I6_SYS_MOD_VPE, i) == 0)
                     rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
