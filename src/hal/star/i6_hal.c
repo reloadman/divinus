@@ -72,6 +72,12 @@ static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
     }
 }
 
+static void i6_rgn_detach(char handle, i6_sys_mod mod, char port) {
+    i6_sys_bind dest;
+    if (i6_rgn_fill_dest(&dest, mod, port) == 0)
+        i6_rgn.fnDetachChannel(handle, &dest);
+}
+
 void i6_hal_deinit(void)
 {
     i6_vpe_unload(&i6_vpe);
@@ -477,8 +483,9 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             "region %d...\n", handle);
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
             if (!i6_state[i].enable) continue;
-            if (i6_rgn_fill_dest(&dest, mod, i) == 0)
-                i6_rgn.fnDetachChannel(handle, &dest);
+            // Detach from both possible modules to avoid busy/bind conflicts.
+            i6_rgn_detach(handle, mod, i);
+            i6_rgn_detach(handle, I6_SYS_MOD_VENC, i);
         }
     }
 
@@ -534,8 +541,8 @@ void i6_region_destroy(char handle)
     
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
-        if (i6_rgn_fill_dest(&dest, mod, i) == 0)
-            i6_rgn.fnDetachChannel(handle, &dest);
+        i6_rgn_detach(handle, mod, i);
+        i6_rgn_detach(handle, I6_SYS_MOD_VENC, i);
     }
     i6_rgn.fnDestroyRegion(handle);
 }
