@@ -30,6 +30,23 @@ char _i6_vpe_chn = 0;
 char _i6_vpe_dev = 0;
 char _i6_vpe_port = 0;
 
+// Track where each region is attached (VPE vs VENC) to detach correctly and allow fallback.
+#define I6_RGN_MAX_HANDLES 16
+static i6_sys_mod _i6_rgn_mod[I6_RGN_MAX_HANDLES] = {
+    [0 ... I6_RGN_MAX_HANDLES - 1] = I6_SYS_MOD_VPE
+};
+
+static inline i6_sys_mod i6_rgn_mod_get(char handle) {
+    if ((unsigned char)handle < I6_RGN_MAX_HANDLES)
+        return _i6_rgn_mod[(unsigned char)handle];
+    return I6_SYS_MOD_VPE;
+}
+
+static inline void i6_rgn_mod_set(char handle, i6_sys_mod mod) {
+    if ((unsigned char)handle < I6_RGN_MAX_HANDLES)
+        _i6_rgn_mod[(unsigned char)handle] = mod;
+}
+
 void i6_hal_deinit(void)
 {
     i6_vpe_unload(&i6_vpe);
@@ -395,7 +412,7 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 {
     int ret;
 
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
+    i6_sys_bind dest = { .module = i6_rgn_mod_get(handle),
         .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
@@ -454,7 +471,21 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             i6_rgn.fnDetachChannel(handle, &dest);
             continue;
         }
-        i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+
+        int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+        if (rc && dest.module == I6_SYS_MOD_VPE) {
+            // Fallback: try attaching to VENC instead of VPE (some Sigmastar builds expect that).
+            dest.module = I6_SYS_MOD_VENC;
+            rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+            if (!rc) {
+                i6_rgn_mod_set(handle, I6_SYS_MOD_VENC);
+                HAL_INFO("i6_rgn", "reg%d attached via VENC (fallback)\n", handle);
+            }
+        }
+        if (rc) {
+            HAL_ERROR("i6_rgn", "reg%d attach failed (module=%d port=%d rc=%d)\n",
+                handle, dest.module, dest.port, rc);
+        }
     }
 
     return EXIT_SUCCESS;
@@ -467,7 +498,7 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
+    i6_sys_bind dest = { .module = i6_rgn_mod_get(handle),
         .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
