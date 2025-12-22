@@ -164,8 +164,10 @@ void night_ircut_exercise_startup(void) {
     night_ircut(true);
     usleep(200 * 1000);
 
-    // Ensure we don't leave grayscale enabled from any previous state.
-    night_grayscale(false);
+    // NOTE: Do NOT call night_grayscale()/set_grayscale() here.
+    // This startup "unstick" routine runs before start_sdk(), and on some platforms
+    // grayscale toggling touches ISP/encoder state that isn't initialized yet,
+    // causing a crash. Grayscale will be applied later by night mode logic after SDK init.
     // Ensure IR LED is off if configured.
     if (app_config.ir_led_pin != 999) night_irled(false);
 
