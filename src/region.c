@@ -23,6 +23,9 @@ static unsigned short osd_logged_w[MAX_OSD] = {0};
 static unsigned short osd_logged_h[MAX_OSD] = {0};
 static short osd_logged_x[MAX_OSD] = {0};
 static short osd_logged_y[MAX_OSD] = {0};
+static short osd_logged_bgopal[MAX_OSD] = {0};
+static short osd_logged_opal[MAX_OSD] = {0};
+static bool osd_attached[MAX_OSD] = {0};
 
 static inline unsigned short u16_min(unsigned short a, unsigned short b) { return (a < b) ? a : b; }
 
@@ -721,82 +724,122 @@ void *region_thread(void) {
                     if (!send_bmp.data)
                         bmp_to_use = &bitmap;
 
-                    // Log size/position changes once per change to help field debugging.
-                    if (osd_logged_w[(unsigned char)id] != rect.width ||
+                    // Decide whether we need to (re)attach or just update bitmap.
+                    bool need_attach =
+                        !osd_attached[(unsigned char)id] ||
+                        osd_logged_w[(unsigned char)id] != rect.width ||
                         osd_logged_h[(unsigned char)id] != rect.height ||
                         osd_logged_x[(unsigned char)id] != rect.x ||
-                        osd_logged_y[(unsigned char)id] != rect.y) {
+                        osd_logged_y[(unsigned char)id] != rect.y ||
+                        osd_logged_bgopal[(unsigned char)id] != osds[id].bgopal ||
+                        osd_logged_opal[(unsigned char)id] != osds[id].opal;
+
+                    // Log size/position changes once per change to help field debugging.
+                    if (need_attach) {
                         HAL_INFO("region", "reg%d pos=%d,%d size=%ux%u bgopal=%d opal=%d",
                             id, rect.x, rect.y, rect.width, rect.height,
                             (int)osds[id].bgopal, (int)osds[id].opal);
-                        osd_logged_w[(unsigned char)id] = rect.width;
-                        osd_logged_h[(unsigned char)id] = rect.height;
-                        osd_logged_x[(unsigned char)id] = rect.x;
-                        osd_logged_y[(unsigned char)id] = rect.y;
                     }
+
                     int rgn_rc = 0;
-                    switch (plat) {
+                    if (need_attach) {
+                        switch (plat) {
 #if defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_I6:
                             rgn_rc = i6_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            if (!rgn_rc)
-                                rgn_rc = i6_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_I6C:
                             rgn_rc = i6c_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            if (!rgn_rc)
-                                rgn_rc = i6c_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_M6:
                             rgn_rc = m6_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            if (!rgn_rc)
-                                rgn_rc = m6_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_RK:
                             rgn_rc = rk_region_create(id, rect, osds[id].opal);
-                            if (!rgn_rc)
-                                rgn_rc = rk_region_setbitmap(id, bmp_to_use);
                             break;
 #elif defined(__arm__) && !defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_GM:
-                            rgn_rc = gm_region_setbitmap(id, bmp_to_use);
-                            if (!rgn_rc)
-                                rgn_rc = gm_region_create(id, rect, osds[id].opal);
+                            rgn_rc = gm_region_create(id, rect, osds[id].opal);
                             break;
                         case HAL_PLATFORM_V1:
                             rgn_rc = v1_region_create(id, rect, osds[id].opal);
-                            if (!rgn_rc)
-                                rgn_rc = v1_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_V2:
                             rgn_rc = v2_region_create(id, rect, osds[id].opal);
-                            if (!rgn_rc)
-                                rgn_rc = v2_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_V3:
                             rgn_rc = v3_region_create(id, rect, osds[id].opal);
-                            if (!rgn_rc)
-                                rgn_rc = v3_region_setbitmap(id, bmp_to_use);
                             break;
                         case HAL_PLATFORM_V4:
                             // For HiSilicon v4: allow semi-transparent background box via bgAlpha.
                             rgn_rc = v4_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            if (!rgn_rc)
-                                rgn_rc = v4_region_setbitmap(id, bmp_to_use);
                             break;
 #elif defined(__mips__)
                         case HAL_PLATFORM_T31:
                             rgn_rc = t31_region_create(&osds[id].hand, rect, osds[id].opal);
-                            if (!rgn_rc)
-                                rgn_rc = t31_region_setbitmap(&osds[id].hand, bmp_to_use);
                             break;
 #endif
+                        }
+                        if (rgn_rc) {
+                            HAL_ERROR("region", "reg%d attach/create failed (rc=%d) plat=%d\n",
+                                id, rgn_rc, (int)plat);
+                        } else {
+                            osd_attached[(unsigned char)id] = true;
+                            osd_logged_w[(unsigned char)id] = rect.width;
+                            osd_logged_h[(unsigned char)id] = rect.height;
+                            osd_logged_x[(unsigned char)id] = rect.x;
+                            osd_logged_y[(unsigned char)id] = rect.y;
+                            osd_logged_bgopal[(unsigned char)id] = osds[id].bgopal;
+                            osd_logged_opal[(unsigned char)id] = osds[id].opal;
+                        }
                     }
+
+                    // If attached (either already or just now), update bitmap only.
+                    if (!rgn_rc) {
+                        switch (plat) {
+#if defined(__ARM_PCS_VFP)
+                            case HAL_PLATFORM_I6:
+                                rgn_rc = i6_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_I6C:
+                                rgn_rc = i6c_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_M6:
+                                rgn_rc = m6_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_RK:
+                                rgn_rc = rk_region_setbitmap(id, bmp_to_use);
+                                break;
+#elif defined(__arm__) && !defined(__ARM_PCS_VFP)
+                            case HAL_PLATFORM_GM:
+                                rgn_rc = gm_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_V1:
+                                rgn_rc = v1_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_V2:
+                                rgn_rc = v2_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_V3:
+                                rgn_rc = v3_region_setbitmap(id, bmp_to_use);
+                                break;
+                            case HAL_PLATFORM_V4:
+                                rgn_rc = v4_region_setbitmap(id, bmp_to_use);
+                                break;
+#elif defined(__mips__)
+                            case HAL_PLATFORM_T31:
+                                rgn_rc = t31_region_setbitmap(&osds[id].hand, bmp_to_use);
+                                break;
+#endif
+                        }
+                    }
+
                     if (rgn_rc) {
+                        osd_attached[(unsigned char)id] = false;
                         HAL_ERROR("region", "reg%d set failed (rc=%d) plat=%d\n",
                             id, rgn_rc, (int)plat);
                     }
