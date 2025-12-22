@@ -56,7 +56,8 @@ static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
         case I6_SYS_MOD_VPE:
             dest->device = _i6_vpe_dev;
             dest->channel = _i6_vpe_chn;
-            dest->port = port;
+            // Region overlay attaches to VPE output port (fixed), not per-stream index.
+            dest->port = _i6_vpe_port;
             return 0;
         case I6_SYS_MOD_VENC: {
             // VENC device is fixed to 0 on i6; channel selects stream.
