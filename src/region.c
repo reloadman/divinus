@@ -647,9 +647,10 @@ void *region_thread(void) {
                         HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
                         continue;
                     }
-                    // Background box is currently implemented only for HiSilicon v4,
-                    // where ARGB1555 overlay supports separate bgAlpha/fgAlpha.
-                    const int bg_enable = (plat == HAL_PLATFORM_V4) && (osds[id].bgopal > 0);
+                    // Background box is implemented where ARGB1555 overlay supports
+                    // separate bgAlpha/fgAlpha (e.g. HiSilicon v4, SigmaStar i6c).
+                    const int bg_enable = (osds[id].bgopal > 0) &&
+                        (plat == HAL_PLATFORM_V4 || plat == HAL_PLATFORM_I6C);
                     hal_bitmap bitmap = text_create_rendered(
                         font_path, osds[id].size, out,
                         osds[id].color, osds[id].outl, osds[id].thick,
@@ -689,7 +690,8 @@ void *region_thread(void) {
                             i6_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_I6C:
-                            i6c_region_create(id, rect, osds[id].opal);
+                            i6c_region_create_ex(id, rect, osds[id].opal,
+                                (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                             i6c_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_M6:
@@ -761,7 +763,8 @@ void *region_thread(void) {
                                 i6_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_I6C:
-                                i6c_region_create(id, rect, osds[id].opal);
+                                i6c_region_create_ex(id, rect, osds[id].opal,
+                                    (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
                                 i6c_region_setbitmap(id, &bitmap);
                                 break;
                             case HAL_PLATFORM_M6:
