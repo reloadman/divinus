@@ -442,12 +442,9 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
 int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
 {
     int ret;
-    unsigned int h = (unsigned int)((unsigned char)handle + 1); // avoid MI handle 0
 
-    i6_sys_bind dest;
-    i6_sys_mod mod = i6_rgn_mod_get(handle);
-    if (i6_rgn_fill_dest(&dest, mod, 0))
-        mod = I6_SYS_MOD_VPE, i6_rgn_fill_dest(&dest, mod, 0);
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
+        .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
 
@@ -456,9 +453,9 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     region.size.width = rect.width;
     region.size.height = rect.height;
 
-    if (i6_rgn.fnGetRegionConfig(h, &regionCurr)) {
+    if (i6_rgn.fnGetRegionConfig(handle, &regionCurr)) {
         HAL_INFO("i6_rgn", "Creating region %d...\n", handle);
-        if (ret = i6_rgn.fnCreateRegion(h, &region))
+        if (ret = i6_rgn.fnCreateRegion(handle, &region))
             return ret;
     } else if (regionCurr.type != region.type ||
         regionCurr.size.height != region.size.height || 
@@ -468,14 +465,14 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
             if (!i6_state[i].enable) continue;
             dest.port = i;
-            i6_rgn.fnDetachChannel(h, &dest);
+            i6_rgn.fnDetachChannel(handle, &dest);
         }
-        i6_rgn.fnDestroyRegion(h);
-        if (ret = i6_rgn.fnCreateRegion(h, &region))
+        i6_rgn.fnDestroyRegion(handle);
+        if (ret = i6_rgn.fnCreateRegion(handle, &region))
             return ret;
     }
 
-    if (i6_rgn.fnGetChannelConfig(h, &dest, &attribCurr))
+    if (i6_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("i6_rgn", "Attaching region %d...\n", handle);
     else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
         attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
@@ -484,9 +481,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             "region %d...\n", handle);
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
             if (!i6_state[i].enable) continue;
-            // Detach from both possible modules to avoid busy/bind conflicts.
-            i6_rgn_detach(h, mod, i);
-            i6_rgn_detach(h, I6_SYS_MOD_VENC, i);
+            dest.port = i;
+            i6_rgn.fnDetachChannel(handle, &dest);
         }
     }
 
@@ -501,42 +497,16 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
-        if (i6_rgn_fill_dest(&dest, mod, i))
-            continue;
+        dest.port = i;
         if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
-            i6_rgn.fnDetachChannel(h, &dest);
+            i6_rgn.fnDetachChannel(handle, &dest);
             continue;
         }
 
-        int rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
+        int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
         if (rc) {
-            if (dest.module == I6_SYS_MOD_VPE) {
-                HAL_ERROR("i6_rgn", "reg%d attach VPE failed (port=%d rc=%d) -> trying VENC\n",
-                    handle, (int)dest.port, rc);
-                // Fallback: try attaching to VENC instead of VPE (some Sigmastar builds expect that).
-                if (i6_rgn_fill_dest(&dest, I6_SYS_MOD_VENC, i) == 0)
-                    rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
-                if (!rc) {
-                    i6_rgn_mod_set(handle, I6_SYS_MOD_VENC);
-                    HAL_INFO("i6_rgn", "reg%d attached via VENC (fallback)\n", handle);
-                    mod = I6_SYS_MOD_VENC;
-                }
-            } else if (dest.module == I6_SYS_MOD_VENC) {
-                HAL_ERROR("i6_rgn", "reg%d attach VENC failed (port=%d rc=%d) -> trying VPE\n",
-                    handle, (int)dest.port, rc);
-                // If stored as VENC and failed, attempt VPE again.
-                if (i6_rgn_fill_dest(&dest, I6_SYS_MOD_VPE, i) == 0)
-                    rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
-                if (!rc) {
-                    i6_rgn_mod_set(handle, I6_SYS_MOD_VPE);
-                    HAL_INFO("i6_rgn", "reg%d attached via VPE (fallback)\n", handle);
-                    mod = I6_SYS_MOD_VPE;
-                }
-            }
-        }
-        if (rc) {
-            HAL_ERROR("i6_rgn", "reg%d attach failed (module=%d port=%d rc=%d)\n",
-                handle, dest.module, dest.port, rc);
+            HAL_ERROR("i6_rgn", "reg%d attach failed (rc=%d)\n", handle, rc);
+            return rc;
         }
     }
 
@@ -550,18 +520,14 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
-    unsigned int h = (unsigned int)((unsigned char)handle + 1);
-    i6_sys_bind dest;
-    i6_sys_mod mod = i6_rgn_mod_get(handle);
-    if (i6_rgn_fill_dest(&dest, mod, 0))
-        mod = I6_SYS_MOD_VPE, i6_rgn_fill_dest(&dest, mod, 0);
-    
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
+        .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
-        i6_rgn_detach(h, mod, i);
-        i6_rgn_detach(h, I6_SYS_MOD_VENC, i);
+        dest.port = i;
+        i6_rgn.fnDetachChannel(handle, &dest);
     }
-    i6_rgn.fnDestroyRegion(h);
+    i6_rgn.fnDestroyRegion(handle);
 }
 
 void i6_region_init(void)
@@ -572,11 +538,10 @@ void i6_region_init(void)
 
 int i6_region_setbitmap(int handle, hal_bitmap *bitmap)
 {
-    unsigned int h = (unsigned int)((unsigned char)handle + 1);
     i6_rgn_bmp nativeBmp = { .data = bitmap->data, .pixFmt = I6_RGN_PIXFMT_ARGB1555,
         .size.height = bitmap->dim.height, .size.width = bitmap->dim.width };
 
-    return i6_rgn.fnSetBitmap(h, &nativeBmp);
+    return i6_rgn.fnSetBitmap(handle, &nativeBmp);
 }
 
 int i6_sensor_exposure(unsigned int micros)
