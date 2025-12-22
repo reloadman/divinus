@@ -62,7 +62,8 @@ static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
         case I6_SYS_MOD_VENC: {
             // VENC device is fixed to 0 on i6; channel selects stream.
             dest->device = 0;
-            dest->channel = port;
+            // Attach all OSD regions to main VENC channel 0.
+            dest->channel = 0;
             dest->port = _i6_venc_port;
             return 0;
         }
