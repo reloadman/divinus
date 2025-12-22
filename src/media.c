@@ -1048,6 +1048,14 @@ int get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
     if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
         return EXIT_FAILURE;
     switch (plat) {
+#if defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_I6:
+            return i6_get_isp_exposure_info(iso, exp_time, again, dgain, ispdgain, exposure_is_max);
+        case HAL_PLATFORM_I6C:
+            return i6c_get_isp_exposure_info(iso, exp_time, again, dgain, ispdgain, exposure_is_max);
+        case HAL_PLATFORM_M6:
+            return m6_get_isp_exposure_info(iso, exp_time, again, dgain, ispdgain, exposure_is_max);
+#endif
 #if defined(__arm__) && !defined(__ARM_PCS_VFP)
         case HAL_PLATFORM_V4:
             return v4_get_isp_exposure_info(iso, exp_time, again, dgain, ispdgain, exposure_is_max);

@@ -1,6 +1,5 @@
 system:
   sensor_config: /etc/sensors/os02g10.bin
-  iq_config: /etc/firmware/iqfile0.bin
   web_port: 8080
   web_enable_auth: false
   web_auth_user: admin
@@ -64,7 +63,7 @@ audio:
   codec: AAC
   bitrate: 48
   gain: 90
-  srate: 44100
+  srate: 48000
   channels: 1
   aac_quantqual: 40
   aac_bandwidth: 10000

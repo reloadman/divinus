@@ -48,6 +48,15 @@ void i6c_region_destroy(char handle);
 void i6c_region_init(void);
 int i6c_region_setbitmap(int handle, hal_bitmap *bitmap);
 
+// Best-effort exposure readback for ISP debug OSD.
+// Values are derived from MI_SNR_GetPlaneInfo (shutter/sensor gain/comp gain).
+// Units:
+// - exp_time: microseconds
+// - again/dgain/ispdgain: fixed-point (x1024) as reported by MI_SNR
+int i6c_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max);
+
 int i6c_video_create(char index, hal_vidconfig *config);
 int i6c_video_destroy(char index);
 int i6c_video_destroy_all(void);

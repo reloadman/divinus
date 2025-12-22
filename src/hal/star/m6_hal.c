@@ -218,6 +218,32 @@ int m6_config_load(char *path)
     return m6_isp.fnLoadChannelConfig(_m6_isp_dev, _m6_isp_chn, path, 1234);
 }
 
+int m6_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max)
+{
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+
+    m6_snr_plane p;
+    int ret = m6_snr.fnGetPlaneInfo(_m6_snr_index, 0, &p);
+    if (ret)
+        return ret;
+
+    *exp_time = p.shutter;       // us
+    *again = p.sensGain;         // x1024
+    *dgain = p.compGain;         // x1024
+    *ispdgain = p.compGain;      // best-effort
+
+    unsigned long long comb = (unsigned long long)p.sensGain * (unsigned long long)p.compGain;
+    comb /= 1024ull;
+    if (comb > 0xFFFFFFFFull) comb = 0xFFFFFFFFull;
+    *iso = (unsigned int)comb;
+
+    *exposure_is_max = 0;
+    return EXIT_SUCCESS;
+}
+
 int m6_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate)
 {
     int ret;

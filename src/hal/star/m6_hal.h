@@ -46,6 +46,15 @@ void m6_region_destroy(char handle);
 void m6_region_init(void);
 int m6_region_setbitmap(int handle, hal_bitmap *bitmap);
 
+// Best-effort exposure readback for ISP debug OSD.
+// Values are derived from MI_SNR_GetPlaneInfo (shutter/sensor gain/comp gain).
+// Units:
+// - exp_time: microseconds
+// - again/dgain/ispdgain: fixed-point (x1024) as reported by MI_SNR
+int m6_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max);
+
 int m6_video_create(char index, hal_vidconfig *config);
 int m6_video_destroy(char index);
 int m6_video_destroy_all(void);

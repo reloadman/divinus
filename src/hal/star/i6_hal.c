@@ -509,6 +509,34 @@ int i6_sensor_exposure(unsigned int micros)
     return ret;
 }
 
+int i6_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max)
+{
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+
+    i6_snr_plane p;
+    int ret = i6_snr.fnGetPlaneInfo(_i6_snr_index, 0, &p);
+    if (ret)
+        return ret;
+
+    *exp_time = p.shutter;       // us
+    *again = p.sensGain;         // x1024
+    *dgain = p.compGain;         // x1024
+    *ispdgain = p.compGain;      // best-effort
+
+    // Best-effort "ISO-like" metric: combined gain (still scaled by 1024).
+    unsigned long long comb = (unsigned long long)p.sensGain * (unsigned long long)p.compGain;
+    comb /= 1024ull;
+    if (comb > 0xFFFFFFFFull) comb = 0xFFFFFFFFull;
+    *iso = (unsigned int)comb;
+
+    // We don't have an explicit "exposure max" flag from MI_SNR.
+    *exposure_is_max = 0;
+    return EXIT_SUCCESS;
+}
+
 int i6_video_create(char index, hal_vidconfig *config)
 {
     int ret;
