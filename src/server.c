@@ -1398,8 +1398,11 @@ void respond_request(http_request_t *req) {
 
         if (!EMPTY(req->query)) {
             bool mirror_seen = false, flip_seen = false, antiflicker_seen = false;
+            bool sensor_mirror_seen = false, sensor_flip_seen = false;
             bool mirror_val = app_config.mirror;
             bool flip_val = app_config.flip;
+            bool sensor_mirror_val = app_config.sensor_mirror;
+            bool sensor_flip_val = app_config.sensor_flip;
             int antiflicker_val = app_config.antiflicker;
 
             char *remain;
@@ -1416,6 +1419,12 @@ void respond_request(http_request_t *req) {
                 } else if (EQUALS(key, "flip")) {
                     flip_seen = true;
                     flip_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "sensor_mirror")) {
+                    sensor_mirror_seen = true;
+                    sensor_mirror_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "sensor_flip")) {
+                    sensor_flip_seen = true;
+                    sensor_flip_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "antiflicker")) {
                     long result = strtol(value, &remain, 10);
                     if (remain != value) {
@@ -1432,6 +1441,16 @@ void respond_request(http_request_t *req) {
             }
             if (flip_seen && (app_config.flip != flip_val)) {
                 app_config.flip = flip_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (sensor_mirror_seen && (app_config.sensor_mirror != sensor_mirror_val)) {
+                app_config.sensor_mirror = sensor_mirror_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (sensor_flip_seen && (app_config.sensor_flip != sensor_flip_val)) {
+                app_config.sensor_flip = sensor_flip_val;
                 changed = true;
                 changed_orient = true;
             }
@@ -1462,10 +1481,13 @@ void respond_request(http_request_t *req) {
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "{\"mirror\":%s,\"flip\":%s,\"antiflicker\":%d,"
+            "{\"sensor_mirror\":%s,\"sensor_flip\":%s,"
+            "\"mirror\":%s,\"flip\":%s,\"antiflicker\":%d,"
             "\"changed\":%s,\"saved\":%s,\"save_code\":%d,"
             "\"applied\":%s,\"apply_code\":%d,"
             "\"needs_restart\":%s}",
+            app_config.sensor_mirror ? "true" : "false",
+            app_config.sensor_flip ? "true" : "false",
             app_config.mirror ? "true" : "false",
             app_config.flip ? "true" : "false",
             app_config.antiflicker,
