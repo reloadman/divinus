@@ -61,6 +61,9 @@ struct AppConfig {
     unsigned int isp_switch_lockout_s;
 
     // [isp]
+    // Fixed per-device orientation (factory), applied before user-facing mirror/flip.
+    bool sensor_mirror;
+    bool sensor_flip;
     bool mirror;
     bool flip;
     int antiflicker;

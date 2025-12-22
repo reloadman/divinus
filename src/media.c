@@ -34,6 +34,14 @@ static inline int audio_is_muted(void) {
     return g_audio_mute != 0;
 }
 
+static inline bool isp_mirror_effective(void) {
+    return app_config.sensor_mirror ^ app_config.mirror;
+}
+
+static inline bool isp_flip_effective(void) {
+    return app_config.sensor_flip ^ app_config.flip;
+}
+
 int media_get_audio_mute(void) {
     return audio_is_muted();
 }
@@ -973,16 +981,18 @@ void set_grayscale(bool active) {
 
 int media_set_isp_orientation(bool mirror, bool flip) {
     int ret = EXIT_FAILURE;
+    bool eff_mirror = app_config.sensor_mirror ^ mirror;
+    bool eff_flip = app_config.sensor_flip ^ flip;
     pthread_mutex_lock(&chnMtx);
     switch (plat) {
 #if defined(__ARM_PCS_VFP)
-        case HAL_PLATFORM_I6:  ret = i6_set_orientation(mirror, flip); break;
-        case HAL_PLATFORM_I6C: ret = i6c_set_orientation(mirror, flip); break;
-        case HAL_PLATFORM_M6:  ret = m6_set_orientation(mirror, flip); break;
+        case HAL_PLATFORM_I6:  ret = i6_set_orientation(eff_mirror, eff_flip); break;
+        case HAL_PLATFORM_I6C: ret = i6c_set_orientation(eff_mirror, eff_flip); break;
+        case HAL_PLATFORM_M6:  ret = m6_set_orientation(eff_mirror, eff_flip); break;
         default: ret = EXIT_FAILURE; break;
 #elif defined(__arm__) && !defined(__ARM_PCS_VFP)
         case HAL_PLATFORM_V4:
-            ret = v4_channel_set_orientation(mirror, flip, (char)app_config.mp4_fps, (char)app_config.jpeg_fps);
+            ret = v4_channel_set_orientation(eff_mirror, eff_flip, (char)app_config.mp4_fps, (char)app_config.jpeg_fps);
             break;
         default: ret = EXIT_FAILURE; break;
 #else
@@ -1103,24 +1113,24 @@ int create_channel(char index, short width, short height, char framerate, char j
         case HAL_PLATFORM_I6C: return i6c_channel_create(index, width, height, jpeg);
         case HAL_PLATFORM_M6:  return m6_channel_create(index, width, height, jpeg);
         case HAL_PLATFORM_RK:  return rk_channel_create(index, width, height,
-            app_config.mirror, app_config.flip);
+            isp_mirror_effective(), isp_flip_effective());
 #elif defined(__arm__) && !defined(__ARM_PCS_VFP)
         case HAL_PLATFORM_AK:  return EXIT_SUCCESS;
         case HAL_PLATFORM_GM:  return EXIT_SUCCESS;
         case HAL_PLATFORM_V1:  return v1_channel_create(index, width, height,
-            app_config.mirror, app_config.flip, framerate);
+            isp_mirror_effective(), isp_flip_effective(), framerate);
         case HAL_PLATFORM_V2:  return v2_channel_create(index, width, height,
-            app_config.mirror, app_config.flip, framerate);
+            isp_mirror_effective(), isp_flip_effective(), framerate);
         case HAL_PLATFORM_V3:  return v3_channel_create(index, width, height,
-            app_config.mirror, app_config.flip, framerate);
-        case HAL_PLATFORM_V4:  return v4_channel_create(index, app_config.mirror,
-            app_config.flip, framerate);
+            isp_mirror_effective(), isp_flip_effective(), framerate);
+        case HAL_PLATFORM_V4:  return v4_channel_create(index, isp_mirror_effective(),
+            isp_flip_effective(), framerate);
 #elif defined(__mips__)
         case HAL_PLATFORM_T31: return t31_channel_create(index, width, height,
             framerate, jpeg);
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: return cvi_channel_create(index, width, height,
-            app_config.mirror, app_config.flip);
+            isp_mirror_effective(), isp_flip_effective());
 #endif
     }
 }
@@ -1673,24 +1683,24 @@ int start_sdk(void) {
     switch (plat) {
 #if defined(__ARM_PCS_VFP)
         case HAL_PLATFORM_I6:  ret = i6_pipeline_create(0, width,
-            height, app_config.mirror, app_config.flip, framerate); break;
+            height, isp_mirror_effective(), isp_flip_effective(), framerate); break;
         case HAL_PLATFORM_I6C: ret = i6c_pipeline_create(0, width,
-            height, app_config.mirror, app_config.flip, framerate); break;
+            height, isp_mirror_effective(), isp_flip_effective(), framerate); break;
         case HAL_PLATFORM_M6:  ret = m6_pipeline_create(0, width,
-            height, app_config.mirror, app_config.flip, framerate); break;
+            height, isp_mirror_effective(), isp_flip_effective(), framerate); break;
         case HAL_PLATFORM_RK:  ret = rk_pipeline_create(width, height); break;
 #elif defined(__arm__) && !defined(__ARM_PCS_VFP)
-        case HAL_PLATFORM_AK:  ret = ak_pipeline_create(app_config.mirror,
-            app_config.flip); break;
-        case HAL_PLATFORM_GM:  ret = gm_pipeline_create(app_config.mirror,
-            app_config.flip); break;
+        case HAL_PLATFORM_AK:  ret = ak_pipeline_create(isp_mirror_effective(),
+            isp_flip_effective()); break;
+        case HAL_PLATFORM_GM:  ret = gm_pipeline_create(isp_mirror_effective(),
+            isp_flip_effective()); break;
         case HAL_PLATFORM_V1:  ret = v1_pipeline_create(); break;
         case HAL_PLATFORM_V2:  ret = v2_pipeline_create(); break;
         case HAL_PLATFORM_V3:  ret = v3_pipeline_create(); break;
         case HAL_PLATFORM_V4:  ret = v4_pipeline_create(app_config.iq_config); break;
 #elif defined(__mips__)
-        case HAL_PLATFORM_T31: ret = t31_pipeline_create(app_config.mirror,
-            app_config.flip, app_config.antiflicker, framerate); break;
+        case HAL_PLATFORM_T31: ret = t31_pipeline_create(isp_mirror_effective(),
+            isp_flip_effective(), app_config.antiflicker, framerate); break;
 #elif defined(__riscv) || defined(__riscv__)
         case HAL_PLATFORM_CVI: ret = cvi_pipeline_create(); break;
 #endif

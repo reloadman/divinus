@@ -310,6 +310,8 @@ int save_app_config(void) {
     // isp
     struct fy_node *isp = fy_node_create_mapping(fyd);
     if (!isp || yaml_map_add(fyd, root, "isp", isp)) goto EMIT_FAIL;
+    if (yaml_map_add_str(fyd, isp, "sensor_mirror", app_config.sensor_mirror ? "true" : "false")) goto EMIT_FAIL;
+    if (yaml_map_add_str(fyd, isp, "sensor_flip", app_config.sensor_flip ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, isp, "mirror", app_config.mirror ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, isp, "flip", app_config.flip ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, isp, "antiflicker", "%d", app_config.antiflicker)) goto EMIT_FAIL;
@@ -610,6 +612,8 @@ enum ConfigError parse_app_config(void) {
     app_config.jpeg_mode = HAL_VIDMODE_QP;
     app_config.jpeg_qfactor = 80;
 
+    app_config.sensor_mirror = false;
+    app_config.sensor_flip = false;
     app_config.mirror = false;
     app_config.flip = false;
     app_config.antiflicker = 0;
@@ -768,6 +772,12 @@ enum ConfigError parse_app_config(void) {
         app_config.isp_exptime_low = -1;
     }
 
+    err = yaml_get_bool(fyd, "/isp/sensor_mirror", &app_config.sensor_mirror);
+    if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
+        goto RET_ERR_YAML;
+    err = yaml_get_bool(fyd, "/isp/sensor_flip", &app_config.sensor_flip);
+    if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
+        goto RET_ERR_YAML;
     err = yaml_get_bool(fyd, "/isp/mirror", &app_config.mirror);
     if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
         goto RET_ERR_YAML;

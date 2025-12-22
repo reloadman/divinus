@@ -41,6 +41,8 @@ This document describes the fields that can be found within a configuration file
 
 ## ISP section
 
+- **sensor_mirror**: Factory/default mirror applied at boot (before user mirror). Set per hardware variant (default: `false`).
+- **sensor_flip**: Factory/default flip applied at boot (before user flip). Set per hardware variant (default: `false`).
 - **mirror**: Boolean to turn on image mirroring (default: `false`).
 - **flip**: Boolean to turn on image flipping (default: `false`).
 - **antiflicker**: Antiflicker setting in Hz (default: `60`).

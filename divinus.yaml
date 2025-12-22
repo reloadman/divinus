@@ -30,6 +30,8 @@ night_mode:
   adc_device: ""
   adc_threshold: 128
 isp:
+  sensor_mirror: false
+  sensor_flip: false
   mirror: false
   flip: false
   antiflicker: 50
