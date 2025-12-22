@@ -395,7 +395,7 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 {
     int ret;
 
-    i6_sys_bind dest = { .module = 0,
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
         .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
@@ -467,7 +467,7 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
-    i6_sys_bind dest = { .module = 0,
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
         .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
