@@ -7,10 +7,42 @@
 
 struct AppConfig app_config;
 
+// Minimal path lookup for our config schema.
+// We intentionally avoid `fy_node_by_path()` to keep dependencies smaller
+// (it pulls in ypath/walker support). Supported forms:
+//   "/a/b/c" (mapping keys only, no escapes, no indexes)
 static inline struct fy_node *yaml_node(struct fy_document *fyd, const char *path) {
-    if (!fyd || !path)
+    if (!fyd || !path || *path != '/')
         return NULL;
-    return fy_node_by_path(fy_document_root(fyd), path, FY_NT, FYNWF_DONT_FOLLOW);
+
+    struct fy_node *cur = fy_document_root(fyd);
+    if (!cur)
+        return NULL;
+
+    const char *p = path;
+    while (*p == '/')
+        p++;
+
+    while (*p) {
+        const char *seg = p;
+        while (*p && *p != '/')
+            p++;
+        size_t seg_len = (size_t)(p - seg);
+        while (*p == '/')
+            p++;
+
+        if (seg_len == 0)
+            continue;
+
+        if (fy_node_get_type(cur) != FYNT_MAPPING)
+            return NULL;
+
+        cur = fy_node_mapping_lookup_value_by_simple_key(cur, seg, seg_len);
+        if (!cur)
+            return NULL;
+    }
+
+    return cur;
 }
 
 static enum ConfigError yaml_get_scalar0(struct fy_document *fyd, const char *path, const char **out) {

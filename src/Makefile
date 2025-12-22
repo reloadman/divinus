@@ -164,6 +164,28 @@ FASTOPT ?= -O2 -pipe
 OPT_C := $(filter-out -s,$(OPT))
 FASTOPT_C := $(filter-out -s,$(FASTOPT))
 
+# Size optimizations:
+# - Put each function/data item in its own section so the linker can garbage-collect
+#   unused code from static libraries (libfyaml, faac, speexdsp, etc.).
+# - Enable section GC on ELF linkers; use -dead_strip on Darwin.
+SECTIONS_CFLAGS ?= -ffunction-sections -fdata-sections
+CFLAGS += $(SECTIONS_CFLAGS)
+ifneq (,$(findstring darwin,$(TOOLCHAIN)))
+  LDFLAGS += -Wl,-dead_strip
+else
+  LDFLAGS += -Wl,--gc-sections
+endif
+
+# -rdynamic is useful for backtraces/symbol resolution, but increases exported symbols
+# and can bloat binaries. Keep it only in debug builds.
+RDYNAMIC :=
+ifneq (,$(findstring -DDEBUG,$(OPT) $(CPPFLAGS) $(CFLAGS)))
+  RDYNAMIC := -rdynamic
+endif
+
+# Extra flags for vendored libfyaml compilation only.
+LIBFYAML_CFLAGS ?= -DNDEBUG
+
 # Enable LTO by default.
 LTO ?= 1
 ifeq ($(LTO),1)
@@ -182,7 +204,7 @@ divinus: $(OBJ)
 CPPFLAGS += -DDIVINUS_WITH_SPEEXDSP
 
 $(OBJ): $(DIVINUS_OBJS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLRTSP_LIB) $(SMOLLE_LIB) $(LIBFYAML_LIB) $(LIBEVENT_STAMP)
-	$(CC) $(DIVINUS_OBJS) -rdynamic $(OPT) $(LDFLAGS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LIBFYAML_LIB) $(LDLIBS) -o $@
+	$(CC) $(DIVINUS_OBJS) $(RDYNAMIC) $(OPT) $(LDFLAGS) $(FAAC_LIB) $(SPEEXDSP_LIB) $(SMOLLE_LIB) $(SMOLRTSP_LIB) $(LIBFYAML_LIB) $(LDLIBS) -o $@
 
 $(OBJDIR)/%.o: ../%.c Makefile $(LIBEVENT_CONFIG_H)
 	@mkdir -p $(dir $@)
@@ -207,7 +229,7 @@ $(FAAC_LIB): $(FAAC_OBJS)
 
 $(LIBFYAML_CACHEDIR)/%.o: ../%.c Makefile
 	@mkdir -p $(dir $@)
-	$(CC) -c $< $(OPT_C) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) $(LIBFYAML_INCLUDES) -o $@
+	$(CC) -c $< $(OPT_C) $(LTOFLAGS) $(CPPFLAGS) $(CFLAGS) $(LIBFYAML_CFLAGS) $(INCLUDES) $(LIBFYAML_INCLUDES) -o $@
 
 $(LIBFYAML_LIB): $(LIBFYAML_OBJS)
 	@mkdir -p $(dir $@)
