@@ -23,16 +23,14 @@
 #include <stdlib.h>
 
 /*
- * Compatibility: Some GCC toolchains (notably older embedded ones) may define
- * `__has_builtin` but not as a function-like macro, which breaks tests like:
- *   #if defined(__has_builtin) && __has_builtin(__builtin_add_overflow)
- * Clang provides a proper function-like `__has_builtin`. For non-Clang builds,
- * force a safe definition.
+ * Normalize __has_builtin so it is always function-like.
+ * Some non-Clang toolchains either omit it or define it as an object-like
+ * macro, which makes expressions like __has_builtin(...) fail to parse.
  */
-#if defined(__GNUC__) && !defined(__clang__)
-#ifdef __has_builtin
+#ifndef __has_builtin
+#define __has_builtin(x) 0
+#elif !defined(__clang__)
 #undef __has_builtin
-#endif
 #define __has_builtin(x) 0
 #endif
 
