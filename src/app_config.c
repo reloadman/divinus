@@ -415,6 +415,8 @@ int save_app_config(void) {
     if (yaml_map_add_str(fyd, osd, "enable", app_config.osd_enable ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, osd, "isp_debug", app_config.osd_isp_debug ? "true" : "false")) goto EMIT_FAIL;
     for (char i = 0; i < MAX_OSD; i++) {
+        // Skip runtime-only overlays (e.g. auto ISP debug lines).
+        if (!osds[i].persist) continue;
         char imgEmpty = EMPTY(osds[i].img);
         char textEmpty = EMPTY(osds[i].text);
         if (imgEmpty && textEmpty) continue;
@@ -521,6 +523,7 @@ enum ConfigError parse_app_config(void) {
         osds[i].posx = DEF_POSX;
         osds[i].posy = DEF_POSY + (DEF_SIZE * 3 / 2) * i;
         osds[i].updt = 0;
+        osds[i].persist = 1;
         strncpy(osds[i].font, DEF_FONT, sizeof(osds[i].font) - 1);
         osds[i].font[sizeof(osds[i].font) - 1] = '\0';
         osds[i].text[0] = '\0';

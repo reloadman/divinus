@@ -72,6 +72,9 @@ typedef struct {
     int hand, color;
     short opal, posx, posy;
     char updt;
+    // Persist this region into config when saving (divinus.yaml).
+    // Auto-generated runtime overlays (e.g. isp_debug) set this to 0.
+    unsigned char persist;
     // Font name (legacy) or full font file path (preferred).
     // Keep this large enough to hold absolute paths.
     char font[256];

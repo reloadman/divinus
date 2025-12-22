@@ -159,17 +159,18 @@ static void region_setup_isp_debug_osd(void) {
     // If ISP debug is disabled, but the reserved regions still contain $I macros
     // (e.g. persisted from a previous enable), clear them so they don't show up.
     if (!app_config.osd_isp_debug) {
-        if (id1 >= 0 && id1 < MAX_OSD) {
-            if (EQUALS(osds[id1].text, "$I1") || EQUALS(osds[id1].text, "$I2")) {
-                osds[id1].text[0] = '\0';
-                osds[id1].updt = 1;
-            }
+        // Only clear if these were auto-generated (transient).
+        if (id1 >= 0 && id1 < MAX_OSD && osds[id1].persist == 0) {
+            osds[id1].text[0] = '\0';
+            osds[id1].img[0] = '\0';
+            osds[id1].persist = 1;
+            osds[id1].updt = 1;
         }
-        if (id2 >= 0 && id2 < MAX_OSD) {
-            if (EQUALS(osds[id2].text, "$I1") || EQUALS(osds[id2].text, "$I2")) {
-                osds[id2].text[0] = '\0';
-                osds[id2].updt = 1;
-            }
+        if (id2 >= 0 && id2 < MAX_OSD && osds[id2].persist == 0) {
+            osds[id2].text[0] = '\0';
+            osds[id2].img[0] = '\0';
+            osds[id2].persist = 1;
+            osds[id2].updt = 1;
         }
         return;
     }
@@ -200,6 +201,15 @@ static void region_setup_isp_debug_osd(void) {
 
     for (int i = 0; i < 2; i++) {
         int id = lines[i].id;
+
+        // Don't override user-configured regions.
+        if (osds[id].persist != 0 && (!EMPTY(osds[id].text) || !EMPTY(osds[id].img))) {
+            HAL_WARNING("region",
+                "OSD ISP debug requested, but reg%d is already configured; skipping auto ISP debug overlay\n",
+                id);
+            continue;
+        }
+
         osds[id].hand = -1;
         osds[id].color = DEF_COLOR;
         osds[id].outl = DEF_OUTL;
@@ -213,6 +223,7 @@ static void region_setup_isp_debug_osd(void) {
         strncpy(osds[id].text, lines[i].macro, sizeof(osds[id].text) - 1);
         osds[id].text[sizeof(osds[id].text) - 1] = '\0';
         osds[id].img[0] = '\0';
+        osds[id].persist = 0; // do not write into config
         osds[id].updt = 1;
     }
 }
@@ -619,11 +630,15 @@ void *region_thread(void) {
         osds[id].posx = DEF_POSX;
         osds[id].posy = DEF_POSY + (DEF_SIZE * 3 / 2) * id;
         osds[id].updt = 0;
+        osds[id].persist = 1;
         strncpy(osds[id].font, DEF_FONT, sizeof(osds[id].font) - 1);
         osds[id].text[0] = '\0';
         osds[id].img[0] = '\0';
         osds[id].outl = DEF_OUTL;
         osds[id].thick = DEF_THICK;
+        osds[id].bg = DEF_BG;
+        osds[id].bgopal = 0;
+        osds[id].pad = DEF_PAD;
     }
 
     // Optionally auto-add ISP debug overlay if enabled in config.

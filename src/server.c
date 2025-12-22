@@ -1534,6 +1534,7 @@ void respond_request(http_request_t *req) {
                 fclose(img);
 
                 strcpy(osds[id].text, "");
+                osds[id].persist = 1;
                 osds[id].updt = 1;
             } else {
                 respLen = sprintf(response,
@@ -1565,29 +1566,35 @@ void respond_request(http_request_t *req) {
                 else if (EQUALS(key, "text"))
                     strncpy(osds[id].text, value,
                         sizeof(osds[id].text) - 1);
+                    osds[id].persist = 1;
                 else if (EQUALS(key, "size")) {
                     double result = strtod(value, &remain);
                     if (remain == value) continue;
                     osds[id].size = (result != 0 ? result : DEF_SIZE);
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "color")) {
                     int result = color_parse(value);
                     osds[id].color = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "opal")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].opal = result & 0xFF;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "posx")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].posx = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "posy")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].posy = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "pos")) {
                     int x, y;
@@ -1595,20 +1602,24 @@ void respond_request(http_request_t *req) {
                         osds[id].posx = x;
                         osds[id].posy = y;
                     }
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "outl")) {
                     int result = color_parse(value);
                     osds[id].outl = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "thick")) {
                     double result = strtod(value, &remain);
                     if (remain == value) continue;
                         osds[id].thick = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "bg")) {
                     int result = color_parse(value);
                     // bg is RGB555 (alpha ignored). Use bgopal to enable/disable.
                     osds[id].bg = result & 0x7FFF;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "bgopal")) {
                     long result = strtol(value, &remain, 10);
@@ -1617,6 +1628,7 @@ void respond_request(http_request_t *req) {
                         if (result > 255) result = 255;
                         osds[id].bgopal = (short)result;
                     }
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "pad")) {
                     long result = strtol(value, &remain, 10);
@@ -1625,6 +1637,7 @@ void respond_request(http_request_t *req) {
                         if (result > 64) result = 64;
                         osds[id].pad = (short)result;
                     }
+                    osds[id].persist = 1;
                 }
             }
             osds[id].updt = 1;
