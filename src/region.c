@@ -18,6 +18,7 @@ unsigned int rxb_l, txb_l, cpu_l[6];
 // (Used on platforms where region recreation is expensive/noisy: hisi/v4, star/i6,i6c,m6.)
 static unsigned short osd_rgn_w[MAX_OSD] = {0};
 static unsigned short osd_rgn_h[MAX_OSD] = {0};
+static char osd_font_logged[MAX_OSD][512] = {{0}};
 
 static inline unsigned short u16_min(unsigned short a, unsigned short b) { return (a < b) ? a : b; }
 
@@ -663,6 +664,13 @@ void *region_thread(void) {
                         HAL_DANGER("region", "Font \"%s\" not found!\n", osds[id].font);
                         continue;
                     }
+                    // Log resolved font path once per region when it changes (helps field debugging).
+                    if (strcmp(osd_font_logged[(unsigned char)id], font_path) != 0) {
+                        HAL_INFO("region", "reg%d font resolved: %s -> %s\n",
+                            id, osds[id].font, font_path);
+                        snprintf(osd_font_logged[(unsigned char)id],
+                            sizeof(osd_font_logged[(unsigned char)id]), "%s", font_path);
+                    }
                     // Background box is implemented where ARGB1555 overlay supports
                     // separate bgAlpha/fgAlpha (e.g. HiSilicon v4, SigmaStar i6c).
                     const int bg_enable = (osds[id].bgopal > 0) &&
@@ -705,56 +713,71 @@ void *region_thread(void) {
                             }
                         }
                     }
+                    int rgn_rc = 0;
                     switch (plat) {
 #if defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_I6:
-                            i6_region_create_ex(id, rect, osds[id].opal,
+                            rgn_rc = i6_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            i6_region_setbitmap(id, &bitmap);
+                            if (!rgn_rc)
+                                rgn_rc = i6_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_I6C:
-                            i6c_region_create_ex(id, rect, osds[id].opal,
+                            rgn_rc = i6c_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            i6c_region_setbitmap(id, &bitmap);
+                            if (!rgn_rc)
+                                rgn_rc = i6c_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_M6:
-                            m6_region_create_ex(id, rect, osds[id].opal,
+                            rgn_rc = m6_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            m6_region_setbitmap(id, &bitmap);
+                            if (!rgn_rc)
+                                rgn_rc = m6_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_RK:
-                            rk_region_create(id, rect, osds[id].opal);
-                            rk_region_setbitmap(id, &bitmap);
+                            rgn_rc = rk_region_create(id, rect, osds[id].opal);
+                            if (!rgn_rc)
+                                rgn_rc = rk_region_setbitmap(id, &bitmap);
                             break;
 #elif defined(__arm__) && !defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_GM:
-                            gm_region_setbitmap(id, &bitmap);
-                            gm_region_create(id, rect, osds[id].opal);
+                            rgn_rc = gm_region_setbitmap(id, &bitmap);
+                            if (!rgn_rc)
+                                rgn_rc = gm_region_create(id, rect, osds[id].opal);
                             break;
                         case HAL_PLATFORM_V1:
-                            v1_region_create(id, rect, osds[id].opal);
-                            v1_region_setbitmap(id, &bitmap);
+                            rgn_rc = v1_region_create(id, rect, osds[id].opal);
+                            if (!rgn_rc)
+                                rgn_rc = v1_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_V2:
-                            v2_region_create(id, rect, osds[id].opal);
-                            v2_region_setbitmap(id, &bitmap);
+                            rgn_rc = v2_region_create(id, rect, osds[id].opal);
+                            if (!rgn_rc)
+                                rgn_rc = v2_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_V3:
-                            v3_region_create(id, rect, osds[id].opal);
-                            v3_region_setbitmap(id, &bitmap);
+                            rgn_rc = v3_region_create(id, rect, osds[id].opal);
+                            if (!rgn_rc)
+                                rgn_rc = v3_region_setbitmap(id, &bitmap);
                             break;
                         case HAL_PLATFORM_V4:
                             // For HiSilicon v4: allow semi-transparent background box via bgAlpha.
-                            v4_region_create_ex(id, rect, osds[id].opal,
+                            rgn_rc = v4_region_create_ex(id, rect, osds[id].opal,
                                 (osds[id].bgopal > 0) ? osds[id].bgopal : 0);
-                            v4_region_setbitmap(id, &send_bmp);
+                            if (!rgn_rc)
+                                rgn_rc = v4_region_setbitmap(id, &send_bmp);
                             break;
 #elif defined(__mips__)
                         case HAL_PLATFORM_T31:
-                            t31_region_create(&osds[id].hand, rect, osds[id].opal);
-                            t31_region_setbitmap(&osds[id].hand, &bitmap);
+                            rgn_rc = t31_region_create(&osds[id].hand, rect, osds[id].opal);
+                            if (!rgn_rc)
+                                rgn_rc = t31_region_setbitmap(&osds[id].hand, &bitmap);
                             break;
 #endif
+                    }
+                    if (rgn_rc) {
+                        HAL_ERROR("region", "reg%d set failed (rc=%d) plat=%d\n",
+                            id, rgn_rc, (int)plat);
                     }
                     if (send_bmp_alloc && send_bmp.data && send_bmp.data != bitmap.data)
                         free(send_bmp.data);
