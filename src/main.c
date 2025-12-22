@@ -18,6 +18,10 @@
 
 char graceful = 0, keepRunning = 1;
 
+// Optional backtrace support (best-effort).
+// We use weak symbols so builds still work on toolchains/libc that don't provide execinfo.
+extern int backtrace(void **buffer, int size) __attribute__((weak));
+
 static const char *signal_name(int signo) {
     switch (signo) {
     case SIGABRT: return "SIGABRT";
@@ -35,6 +39,7 @@ static const char *signal_name(int signo) {
 
 void handle_error(int signo) {
     char msg[128];
+    const int saved_errno = errno;
 
     // SIGPIPE is expected when a client disconnects while we're writing.
     // Never "ignore" crash signals like SIGSEGV/SIGILL based on errno: errno may
@@ -44,7 +49,7 @@ void handle_error(int signo) {
         int len = snprintf(
             msg, sizeof(msg),
             "Non-fatal network signal (%d:%s) errno=%d (%s); ignore\n",
-            signo, signal_name(signo), errno, strerror(errno));
+            signo, signal_name(signo), saved_errno, strerror(saved_errno));
         if (len > 0)
             write(STDERR_FILENO, msg, (size_t)len);
         return;
@@ -53,9 +58,26 @@ void handle_error(int signo) {
     int len = snprintf(
         msg, sizeof(msg),
         "Error occured (%d:%s) errno=%d (%s) ! Quitting...\n",
-        signo, signal_name(signo), errno, strerror(errno));
+        signo, signal_name(signo), saved_errno, strerror(saved_errno));
     if (len > 0)
         write(STDERR_FILENO, msg, (size_t)len);
+
+    // Best-effort backtrace: helps pinpoint startup crashes on embedded targets.
+    // (Uses snprintf/write like the rest of this handler; not strictly async-signal-safe,
+    // but it's already used here and is valuable for diagnostics.)
+    if (backtrace) {
+        void *bt[32];
+        int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
+        if (n > 0) {
+            write(STDERR_FILENO, "Backtrace addresses:\n", 21);
+            for (int i = 0; i < n; i++) {
+                char line[64];
+                int l = snprintf(line, sizeof(line), "  #%d %p\n", i, bt[i]);
+                if (l > 0)
+                    write(STDERR_FILENO, line, (size_t)l);
+            }
+        }
+    }
     keepRunning = 0;
     exit(EXIT_FAILURE);
 }

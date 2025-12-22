@@ -22,6 +22,20 @@
 #include <assert.h>
 #include <stdlib.h>
 
+/*
+ * Compatibility: Some GCC toolchains (notably older embedded ones) may define
+ * `__has_builtin` but not as a function-like macro, which breaks tests like:
+ *   #if defined(__has_builtin) && __has_builtin(__builtin_add_overflow)
+ * Clang provides a proper function-like `__has_builtin`. For non-Clang builds,
+ * force a safe definition.
+ */
+#if defined(__GNUC__) && !defined(__clang__)
+#ifdef __has_builtin
+#undef __has_builtin
+#endif
+#define __has_builtin(x) 0
+#endif
+
 /* to avoid dragging in libfyaml.h */
 #ifndef FY_BIT
 #define FY_BIT(x) (1U << (x))
@@ -188,7 +202,7 @@ void fy_keyword_iter_end(struct fy_keyword_iter *iter);
 	\
 	__res = __a + __b; \
 	/* overflow when signs of a, b same, but results different */ \
-	__overflow = ((__a ^ __result) & (__b & __result)) < 0; \
+	__overflow = ((__a ^ __res) & (__b & __res)) < 0; \
 	*(_resp) = __res; \
 	__overflow; \
 })
@@ -208,7 +222,7 @@ void fy_keyword_iter_end(struct fy_keyword_iter *iter);
 	\
 	__res = __a - __b; \
 	/* overflow when signs of a, b differ, but results different from minuend */ \
-	__overflow = ((__a ^ __b) & (__a & __result)) < 0; \
+	__overflow = ((__a ^ __b) & (__a & __res)) < 0; \
 	*(_resp) = __res; \
 	__overflow; \
 })
