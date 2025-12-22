@@ -10,7 +10,7 @@ system:
   isp_thread_stack_size: 16384
   venc_stream_thread_stack_size: 16384
   web_server_thread_stack_size: 65536
-  time_format: %d.%m.%Y %H:%M:%S
+  time_format: "%d.%m.%Y %H:%M:%S"
   watchdog: 0
 night_mode:
   enable: true
@@ -27,7 +27,7 @@ night_mode:
   ir_led_pin: 16
   white_led_pin: 4
   pin_switch_delay_us: 150
-  adc_device: adc_threshold: 128
+  adc_device: ""
   adc_threshold: 128
 isp:
   mirror: false
@@ -38,8 +38,8 @@ mdns:
 onvif:
   enable: false
   enable_auth: false
-  auth_user: 
-  auth_pass: 
+  auth_user: ""
+  auth_pass: ""
 rtsp:
   enable: true
   port: 554
@@ -50,7 +50,7 @@ record:
   enable: false
   continuous: false
   path: /mnt/sdcard/recordings
-  filename: segment_duration: 0
+  filename: ""
   segment_duration: 0
   segment_size: 0
 stream:
@@ -82,7 +82,7 @@ audio:
   speex_vad_prob_continue: 0
 mp4:
   enable: true
-  codec: H.264+
+  codec: "H.264+"
   mode: 4
   width: 1920
   height: 1080
@@ -93,46 +93,45 @@ mp4:
 osd:
   enable: true
   isp_debug: true
-    reg0_text: $t
-    reg0_font: InterTime
-    reg0_opal: 255
-    reg0_posx: 10
-    reg0_posy: 10
-    reg0_bg: 0x0000
-    reg0_bgopal: 160
-    reg0_pad: 4
-    reg0_size: 28
-    reg0_thick: 0.0
-    reg0_thick: 0.0
-    reg0_outl: 0x8000
-    reg0_color: 0xffff     # white (ARGB1555)
-    reg1_img: /usr/share/faceter/mask.png
-    reg1_font: InterTime
-    reg1_opal: 128
-    reg1_posx: 1776
-    reg1_posy: 950
-    reg1_size: 32.0
-    reg1_color: 0xffff
-    reg1_outl: 0x8000
-    reg1_thick: 2.0
-    reg2_text: $I1
-    reg2_font: InterTime
-    reg2_opal: 255
-    reg2_posx: 16
-    reg2_posy: 992
-    reg2_size: 24.0
-    reg2_color: 0xffff
-    reg2_outl: 0x8000
-    reg2_thick: 2.0
-    reg3_text: $I2
-    reg3_font: InterTime
-    reg3_opal: 255
-    reg3_posx: 16
-    reg3_posy: 1028
-    reg3_size: 24.0
-    reg3_color: 0xffff
-    reg3_outl: 0x8000
-    reg3_thick: 2.0
+  reg0_text: $t
+  reg0_font: InterTime
+  reg0_opal: 255
+  reg0_posx: 10
+  reg0_posy: 10
+  reg0_bg: 0x0000
+  reg0_bgopal: 160
+  reg0_pad: 4
+  reg0_size: 28
+  reg0_thick: 0.0
+  reg0_outl: 0x8000
+  reg0_color: 0xffff     # white (ARGB1555)
+  reg1_img: /usr/share/faceter/mask.png
+  reg1_font: InterTime
+  reg1_opal: 128
+  reg1_posx: 1776
+  reg1_posy: 950
+  reg1_size: 32.0
+  reg1_color: 0xffff
+  reg1_outl: 0x8000
+  reg1_thick: 2.0
+  reg2_text: $I1
+  reg2_font: InterTime
+  reg2_opal: 255
+  reg2_posx: 16
+  reg2_posy: 992
+  reg2_size: 24.0
+  reg2_color: 0xffff
+  reg2_outl: 0x8000
+  reg2_thick: 2.0
+  reg3_text: $I2
+  reg3_font: InterTime
+  reg3_opal: 255
+  reg3_posx: 16
+  reg3_posy: 1028
+  reg3_size: 24.0
+  reg3_color: 0xffff
+  reg3_outl: 0x8000
+  reg3_thick: 2.0
 jpeg:
   enable: true
   osd_enable: false
@@ -143,10 +142,10 @@ jpeg:
   qfactor: 80
 http_post:
   enable: false
-  host: 
-  url: 
-  login: 
-  password: 
+  host: ""
+  url: ""
+  login: ""
+  password: ""
   width: 0
   height: 0
   interval: 0

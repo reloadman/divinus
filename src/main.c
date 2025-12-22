@@ -175,9 +175,6 @@ int main(int argc, char *argv[]) {
     if (app_config.watchdog)
         watchdog_stop();
 
-    if (!graceful)
-        restore_app_config();
-
     fprintf(stderr, "Main thread is shutting down...\n");
     return EXIT_SUCCESS;
 }

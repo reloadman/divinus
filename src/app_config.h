@@ -1,7 +1,5 @@
 #pragma once
 
-#include <libgen.h>
-#include <linux/limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +8,12 @@
 #include "hal/config.h"
 #include "hal/support.h"
 #include "region.h"
+
+// Single, fixed config path (no fallback search).
+// If you need a different location, change it here and rebuild.
+#ifndef DIVINUS_CONFIG_PATH
+#define DIVINUS_CONFIG_PATH "/etc/divinus.yaml"
+#endif
 
 struct AppConfig {
     // [system]
@@ -171,5 +175,4 @@ struct AppConfig {
 
 extern struct AppConfig app_config;
 enum ConfigError parse_app_config(void);
-void restore_app_config(void);
 int save_app_config(void);
