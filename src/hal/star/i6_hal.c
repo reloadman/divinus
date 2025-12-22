@@ -495,17 +495,18 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     attrib.osd.bgFgAlpha[0] = bg_opacity;
     attrib.osd.bgFgAlpha[1] = fg_opacity;
 
-    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-        if (!i6_state[i].enable) continue;
-        dest.port = i;
-        if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
-            i6_rgn.fnDetachChannel(handle, &dest);
-            continue;
-        }
-
-        int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+    // Try VPE main port first, then fallback to VENC channel 0.
+    dest.port = _i6_vpe_port;
+    int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+    if (rc) {
+        HAL_WARNING("i6_rgn", "reg%d attach VPE failed (rc=%d), trying VENC ch0\n", handle, rc);
+        dest.module = I6_SYS_MOD_VENC;
+        dest.device = 0;
+        dest.channel = 0;
+        dest.port = _i6_venc_port;
+        rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
         if (rc) {
-            HAL_ERROR("i6_rgn", "reg%d attach failed (rc=%d)\n", handle, rc);
+            HAL_ERROR("i6_rgn", "reg%d attach VENC failed (rc=%d)\n", handle, rc);
             return rc;
         }
     }
@@ -520,13 +521,15 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
+    // Detach both possible attachments (VPE main port and VENC ch0).
     i6_sys_bind dest = { .module = I6_SYS_MOD_VPE,
-        .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
-    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-        if (!i6_state[i].enable) continue;
-        dest.port = i;
-        i6_rgn.fnDetachChannel(handle, &dest);
-    }
+        .device = _i6_vpe_dev, .channel = _i6_vpe_chn, .port = _i6_vpe_port };
+    i6_rgn.fnDetachChannel(handle, &dest);
+    dest.module = I6_SYS_MOD_VENC;
+    dest.device = 0;
+    dest.channel = 0;
+    dest.port = _i6_venc_port;
+    i6_rgn.fnDetachChannel(handle, &dest);
     i6_rgn.fnDestroyRegion(handle);
 }
 
