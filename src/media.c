@@ -1033,6 +1033,42 @@ int media_reload_iq(void) {
 int get_isp_avelum(unsigned char *lum) {
     if (!lum) return EXIT_FAILURE;
     switch (plat) {
+#if defined(__ARM_PCS_VFP)
+        case HAL_PLATFORM_I6:
+        case HAL_PLATFORM_I6C:
+        case HAL_PLATFORM_M6: {
+            // Sigmastar: no direct "average luma" API is wired in our HAL today.
+            // Provide a best-effort proxy derived from exposure time and gains, so
+            // OSD ISP debug can show a stable 0..255 "brightness" indicator.
+            //
+            // darkness ~= exp_time * iso (bigger means darker). Map log2(darkness)
+            // into 0..255, where higher is brighter.
+            unsigned int iso = 0, exptime = 0, again = 0, dgain = 0, ispdgain = 0;
+            int ismax = 0;
+            if (get_isp_exposure_info(&iso, &exptime, &again, &dgain, &ispdgain, &ismax) != EXIT_SUCCESS)
+                return EXIT_FAILURE;
+            unsigned long long darkness = (unsigned long long)iso * (unsigned long long)exptime;
+            if (darkness == 0) darkness = 1;
+
+            // Integer log2 for 64-bit.
+            unsigned int l2 = 0;
+            unsigned long long v = darkness;
+            while (v >>= 1) l2++;
+
+            // Calibrated loosely so that typical bright scenes land high and
+            // low-light scenes land near zero.
+            // - l2 ~ 21 for (iso~2000, exptime~1000us)
+            // - l2 ~ 31 for (iso~100000, exptime~20000us)
+            int score = 255;
+            int delta = (int)l2 - 20;
+            if (delta < 0) delta = 0;
+            score -= delta * 23; // ~11 steps to reach ~0
+            if (score < 0) score = 0;
+            if (score > 255) score = 255;
+            *lum = (unsigned char)score;
+            return EXIT_SUCCESS;
+        }
+#endif
 #if defined(__arm__) && !defined(__ARM_PCS_VFP)
         case HAL_PLATFORM_V4:
             return v4_get_isp_avelum(lum);

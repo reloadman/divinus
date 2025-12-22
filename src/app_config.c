@@ -205,6 +205,34 @@ static int yaml_map_add_str(struct fy_document *fyd, struct fy_node *map, const 
     return yaml_map_add(fyd, map, key, v);
 }
 
+// Create a double-quoted scalar node to keep values that start with special
+// characters (e.g. '%') YAML-safe when saving configs.
+static int yaml_map_add_quoted_str(struct fy_document *fyd, struct fy_node *map, const char *key, const char *val) {
+    if (!val)
+        val = "";
+
+    // Worst case each character is escaped, plus surrounding quotes and NUL.
+    char buf[sizeof(timefmt) * 2 + 3];
+    size_t pos = 0;
+
+    buf[pos++] = '"';
+    for (const char *s = val; *s && pos + 2 < sizeof(buf); s++) {
+        if (*s == '"' || *s == '\\') {
+            buf[pos++] = '\\';
+            if (pos + 1 >= sizeof(buf))
+                break;
+        }
+        buf[pos++] = *s;
+    }
+    buf[pos++] = '"';
+    buf[pos] = '\0';
+
+    struct fy_node *v = fy_node_build_from_string(fyd, buf, FY_NT);
+    if (!v)
+        return -1;
+    return yaml_map_add(fyd, map, key, v);
+}
+
 static int yaml_map_add_scalarf(struct fy_document *fyd, struct fy_node *map, const char *key, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -277,7 +305,7 @@ int save_app_config(void) {
     if (yaml_map_add_scalarf(fyd, system, "venc_stream_thread_stack_size", "%u", app_config.venc_stream_thread_stack_size)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "web_server_thread_stack_size", "%u", app_config.web_server_thread_stack_size)) goto EMIT_FAIL;
     if (!EMPTY(timefmt))
-        if (yaml_map_add_str(fyd, system, "time_format", timefmt)) goto EMIT_FAIL;
+        if (yaml_map_add_quoted_str(fyd, system, "time_format", timefmt)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "watchdog", "%u", app_config.watchdog)) goto EMIT_FAIL;
 
     // night_mode
