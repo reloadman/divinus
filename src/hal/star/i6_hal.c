@@ -59,10 +59,8 @@ static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
             dest->port = port;
             return 0;
         case I6_SYS_MOD_VENC: {
-            unsigned int device = 0;
-            if (i6_venc.fnGetChannelDeviceId(port, &device))
-                return -1;
-            dest->device = device;
+            // VENC device is fixed to 0 on i6; channel selects stream.
+            dest->device = 0;
             dest->channel = port;
             dest->port = _i6_venc_port;
             return 0;
