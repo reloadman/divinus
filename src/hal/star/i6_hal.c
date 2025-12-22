@@ -47,6 +47,31 @@ static inline void i6_rgn_mod_set(char handle, i6_sys_mod mod) {
         _i6_rgn_mod[(unsigned char)handle] = mod;
 }
 
+static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
+    if (!dest)
+        return -1;
+    memset(dest, 0, sizeof(*dest));
+    dest->module = mod;
+    switch (mod) {
+        case I6_SYS_MOD_VPE:
+            dest->device = _i6_vpe_dev;
+            dest->channel = _i6_vpe_chn;
+            dest->port = port;
+            return 0;
+        case I6_SYS_MOD_VENC: {
+            unsigned int device = 0;
+            if (i6_venc.fnGetChannelDeviceId(port, &device))
+                return -1;
+            dest->device = device;
+            dest->channel = port;
+            dest->port = _i6_venc_port;
+            return 0;
+        }
+        default:
+            return -1;
+    }
+}
+
 void i6_hal_deinit(void)
 {
     i6_vpe_unload(&i6_vpe);
@@ -412,8 +437,10 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 {
     int ret;
 
-    i6_sys_bind dest = { .module = i6_rgn_mod_get(handle),
-        .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
+    i6_sys_bind dest;
+    i6_sys_mod mod = i6_rgn_mod_get(handle);
+    if (i6_rgn_fill_dest(&dest, mod, 0))
+        mod = I6_SYS_MOD_VPE, i6_rgn_fill_dest(&dest, mod, 0);
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
 
@@ -450,8 +477,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             "region %d...\n", handle);
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
             if (!i6_state[i].enable) continue;
-            dest.port = i;
-            i6_rgn.fnDetachChannel(handle, &dest);
+            if (i6_rgn_fill_dest(&dest, mod, i) == 0)
+                i6_rgn.fnDetachChannel(handle, &dest);
         }
     }
 
@@ -466,7 +493,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
-        dest.port = i;
+        if (i6_rgn_fill_dest(&dest, mod, i))
+            continue;
         if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
             i6_rgn.fnDetachChannel(handle, &dest);
             continue;
@@ -475,11 +503,12 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         int rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
         if (rc && dest.module == I6_SYS_MOD_VPE) {
             // Fallback: try attaching to VENC instead of VPE (some Sigmastar builds expect that).
-            dest.module = I6_SYS_MOD_VENC;
-            rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+            if (i6_rgn_fill_dest(&dest, I6_SYS_MOD_VENC, i) == 0)
+                rc = i6_rgn.fnAttachChannel(handle, &dest, &attrib);
             if (!rc) {
                 i6_rgn_mod_set(handle, I6_SYS_MOD_VENC);
                 HAL_INFO("i6_rgn", "reg%d attached via VENC (fallback)\n", handle);
+                mod = I6_SYS_MOD_VENC;
             }
         }
         if (rc) {
@@ -498,13 +527,15 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
-    i6_sys_bind dest = { .module = i6_rgn_mod_get(handle),
-        .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
+    i6_sys_bind dest;
+    i6_sys_mod mod = i6_rgn_mod_get(handle);
+    if (i6_rgn_fill_dest(&dest, mod, 0))
+        mod = I6_SYS_MOD_VPE, i6_rgn_fill_dest(&dest, mod, 0);
     
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
-        dest.port = i;
-        i6_rgn.fnDetachChannel(handle, &dest);
+        if (i6_rgn_fill_dest(&dest, mod, i) == 0)
+            i6_rgn.fnDetachChannel(handle, &dest);
     }
     i6_rgn.fnDestroyRegion(handle);
 }
