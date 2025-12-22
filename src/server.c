@@ -1563,10 +1563,11 @@ void respond_request(http_request_t *req) {
                 else if (EQUALS(key, "font"))
                     strncpy(osds[id].font, !EMPTY(value) ? value : DEF_FONT,
                         sizeof(osds[id].font) - 1);
-                else if (EQUALS(key, "text"))
+                else if (EQUALS(key, "text")) {
                     strncpy(osds[id].text, value,
                         sizeof(osds[id].text) - 1);
                     osds[id].persist = 1;
+                }
                 else if (EQUALS(key, "size")) {
                     double result = strtod(value, &remain);
                     if (remain == value) continue;

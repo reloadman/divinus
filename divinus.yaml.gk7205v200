@@ -107,33 +107,6 @@ osd:
   reg0_thick: 0.0
   reg0_outl: 0x8000
   reg0_color: 0xffff     # white (ARGB1555)
-  reg1_img: /usr/share/faceter/mask.png
-  reg1_font: InterTime
-  reg1_opal: 128
-  reg1_posx: 1776
-  reg1_posy: 950
-  reg1_size: 32.0
-  reg1_color: 0xffff
-  reg1_outl: 0x8000
-  reg1_thick: 2.0
-  reg2_text: $I1
-  reg2_font: InterTime
-  reg2_opal: 255
-  reg2_posx: 16
-  reg2_posy: 992
-  reg2_size: 24.0
-  reg2_color: 0xffff
-  reg2_outl: 0x8000
-  reg2_thick: 2.0
-  reg3_text: $I2
-  reg3_font: InterTime
-  reg3_opal: 255
-  reg3_posx: 16
-  reg3_posy: 1028
-  reg3_size: 24.0
-  reg3_color: 0xffff
-  reg3_outl: 0x8000
-  reg3_thick: 2.0
 jpeg:
   enable: true
   osd_enable: false

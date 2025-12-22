@@ -142,6 +142,10 @@ int main(int argc, char *argv[]) {
     g_phase = "night_ircut_exercise_startup";
     night_ircut_exercise_startup();
 
+    // Always force white LED OFF on boot (safety / avoid blinding on restart).
+    g_phase = "night_whiteled_off";
+    night_whiteled(false);
+
     g_phase = "watchdog_start";
     if (app_config.watchdog)
         watchdog_start(app_config.watchdog);
