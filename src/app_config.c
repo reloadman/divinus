@@ -283,6 +283,8 @@ int save_app_config(void) {
     if (!EMPTY(app_config.iq_config))
         if (yaml_map_add_str(fyd, system, "iq_config", app_config.iq_config)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "web_port", "%u", (unsigned int)app_config.web_port)) goto EMIT_FAIL;
+    if (!EMPTY(app_config.web_bind))
+        if (yaml_map_add_str(fyd, system, "web_bind", app_config.web_bind)) goto EMIT_FAIL;
     {
         struct fy_node *wl = fy_node_create_sequence(fyd);
         bool any = false;
@@ -363,6 +365,8 @@ int save_app_config(void) {
     if (!rtsp || yaml_map_add(fyd, root, "rtsp", rtsp)) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, rtsp, "enable", app_config.rtsp_enable ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, rtsp, "port", "%d", app_config.rtsp_port)) goto EMIT_FAIL;
+    if (!EMPTY(app_config.rtsp_bind))
+        if (yaml_map_add_str(fyd, rtsp, "bind", app_config.rtsp_bind)) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, rtsp, "enable_auth", app_config.rtsp_enable_auth ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, rtsp, "auth_user", app_config.rtsp_auth_user)) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, rtsp, "auth_pass", app_config.rtsp_auth_pass)) goto EMIT_FAIL;
@@ -565,6 +569,7 @@ enum ConfigError parse_app_config(void) {
     }
 
     app_config.web_port = 8080;
+    app_config.web_bind[0] = '\0';
     *app_config.web_whitelist[0] = '\0';
     app_config.web_enable_auth = false;
     app_config.web_auth_skiplocal = false;
@@ -589,6 +594,7 @@ enum ConfigError parse_app_config(void) {
 
     app_config.rtsp_enable = false;
     app_config.rtsp_port = 554;
+    app_config.rtsp_bind[0] = '\0';
     app_config.rtsp_enable_auth = false;
     app_config.rtsp_auth_user[0] = '\0';
     app_config.rtsp_auth_pass[0] = '\0';
@@ -697,6 +703,11 @@ enum ConfigError parse_app_config(void) {
     if (err != CONFIG_OK)
             goto RET_ERR_YAML;
     app_config.web_port = (unsigned short)port;
+    }
+    {
+        err = yaml_get_string(fyd, "/system/web_bind", app_config.web_bind, sizeof(app_config.web_bind));
+        if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
+            goto RET_ERR_YAML;
     }
     {
         unsigned int count = 0;
@@ -893,6 +904,9 @@ enum ConfigError parse_app_config(void) {
 
     yaml_get_bool(fyd, "/rtsp/enable", &app_config.rtsp_enable);
     yaml_get_int(fyd, "/rtsp/port", 0, USHRT_MAX, &app_config.rtsp_port);
+    err = yaml_get_string(fyd, "/rtsp/bind", app_config.rtsp_bind, sizeof(app_config.rtsp_bind));
+    if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
+        goto RET_ERR_YAML;
     if (app_config.rtsp_enable) {
         yaml_get_bool(fyd, "/rtsp/enable_auth", &app_config.rtsp_enable_auth);
         yaml_get_string(fyd, "/rtsp/auth_user", app_config.rtsp_auth_user, sizeof(app_config.rtsp_auth_user));

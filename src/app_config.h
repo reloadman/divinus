@@ -21,6 +21,7 @@ struct AppConfig {
     // Optional ISP/IQ profile INI (platform-specific; used by hisi/v4 goke as "scene_auto" IQ)
     char iq_config[256];
     unsigned short web_port;
+    char web_bind[64];
     char web_whitelist[4][256];
     bool web_enable_auth;
     char web_auth_user[32];
@@ -91,6 +92,7 @@ struct AppConfig {
     char rtsp_auth_user[32];
     char rtsp_auth_pass[32];
     int rtsp_port;
+    char rtsp_bind[64];
 
     // [record]
     bool record_enable;

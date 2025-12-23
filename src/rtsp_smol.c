@@ -904,6 +904,15 @@ int smolrtsp_server_start(void) {
         .sin_port = htons(app_config.rtsp_port),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
+    if (!EMPTY(app_config.rtsp_bind)) {
+        struct in_addr bind_addr = {0};
+        if (inet_aton(app_config.rtsp_bind, &bind_addr)) {
+            sin.sin_addr = bind_addr;
+        } else {
+            fprintf(stderr, "[rtsp] invalid bind address '%s', falling back to 0.0.0.0\n",
+                app_config.rtsp_bind);
+        }
+    }
 
     g_srv.listener = evconnlistener_new_bind(
         g_srv.base, listener_cb, g_srv.base,

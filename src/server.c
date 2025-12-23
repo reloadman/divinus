@@ -1799,6 +1799,14 @@ void *server_thread(void *vargp) {
         .sin_port = htons(app_config.web_port),
         .sin_addr.s_addr = htonl(INADDR_ANY)
     };
+    if (!EMPTY(app_config.web_bind)) {
+        struct in_addr bind_addr = {0};
+        if (inet_aton(app_config.web_bind, &bind_addr)) {
+            server.sin_addr = bind_addr;
+        } else {
+            HAL_WARNING("server", "Invalid web_bind '%s', falling back to 0.0.0.0\n", app_config.web_bind);
+        }
+    }
     if (ret = bind(server_fd, (struct sockaddr *)&server, sizeof(server))) {
         HAL_DANGER("server", "%s (%d)\n", strerror(errno), errno);
         keepRunning = 0;

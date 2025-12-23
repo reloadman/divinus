@@ -7,6 +7,7 @@ This document describes the fields that can be found within a configuration file
 - **sensor_config**: Path to the sensor calibration or configuration file, if applicable (e.g., `/etc/sensors/imx415.bin`).
 - **iq_config**: Optional path to an ISP/IQ profile (INI on HiSilicon/Goke v4, BIN on Sigmastar i6/i6c/m6). When provided and the file exists, it is applied at startup instead of the SDK default `/etc/firmware/iqfile0.bin`.
 - **web_port**: Port number for the web server (default: `80`).
+- **web_bind**: IPv4 address to bind the web/API server to (default: all interfaces).
 - **web_whitelist**: Array of up to 4 IP addresses or domains allowed to access the web server.
 - **web_enable_auth**: Boolean to enable authentication on the API, live stream and WebUI endpoints (default: `false`).
 - **web_auth_user**: Username for basic authentication (default: `admin`).
@@ -15,6 +16,7 @@ This document describes the fields that can be found within a configuration file
 - **isp_thread_stack_size**: Stack size for ISP thread, if applicable (default: `16384`).
 - **venc_stream_thread_stack_size**: Stack size for video encoding stream thread (default: `16384`).
 - **web_server_thread_stack_size**: Stack size for web server thread (default: `65536`).
+- **night_thread_stack_size**: Stack size for night mode worker thread (default: `65536`). Increase this if the device crashes on day/night switch (notably on some **hisi/v4** SDK builds where IQ reload is stack-hungry).
 - **time_format**: Format for displaying time, refer to strftime() modifiers for exact parameters (e.g., `"%Y-%m-%d %H:%M:%S"`).
 - **watchdog**: Watchdog timer in seconds, where 0 means disabled (default: `30`).
 
@@ -65,6 +67,7 @@ This document describes the fields that can be found within a configuration file
 - **auth_user**: Username for RTSP authentication (default: `admin`).
 - **auth_pass**: Password for RTSP authentication (default: `12345`).
 - **port**: Port number for RTSP server (default: `554`).
+- **bind**: IPv4 address to bind the RTSP server to (default: all interfaces).
 
 ## Record section
 
