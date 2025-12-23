@@ -176,10 +176,21 @@ else
   LDFLAGS += -Wl,--gc-sections
 endif
 
-# -rdynamic is needed so that vendor ISP libs (e.g. libgk_isp.so) can resolve
-# weak/optional symbols (ISP_AlgRegisterDrc, etc.) from the main executable.
-# Keep it always on; size impact is small, and without it Goke v4 ISP fails.
-RDYNAMIC := -rdynamic
+# Export only the ISP compatibility symbols needed by vendor libs (e.g. Goke v4)
+# instead of full -rdynamic to keep binary size small.
+ISP_EXPORT_SYMS := \
+	-Wl,--export-dynamic-symbol=isp_malloc \
+	-Wl,--export-dynamic-symbol=isp_alg_register_acs \
+	-Wl,--export-dynamic-symbol=isp_alg_register_dehaze \
+	-Wl,--export-dynamic-symbol=ISP_AlgRegisterDehaze \
+	-Wl,--export-dynamic-symbol=isp_alg_register_drc \
+	-Wl,--export-dynamic-symbol=ISP_AlgRegisterDrc \
+	-Wl,--export-dynamic-symbol=isp_alg_register_ldci \
+	-Wl,--export-dynamic-symbol=ISP_AlgRegisterLdci \
+	-Wl,--export-dynamic-symbol=isp_ir_auto_run_once \
+	-Wl,--export-dynamic-symbol=MPI_ISP_IrAutoRunOnce
+LDFLAGS += $(ISP_EXPORT_SYMS)
+RDYNAMIC :=
 
 # Extra flags for vendored libfyaml compilation only.
 LIBFYAML_CFLAGS ?= -DNDEBUG
