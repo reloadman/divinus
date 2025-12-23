@@ -30,6 +30,9 @@ struct AppConfig {
     unsigned int isp_thread_stack_size;
     unsigned int venc_stream_thread_stack_size;
     unsigned int web_server_thread_stack_size;
+    // Stack size for night mode worker thread (auto day/night switching + IQ reload).
+    // Some SDK/HAL paths (notably hisi/v4 IQ reload) can require more stack than 16KB.
+    unsigned int night_thread_stack_size;
     unsigned int watchdog;
 
     // [night_mode]

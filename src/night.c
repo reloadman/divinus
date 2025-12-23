@@ -7,6 +7,7 @@
 char nightOn = 0;
 static bool grayscale = false, ircut = true, irled = false, whiteled = false, manual = false;
 pthread_t nightPid = 0;
+static pthread_mutex_t night_mode_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 bool night_grayscale_on(void) { return grayscale; }
 
@@ -119,12 +120,13 @@ void night_whiteled(bool enable) {
 void night_manual(bool enable) { manual = enable; }
 
 void night_mode(bool enable) {
+    pthread_mutex_lock(&night_mode_mtx);
     // Avoid log spam + avoid re-pulsing IR-cut coil / toggling encoder params
     // when the requested mode is already applied.
     if (enable) {
-        if (night_applied()) return;
+        if (night_applied()) { pthread_mutex_unlock(&night_mode_mtx); return; }
     } else {
-        if (day_applied()) return;
+        if (day_applied()) { pthread_mutex_unlock(&night_mode_mtx); return; }
     }
 
     HAL_INFO("night", "Changing mode to %s\n", enable ? "NIGHT" : "DAY");
@@ -140,6 +142,7 @@ void night_mode(bool enable) {
     int r = media_reload_iq();
     if (r != 0)
         HAL_WARNING("night", "IQ reload failed with %#x (continuing)\n", r);
+    pthread_mutex_unlock(&night_mode_mtx);
 }
 
 void night_ircut_exercise_startup(void) {
@@ -356,7 +359,11 @@ int enable_night(void) {
     pthread_attr_init(&thread_attr);
     size_t stacksize;
     pthread_attr_getstacksize(&thread_attr, &stacksize);
-    size_t new_stacksize = 16 * 1024;
+    size_t new_stacksize = (size_t)app_config.night_thread_stack_size;
+#ifdef PTHREAD_STACK_MIN
+    if (new_stacksize < (size_t)PTHREAD_STACK_MIN)
+        new_stacksize = (size_t)PTHREAD_STACK_MIN;
+#endif
     if (pthread_attr_setstacksize(&thread_attr, new_stacksize))
         HAL_DANGER("night", "Error:  Can't set stack size %zu\n", new_stacksize);
     // Set the flag before starting the thread to avoid a race where the thread
