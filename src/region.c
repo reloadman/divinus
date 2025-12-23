@@ -743,7 +743,7 @@ void *region_thread(void) {
 
                     int rgn_rc = 0;
                     if (need_attach) {
-                        switch (plat) {
+                    switch (plat) {
 #if defined(__ARM_PCS_VFP)
                         case HAL_PLATFORM_I6:
                             rgn_rc = i6_region_create_ex(id, rect, osds[id].opal,

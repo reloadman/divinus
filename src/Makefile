@@ -176,12 +176,10 @@ else
   LDFLAGS += -Wl,--gc-sections
 endif
 
-# -rdynamic is useful for backtraces/symbol resolution, but increases exported symbols
-# and can bloat binaries. Keep it only in debug builds.
-RDYNAMIC :=
-ifneq (,$(findstring -DDEBUG,$(OPT) $(CPPFLAGS) $(CFLAGS)))
-  RDYNAMIC := -rdynamic
-endif
+# -rdynamic is needed so that vendor ISP libs (e.g. libgk_isp.so) can resolve
+# weak/optional symbols (ISP_AlgRegisterDrc, etc.) from the main executable.
+# Keep it always on; size impact is small, and without it Goke v4 ISP fails.
+RDYNAMIC := -rdynamic
 
 # Extra flags for vendored libfyaml compilation only.
 LIBFYAML_CFLAGS ?= -DNDEBUG
