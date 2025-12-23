@@ -672,6 +672,11 @@ int v4_channel_grayscale(char enable)
     int ret;
 
     for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
+        // Some SDK builds crash when querying MJPEG/JPEG channels for H26x-only
+        // params. Only toggle grayscale on H.264/H.265 channels.
+        if (v4_state[i].payload != HAL_VIDCODEC_H264 &&
+            v4_state[i].payload != HAL_VIDCODEC_H265)
+            continue;
         v4_venc_para param;
         if (!v4_state[i].enable) continue;
         if (ret = v4_venc.fnGetChannelParam(i, &param))
