@@ -138,37 +138,20 @@ static enum ConfigError yaml_get_uint(struct fy_document *fyd, const char *path,
     return CONFIG_OK;
 }
 
-static inline int pin_abs_int(int v) { return v < 0 ? -v : v; }
-
-// Decode a configured GPIO pin value into (pin, inverted).
+// Decode a configured GPIO pin value.
 // Supported encodings:
-// - 999 / -999: disabled
-// - N: pin=N, inverted=false
-// - -N: pin=abs(N), inverted=true
-// Backwards-compat:
-// - 10*P: pin=P (e.g. 40 => pin 4)
-// - -10*P: pin=P, inverted=true (e.g. -40 => pin 4 inverted)
-static bool decode_cfg_pin(int cfg, int pin_max, int *pin_out, bool *inv_out) {
+// - 999: disabled
+// - N (0..pin_max): GPIO number
+// - any negative value: treated as disabled (legacy configs sometimes used negatives)
+static bool decode_cfg_pin(int cfg, int pin_max, int *pin_out) {
     if (pin_out) *pin_out = 0;
-    if (inv_out) *inv_out = false;
-
-    if (cfg == 999 || cfg == -999)
+    if (cfg == 999)
         return false;
-
-    bool inv = (cfg < 0);
-    int v = pin_abs_int(cfg);
-
-    // Backwards-compat: some configs use -10*P to mean "GPIO P inverted".
-    // Keep positive values unmodified so GPIO 40 is still representable as 40.
-    if (inv && v % 10 == 0 && (v / 10) <= pin_max)
-        v = v / 10;
-
-    int pin = v;
-    if (pin > pin_max)
+    if (cfg < 0)
         return false;
-
-    if (pin_out) *pin_out = pin;
-    if (inv_out) *inv_out = inv;
+    if (cfg > pin_max)
+        return false;
+    if (pin_out) *pin_out = cfg;
     return true;
 }
 
@@ -802,29 +785,29 @@ enum ConfigError parse_app_config(void) {
 
         // Normalize pins: values outside the supported range are treated as "disabled".
         {
-            int pin = 0; bool inv = false;
-            if (app_config.ir_sensor_pin != PIN_SENTINEL && app_config.ir_sensor_pin != -PIN_SENTINEL &&
-                !decode_cfg_pin(app_config.ir_sensor_pin, PIN_MAX, &pin, &inv)) {
+            int pin = 0;
+            if (app_config.ir_sensor_pin != PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_sensor_pin, PIN_MAX, &pin)) {
                 HAL_WARNING("app_config", "night_mode.ir_sensor_pin=%d invalid, disabling\n", app_config.ir_sensor_pin);
                 app_config.ir_sensor_pin = PIN_SENTINEL;
             }
-            if (app_config.ir_cut_pin1 != PIN_SENTINEL && app_config.ir_cut_pin1 != -PIN_SENTINEL &&
-                !decode_cfg_pin(app_config.ir_cut_pin1, PIN_MAX, &pin, &inv)) {
+            if (app_config.ir_cut_pin1 != PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_cut_pin1, PIN_MAX, &pin)) {
                 HAL_WARNING("app_config", "night_mode.ir_cut_pin1=%d invalid, disabling\n", app_config.ir_cut_pin1);
                 app_config.ir_cut_pin1 = PIN_SENTINEL;
             }
-            if (app_config.ir_cut_pin2 != PIN_SENTINEL && app_config.ir_cut_pin2 != -PIN_SENTINEL &&
-                !decode_cfg_pin(app_config.ir_cut_pin2, PIN_MAX, &pin, &inv)) {
+            if (app_config.ir_cut_pin2 != PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_cut_pin2, PIN_MAX, &pin)) {
                 HAL_WARNING("app_config", "night_mode.ir_cut_pin2=%d invalid, disabling\n", app_config.ir_cut_pin2);
                 app_config.ir_cut_pin2 = PIN_SENTINEL;
             }
-            if (app_config.ir_led_pin != PIN_SENTINEL && app_config.ir_led_pin != -PIN_SENTINEL &&
-                !decode_cfg_pin(app_config.ir_led_pin, PIN_MAX, &pin, &inv)) {
+            if (app_config.ir_led_pin != PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_led_pin, PIN_MAX, &pin)) {
                 HAL_WARNING("app_config", "night_mode.ir_led_pin=%d invalid, disabling\n", app_config.ir_led_pin);
                 app_config.ir_led_pin = PIN_SENTINEL;
             }
-            if (app_config.white_led_pin != PIN_SENTINEL && app_config.white_led_pin != -PIN_SENTINEL &&
-                !decode_cfg_pin(app_config.white_led_pin, PIN_MAX, &pin, &inv)) {
+            if (app_config.white_led_pin != PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.white_led_pin, PIN_MAX, &pin)) {
                 HAL_WARNING("app_config", "night_mode.white_led_pin=%d invalid, disabling\n", app_config.white_led_pin);
                 app_config.white_led_pin = PIN_SENTINEL;
             }

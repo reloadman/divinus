@@ -45,10 +45,8 @@ struct AppConfig {
     bool night_mode_grayscale;
     // GPIO pins can be configured as:
     // - 999: disabled
-    // - N (0..PIN_MAX): normal (active-high)
-    // - -N: inverted (active-low)
-    // For backwards compatibility we also accept values like 40 meaning GPIO4,
-    // and -40 meaning GPIO4 inverted (see decoding logic in night.c/app_config.c).
+    // - N (0..PIN_MAX): GPIO number
+    // - any negative value: treated as disabled (for legacy configs)
     int ir_cut_pin1;
     int ir_cut_pin2;
     int ir_led_pin;

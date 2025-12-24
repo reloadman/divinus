@@ -76,29 +76,19 @@ static bool is_local_address(const char *client_ip) {
     return false;
 }
 
-static inline int pin_abs_int(int v) { return v < 0 ? -v : v; }
-
 // Decode a configured GPIO pin value for logging. Mirrors night.c decoding:
-// - 999/-999: disabled
-// - N: GPIO N
-// - -N: GPIO N inverted
-// Back-compat: -10*P => GPIO P inverted (e.g. -40 => GPIO4 inverted)
-static bool decode_cfg_pin_for_log(int cfg, int *pin_out, bool *inv_out) {
+// - 999: disabled
+// - N (0..95): GPIO N
+// - any negative value: treated as disabled
+static bool decode_cfg_pin_for_log(int cfg, int *pin_out) {
     if (pin_out) *pin_out = 0;
-    if (inv_out) *inv_out = false;
-
-    if (cfg == 999 || cfg == -999)
+    if (cfg == 999)
         return false;
-
-    bool inv = (cfg < 0);
-    int v = pin_abs_int(cfg);
-    if (inv && v % 10 == 0 && (v / 10) <= 95)
-        v = v / 10;
-    if (v > 95)
+    if (cfg < 0)
         return false;
-
-    if (pin_out) *pin_out = v;
-    if (inv_out) *inv_out = inv;
+    if (cfg > 95)
+        return false;
+    if (pin_out) *pin_out = cfg;
     return true;
 }
 
@@ -1348,11 +1338,10 @@ void respond_request(http_request_t *req) {
                 if (set_irled) night_irled(irled_value);
                 if (set_whiteled) {
                     int pin = 0;
-                    bool inv = false;
-                    bool ok = decode_cfg_pin_for_log(app_config.white_led_pin, &pin, &inv);
+                    bool ok = decode_cfg_pin_for_log(app_config.white_led_pin, &pin);
                     if (ok) {
-                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> pin=%d inv=%d)\n",
-                            whiteled_value ? 1 : 0, app_config.white_led_pin, pin, inv ? 1 : 0);
+                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> pin=%d)\n",
+                            whiteled_value ? 1 : 0, app_config.white_led_pin, pin);
                     } else {
                         HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> disabled/invalid)\n",
                             whiteled_value ? 1 : 0, app_config.white_led_pin);
