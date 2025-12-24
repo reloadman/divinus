@@ -43,11 +43,17 @@ struct AppConfig {
     // If true, enable encoder grayscale when switching to night (IR) mode.
     // If false, stay in color when switching to night (IR) mode.
     bool night_mode_grayscale;
-    unsigned int ir_cut_pin1;
-    unsigned int ir_cut_pin2;
-    unsigned int ir_led_pin;
-    unsigned int white_led_pin;
-    unsigned int ir_sensor_pin;
+    // GPIO pins can be configured as:
+    // - 999: disabled
+    // - N (0..PIN_MAX): normal (active-high)
+    // - -N: inverted (active-low)
+    // For backwards compatibility we also accept values like 40 meaning GPIO4,
+    // and -40 meaning GPIO4 inverted (see decoding logic in night.c/app_config.c).
+    int ir_cut_pin1;
+    int ir_cut_pin2;
+    int ir_led_pin;
+    int white_led_pin;
+    int ir_sensor_pin;
     unsigned int check_interval_s;
     unsigned int pin_switch_delay_us;
     char adc_device[128];

@@ -9,6 +9,34 @@ static bool grayscale = false, ircut = true, irled = false, whiteled = false, ma
 pthread_t nightPid = 0;
 static pthread_mutex_t night_mode_mtx = PTHREAD_MUTEX_INITIALIZER;
 
+static inline int pin_abs_int(int v) { return v < 0 ? -v : v; }
+
+// Mirror decoding rules from app_config.c.
+// See `struct AppConfig` (night_mode pin fields) for supported encodings.
+static bool decode_cfg_pin(int cfg, int *pin_out, bool *inv_out) {
+    if (pin_out) *pin_out = 0;
+    if (inv_out) *inv_out = false;
+
+    if (cfg == 999 || cfg == -999)
+        return false;
+
+    bool inv = (cfg < 0);
+    int v = pin_abs_int(cfg);
+
+    // Back-compat: some configs use -10*P to mean "GPIO P inverted".
+    // Keep positive values unmodified so GPIO 40 is still representable as 40.
+    if (inv && v % 10 == 0 && (v / 10) <= 95)
+        v = v / 10;
+
+    int pin = v;
+    if (pin > 95)
+        return false;
+
+    if (pin_out) *pin_out = pin;
+    if (inv_out) *inv_out = inv;
+    return true;
+}
+
 bool night_grayscale_on(void) { return grayscale; }
 
 bool night_ircut_on(void) { return ircut; }
@@ -59,12 +87,15 @@ void night_grayscale(bool enable) {
 }
 
 void night_ircut(bool enable) {
-    if (app_config.ir_cut_pin1 == 999 || app_config.ir_cut_pin2 == 999) {
+    int pin1 = 0, pin2 = 0;
+    bool inv1 = false, inv2 = false;
+    if (!decode_cfg_pin(app_config.ir_cut_pin1, &pin1, &inv1) ||
+        !decode_cfg_pin(app_config.ir_cut_pin2, &pin2, &inv2)) {
         HAL_WARNING("night", "IR-cut pins not configured, skipping\n");
         ircut = enable;
         return;
     }
-    if (app_config.ir_cut_pin1 == app_config.ir_cut_pin2) {
+    if (pin1 == pin2) {
         HAL_WARNING("night", "IR-cut pins invalid (pin1==pin2), skipping\n");
         ircut = enable;
         return;
@@ -72,14 +103,16 @@ void night_ircut(bool enable) {
 
     HAL_INFO("night", "IR-cut -> %s (pin1=%u pin2=%u pulse=%uus)\n",
         enable ? "ON(DAY)" : "OFF(IR)",
-        app_config.ir_cut_pin1, app_config.ir_cut_pin2,
+        (unsigned int)pin1, (unsigned int)pin2,
         app_config.pin_switch_delay_us * 100);
 
     unsigned int pulse_us = app_config.pin_switch_delay_us * 100;
-    int r = gpio_pulse_pair(app_config.ir_cut_pin1, !enable, app_config.ir_cut_pin2, enable, pulse_us);
+    bool val1 = inv1 ? enable : !enable;
+    bool val2 = inv2 ? !enable : enable;
+    int r = gpio_pulse_pair(pin1, val1, pin2, val2, pulse_us);
     if (r != EXIT_SUCCESS) {
         HAL_WARNING("night", "GPIO pulse failed: (pin1=%u val1=%d) (pin2=%u val2=%d) errno=%d (%s)\n",
-            app_config.ir_cut_pin1, !enable, app_config.ir_cut_pin2, enable, errno, strerror(errno));
+            (unsigned int)pin1, val1, (unsigned int)pin2, val2, errno, strerror(errno));
     } else {
         HAL_INFO("night", "GPIO pulse ok\n");
     }
@@ -88,32 +121,38 @@ void night_ircut(bool enable) {
 }
 
 void night_irled(bool enable) {
-    if (app_config.ir_led_pin == 999) {
+    int pin = 0;
+    bool inv = false;
+    if (!decode_cfg_pin(app_config.ir_led_pin, &pin, &inv)) {
         HAL_WARNING("night", "IR LED pin not configured, skipping\n");
         irled = enable;
         return;
     }
-    int r = gpio_write(app_config.ir_led_pin, enable);
+    bool hw_val = inv ? !enable : enable;
+    int r = gpio_write(pin, hw_val);
     if (r != EXIT_SUCCESS)
         HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.ir_led_pin, enable, errno, strerror(errno));
+            (unsigned int)pin, hw_val, errno, strerror(errno));
     else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.ir_led_pin, enable);
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", (unsigned int)pin, hw_val);
     irled = enable;
 }
 
 void night_whiteled(bool enable) {
-    if (app_config.white_led_pin == 999) {
+    int pin = 0;
+    bool inv = false;
+    if (!decode_cfg_pin(app_config.white_led_pin, &pin, &inv)) {
         HAL_WARNING("night", "White LED pin not configured, skipping\n");
         whiteled = enable;
         return;
     }
-    int r = gpio_write(app_config.white_led_pin, enable);
+    bool hw_val = inv ? !enable : enable;
+    int r = gpio_write(pin, hw_val);
     if (r != EXIT_SUCCESS)
         HAL_WARNING("night", "GPIO write failed: pin=%u val=%d errno=%d (%s)\n",
-            app_config.white_led_pin, enable, errno, strerror(errno));
+            (unsigned int)pin, hw_val, errno, strerror(errno));
     else
-        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", app_config.white_led_pin, enable);
+        HAL_INFO("night", "GPIO write ok: pin=%u val=%d\n", (unsigned int)pin, hw_val);
     whiteled = enable;
 }
 
@@ -147,11 +186,14 @@ void night_mode(bool enable) {
 
 void night_ircut_exercise_startup(void) {
     // Skip if pins are not configured.
-    if (app_config.ir_cut_pin1 == 999 || app_config.ir_cut_pin2 == 999) {
+    int pin1 = 0, pin2 = 0;
+    bool inv1 = false, inv2 = false;
+    if (!decode_cfg_pin(app_config.ir_cut_pin1, &pin1, &inv1) ||
+        !decode_cfg_pin(app_config.ir_cut_pin2, &pin2, &inv2)) {
         HAL_INFO("night", "IR-cut exercise skipped (pins not configured)\n");
         return;
     }
-    if (app_config.ir_cut_pin1 == app_config.ir_cut_pin2) {
+    if (pin1 == pin2) {
         HAL_WARNING("night", "IR-cut exercise skipped (ir_cut_pin1 == ir_cut_pin2)\n");
         return;
     }
@@ -171,8 +213,8 @@ void night_ircut_exercise_startup(void) {
     // This startup "unstick" routine runs before start_sdk(), and on some platforms
     // grayscale toggling touches ISP/encoder state that isn't initialized yet,
     // causing a crash. Grayscale will be applied later by night mode logic after SDK init.
-    // Ensure IR LED is off if configured.
-    if (app_config.ir_led_pin != 999) night_irled(false);
+    // Ensure IR LED is off (function is safe when not configured).
+    night_irled(false);
 
     gpio_deinit();
 
@@ -316,23 +358,30 @@ void *night_thread(void) {
             night_sleep_ms_interruptible((app_config.check_interval_s * 1000u) / 12u);
         }
         if (adc_fd) close(adc_fd);
-    } else if (app_config.ir_sensor_pin == 999) {
-        while (keepRunning && nightOn) night_sleep_ms_interruptible(1000);
     } else {
-        // Apply immediately once at start (do not wait check_interval_s).
-        {
-            bool state = false;
-            if (gpio_read(app_config.ir_sensor_pin, &state) == EXIT_SUCCESS && !manual)
-                night_mode(state);
-        }
-        while (keepRunning && nightOn) {
-            bool state = false;
-            if (gpio_read(app_config.ir_sensor_pin, &state) != EXIT_SUCCESS) {
-                night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
-                continue;
+        int pin = 0;
+        bool inv = false;
+        if (!decode_cfg_pin(app_config.ir_sensor_pin, &pin, &inv)) {
+            while (keepRunning && nightOn) night_sleep_ms_interruptible(1000);
+        } else {
+            // Apply immediately once at start (do not wait check_interval_s).
+            {
+                bool state = false;
+                if (gpio_read(pin, &state) == EXIT_SUCCESS && !manual) {
+                    if (inv) state = !state;
+                    night_mode(state);
+                }
             }
-            if (!manual) night_mode(state);
-            night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
+            while (keepRunning && nightOn) {
+                bool state = false;
+                if (gpio_read(pin, &state) != EXIT_SUCCESS) {
+                    night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
+                    continue;
+                }
+                if (inv) state = !state;
+                if (!manual) night_mode(state);
+                night_sleep_ms_interruptible(app_config.check_interval_s * 1000u);
+            }
         }
     }
 

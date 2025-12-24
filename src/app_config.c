@@ -138,6 +138,40 @@ static enum ConfigError yaml_get_uint(struct fy_document *fyd, const char *path,
     return CONFIG_OK;
 }
 
+static inline int pin_abs_int(int v) { return v < 0 ? -v : v; }
+
+// Decode a configured GPIO pin value into (pin, inverted).
+// Supported encodings:
+// - 999 / -999: disabled
+// - N: pin=N, inverted=false
+// - -N: pin=abs(N), inverted=true
+// Backwards-compat:
+// - 10*P: pin=P (e.g. 40 => pin 4)
+// - -10*P: pin=P, inverted=true (e.g. -40 => pin 4 inverted)
+static bool decode_cfg_pin(int cfg, int pin_max, int *pin_out, bool *inv_out) {
+    if (pin_out) *pin_out = 0;
+    if (inv_out) *inv_out = false;
+
+    if (cfg == 999 || cfg == -999)
+        return false;
+
+    bool inv = (cfg < 0);
+    int v = pin_abs_int(cfg);
+
+    // Backwards-compat: some configs use -10*P to mean "GPIO P inverted".
+    // Keep positive values unmodified so GPIO 40 is still representable as 40.
+    if (inv && v % 10 == 0 && (v / 10) <= pin_max)
+        v = v / 10;
+
+    int pin = v;
+    if (pin > pin_max)
+        return false;
+
+    if (pin_out) *pin_out = pin;
+    if (inv_out) *inv_out = inv;
+    return true;
+}
+
 static enum ConfigError yaml_get_double(struct fy_document *fyd, const char *path, double min, double max, double *out) {
     const char *s = NULL;
     enum ConfigError err = yaml_get_scalar0(fyd, path, &s);
@@ -317,10 +351,10 @@ int save_app_config(void) {
     if (yaml_map_add_str(fyd, night_mode, "enable", app_config.night_mode_enable ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, night_mode, "manual", app_config.night_mode_manual ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, night_mode, "grayscale", app_config.night_mode_grayscale ? "true" : "false")) goto EMIT_FAIL;
-    if (yaml_map_add_scalarf(fyd, night_mode, "ir_sensor_pin", "%u", app_config.ir_sensor_pin)) goto EMIT_FAIL;
+    if (yaml_map_add_scalarf(fyd, night_mode, "ir_sensor_pin", "%d", app_config.ir_sensor_pin)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, night_mode, "check_interval_s", "%u", app_config.check_interval_s)) goto EMIT_FAIL;
-    if (yaml_map_add_scalarf(fyd, night_mode, "ir_cut_pin1", "%u", app_config.ir_cut_pin1)) goto EMIT_FAIL;
-    if (yaml_map_add_scalarf(fyd, night_mode, "ir_cut_pin2", "%u", app_config.ir_cut_pin2)) goto EMIT_FAIL;
+    if (yaml_map_add_scalarf(fyd, night_mode, "ir_cut_pin1", "%d", app_config.ir_cut_pin1)) goto EMIT_FAIL;
+    if (yaml_map_add_scalarf(fyd, night_mode, "ir_cut_pin2", "%d", app_config.ir_cut_pin2)) goto EMIT_FAIL;
     if (app_config.isp_lum_low >= 0)
         if (yaml_map_add_scalarf(fyd, night_mode, "isp_lum_low", "%d", app_config.isp_lum_low)) goto EMIT_FAIL;
     if (app_config.isp_lum_hi >= 0)
@@ -332,8 +366,8 @@ int save_app_config(void) {
     if (app_config.isp_exptime_low >= 0)
         if (yaml_map_add_scalarf(fyd, night_mode, "isp_exptime_low", "%d", app_config.isp_exptime_low)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, night_mode, "isp_switch_lockout_s", "%u", app_config.isp_switch_lockout_s)) goto EMIT_FAIL;
-    if (yaml_map_add_scalarf(fyd, night_mode, "ir_led_pin", "%u", app_config.ir_led_pin)) goto EMIT_FAIL;
-    if (yaml_map_add_scalarf(fyd, night_mode, "white_led_pin", "%u", app_config.white_led_pin)) goto EMIT_FAIL;
+    if (yaml_map_add_scalarf(fyd, night_mode, "ir_led_pin", "%d", app_config.ir_led_pin)) goto EMIT_FAIL;
+    if (yaml_map_add_scalarf(fyd, night_mode, "white_led_pin", "%d", app_config.white_led_pin)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, night_mode, "pin_switch_delay_us", "%u", app_config.pin_switch_delay_us)) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, night_mode, "adc_device", app_config.adc_device)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, night_mode, "adc_threshold", "%d", app_config.adc_threshold)) goto EMIT_FAIL;
@@ -746,7 +780,7 @@ enum ConfigError parse_app_config(void) {
 
     err = yaml_get_bool(fyd, "/night_mode/enable", &app_config.night_mode_enable);
     #define PIN_MAX 95
-    #define PIN_SENTINEL 999u
+    #define PIN_SENTINEL 999
     #define PIN_CFG_MAX 999
     {
         // Parse night_mode fields regardless of `enable`, because some features
@@ -755,42 +789,45 @@ enum ConfigError parse_app_config(void) {
         int lum;
         yaml_get_bool(fyd, "/night_mode/manual", &app_config.night_mode_manual);
         yaml_get_bool(fyd, "/night_mode/grayscale", &app_config.night_mode_grayscale);
-        // Pins: allow sentinel 999 ("disabled") in config.
-        yaml_get_uint(fyd, "/night_mode/ir_sensor_pin", 0, PIN_CFG_MAX, &app_config.ir_sensor_pin);
+        // Pins: allow sentinel 999 ("disabled") and negative values ("inverted") in config.
+        yaml_get_int(fyd, "/night_mode/ir_sensor_pin", -PIN_CFG_MAX, PIN_CFG_MAX, &app_config.ir_sensor_pin);
         yaml_get_uint(fyd, "/night_mode/check_interval_s", 0, 600, &app_config.check_interval_s);
-        yaml_get_uint(fyd, "/night_mode/ir_cut_pin1", 0, PIN_CFG_MAX, &app_config.ir_cut_pin1);
-        yaml_get_uint(fyd, "/night_mode/ir_cut_pin2", 0, PIN_CFG_MAX, &app_config.ir_cut_pin2);
-        yaml_get_uint(fyd, "/night_mode/ir_led_pin", 0, PIN_CFG_MAX, &app_config.ir_led_pin);
-        yaml_get_uint(fyd, "/night_mode/white_led_pin", 0, PIN_CFG_MAX, &app_config.white_led_pin);
+        yaml_get_int(fyd, "/night_mode/ir_cut_pin1", -PIN_CFG_MAX, PIN_CFG_MAX, &app_config.ir_cut_pin1);
+        yaml_get_int(fyd, "/night_mode/ir_cut_pin2", -PIN_CFG_MAX, PIN_CFG_MAX, &app_config.ir_cut_pin2);
+        yaml_get_int(fyd, "/night_mode/ir_led_pin", -PIN_CFG_MAX, PIN_CFG_MAX, &app_config.ir_led_pin);
+        yaml_get_int(fyd, "/night_mode/white_led_pin", -PIN_CFG_MAX, PIN_CFG_MAX, &app_config.white_led_pin);
         yaml_get_uint(fyd, "/night_mode/pin_switch_delay_us", 0, 1000, &app_config.pin_switch_delay_us);
         yaml_get_string(fyd, "/night_mode/adc_device", app_config.adc_device, sizeof(app_config.adc_device));
         yaml_get_int(fyd, "/night_mode/adc_threshold", INT_MIN, INT_MAX, &app_config.adc_threshold);
 
         // Normalize pins: values outside the supported range are treated as "disabled".
-        if (app_config.ir_sensor_pin != PIN_SENTINEL && app_config.ir_sensor_pin > PIN_MAX) {
-            HAL_WARNING("app_config", "night_mode.ir_sensor_pin=%u out of range (0..%u or %u), disabling\n",
-                app_config.ir_sensor_pin, PIN_MAX, PIN_SENTINEL);
-            app_config.ir_sensor_pin = PIN_SENTINEL;
-        }
-        if (app_config.ir_cut_pin1 != PIN_SENTINEL && app_config.ir_cut_pin1 > PIN_MAX) {
-            HAL_WARNING("app_config", "night_mode.ir_cut_pin1=%u out of range (0..%u or %u), disabling\n",
-                app_config.ir_cut_pin1, PIN_MAX, PIN_SENTINEL);
-            app_config.ir_cut_pin1 = PIN_SENTINEL;
-        }
-        if (app_config.ir_cut_pin2 != PIN_SENTINEL && app_config.ir_cut_pin2 > PIN_MAX) {
-            HAL_WARNING("app_config", "night_mode.ir_cut_pin2=%u out of range (0..%u or %u), disabling\n",
-                app_config.ir_cut_pin2, PIN_MAX, PIN_SENTINEL);
-            app_config.ir_cut_pin2 = PIN_SENTINEL;
-        }
-        if (app_config.ir_led_pin != PIN_SENTINEL && app_config.ir_led_pin > PIN_MAX) {
-            HAL_WARNING("app_config", "night_mode.ir_led_pin=%u out of range (0..%u or %u), disabling\n",
-                app_config.ir_led_pin, PIN_MAX, PIN_SENTINEL);
-            app_config.ir_led_pin = PIN_SENTINEL;
-        }
-        if (app_config.white_led_pin != PIN_SENTINEL && app_config.white_led_pin > PIN_MAX) {
-            HAL_WARNING("app_config", "night_mode.white_led_pin=%u out of range (0..%u or %u), disabling\n",
-                app_config.white_led_pin, PIN_MAX, PIN_SENTINEL);
-            app_config.white_led_pin = PIN_SENTINEL;
+        {
+            int pin = 0; bool inv = false;
+            if (app_config.ir_sensor_pin != PIN_SENTINEL && app_config.ir_sensor_pin != -PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_sensor_pin, PIN_MAX, &pin, &inv)) {
+                HAL_WARNING("app_config", "night_mode.ir_sensor_pin=%d invalid, disabling\n", app_config.ir_sensor_pin);
+                app_config.ir_sensor_pin = PIN_SENTINEL;
+            }
+            if (app_config.ir_cut_pin1 != PIN_SENTINEL && app_config.ir_cut_pin1 != -PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_cut_pin1, PIN_MAX, &pin, &inv)) {
+                HAL_WARNING("app_config", "night_mode.ir_cut_pin1=%d invalid, disabling\n", app_config.ir_cut_pin1);
+                app_config.ir_cut_pin1 = PIN_SENTINEL;
+            }
+            if (app_config.ir_cut_pin2 != PIN_SENTINEL && app_config.ir_cut_pin2 != -PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_cut_pin2, PIN_MAX, &pin, &inv)) {
+                HAL_WARNING("app_config", "night_mode.ir_cut_pin2=%d invalid, disabling\n", app_config.ir_cut_pin2);
+                app_config.ir_cut_pin2 = PIN_SENTINEL;
+            }
+            if (app_config.ir_led_pin != PIN_SENTINEL && app_config.ir_led_pin != -PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.ir_led_pin, PIN_MAX, &pin, &inv)) {
+                HAL_WARNING("app_config", "night_mode.ir_led_pin=%d invalid, disabling\n", app_config.ir_led_pin);
+                app_config.ir_led_pin = PIN_SENTINEL;
+            }
+            if (app_config.white_led_pin != PIN_SENTINEL && app_config.white_led_pin != -PIN_SENTINEL &&
+                !decode_cfg_pin(app_config.white_led_pin, PIN_MAX, &pin, &inv)) {
+                HAL_WARNING("app_config", "night_mode.white_led_pin=%d invalid, disabling\n", app_config.white_led_pin);
+                app_config.white_led_pin = PIN_SENTINEL;
+            }
         }
         // Optional ISP-derived day/night hysteresis thresholds (hisi/v4 only).
         if (yaml_get_int(fyd, "/night_mode/isp_lum_low", 0, 255, &lum) == CONFIG_OK)

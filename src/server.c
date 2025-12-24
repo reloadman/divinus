@@ -76,6 +76,32 @@ static bool is_local_address(const char *client_ip) {
     return false;
 }
 
+static inline int pin_abs_int(int v) { return v < 0 ? -v : v; }
+
+// Decode a configured GPIO pin value for logging. Mirrors night.c decoding:
+// - 999/-999: disabled
+// - N: GPIO N
+// - -N: GPIO N inverted
+// Back-compat: -10*P => GPIO P inverted (e.g. -40 => GPIO4 inverted)
+static bool decode_cfg_pin_for_log(int cfg, int *pin_out, bool *inv_out) {
+    if (pin_out) *pin_out = 0;
+    if (inv_out) *inv_out = false;
+
+    if (cfg == 999 || cfg == -999)
+        return false;
+
+    bool inv = (cfg < 0);
+    int v = pin_abs_int(cfg);
+    if (inv && v % 10 == 0 && (v / 10) <= 95)
+        v = v / 10;
+    if (v > 95)
+        return false;
+
+    if (pin_out) *pin_out = v;
+    if (inv_out) *inv_out = inv;
+    return true;
+}
+
 static void close_socket_fd(int sockFd) {
     shutdown(sockFd, SHUT_RDWR);
     close(sockFd);
@@ -1173,7 +1199,7 @@ void respond_request(http_request_t *req) {
             const int old_isp_iso_low = app_config.isp_iso_low;
             const int old_isp_iso_hi = app_config.isp_iso_hi;
             const int old_isp_exptime_low = app_config.isp_exptime_low;
-            const unsigned int old_ir_sensor_pin = app_config.ir_sensor_pin;
+            const int old_ir_sensor_pin = app_config.ir_sensor_pin;
             char old_adc_device[sizeof(app_config.adc_device)];
             strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
 
@@ -1268,9 +1294,8 @@ void respond_request(http_request_t *req) {
                     if (remain != value)
                         app_config.ir_led_pin = result;
                 } else if (EQUALS(key, "whiteled_pin") || EQUALS(key, "white_led_pin")) {
-                    short result = strtol(value, &remain, 10);
-                    if (remain != value)
-                        app_config.white_led_pin = result;
+                    // Intentionally ignored: `whiteled` is a manual action and must not
+                    // mutate config (pins are configured via divinus.yaml).
                 } else if (EQUALS(key, "irsense_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1322,8 +1347,16 @@ void respond_request(http_request_t *req) {
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
                 if (set_whiteled) {
-                    HAL_INFO("server", "Night API: apply whiteled=%d (pin=%u)\n",
-                        whiteled_value ? 1 : 0, app_config.white_led_pin);
+                    int pin = 0;
+                    bool inv = false;
+                    bool ok = decode_cfg_pin_for_log(app_config.white_led_pin, &pin, &inv);
+                    if (ok) {
+                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> pin=%d inv=%d)\n",
+                            whiteled_value ? 1 : 0, app_config.white_led_pin, pin, inv ? 1 : 0);
+                    } else {
+                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> disabled/invalid)\n",
+                            whiteled_value ? 1 : 0, app_config.white_led_pin);
+                    }
                     night_whiteled(whiteled_value);
                 }
                 if (set_grayscale) night_grayscale(grayscale_value);
