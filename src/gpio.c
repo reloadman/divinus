@@ -148,9 +148,9 @@ static int gpio_sysfs_read(int pin, bool *value) {
 static int gpio_sysfs_write(int pin, bool value) {
     if (gpio_sysfs_export(pin) < 0) return -1;
     if (gpio_sysfs_direction(pin, "out") < 0) return -1;
-    int ret = gpio_sysfs_write_value(pin, value);
-    (void)gpio_sysfs_unexport(pin);
-    return ret;
+    // Keep the line exported so the driven level is held (needed for steady outputs
+    // such as IR/white LEDs). Export is idempotent; callers can rewrite freely.
+    return gpio_sysfs_write_value(pin, value);
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
@@ -371,14 +371,15 @@ int gpio_read(int pin, bool *value) {
 int gpio_write(int pin, bool value) {
     if (gpio_init() != EXIT_SUCCESS) return EXIT_FAILURE;
 
+    // Prefer sysfs for global pin numbering and to keep outputs latched (line stays
+    // exported and driven). Fall back to cdev if sysfs is unavailable.
+    if (path_exists("/sys/class/gpio/export")) {
+        if (gpio_sysfs_write(pin, value) == 0) return EXIT_SUCCESS;
+    }
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
     if (gpio_backend == GPIO_BACKEND_CDEV) {
         if (gpio_cdev_write(pin, value) == 0) return EXIT_SUCCESS;
-        // If cdev fails (e.g. EINVAL on GK7205), try sysfs fallback.
-        if (path_exists("/sys/class/gpio/export") && gpio_sysfs_write(pin, value) == 0)
-            return EXIT_SUCCESS;
-        HAL_ERROR("gpio", "Unable to request a write on GPIO pin %d (error #%d)!\n", pin, errno);
-        return EXIT_FAILURE;
     }
 #endif
 
