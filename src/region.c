@@ -197,6 +197,18 @@ static void region_setup_isp_debug_osd(void) {
     const double size = 24.0;
     const int line_h = (int)(size * 3.0 / 2.0);
 
+    // Make ISP debug overlay look consistent with the time overlay:
+    // if any user-configured region contains `$t`/`$tu`, inherit its font.
+    const char *inherit_font = DEF_FONT;
+    for (int id = 0; id < MAX_OSD; id++) {
+        if (EMPTY(osds[id].text)) continue;
+        if (strstr(osds[id].text, "$t") == NULL) continue;
+        if (!EMPTY(osds[id].font)) {
+            inherit_font = osds[id].font;
+            break;
+        }
+    }
+
     // Configure top line (id1) and bottom line (id2).
     const struct {
         int id;
@@ -226,7 +238,7 @@ static void region_setup_isp_debug_osd(void) {
         osds[id].size = size;
         osds[id].posx = DEF_POSX;
         osds[id].posy = (short)MAX(0, lines[i].posy);
-        strncpy(osds[id].font, DEF_FONT, sizeof(osds[id].font) - 1);
+        strncpy(osds[id].font, inherit_font, sizeof(osds[id].font) - 1);
         osds[id].font[sizeof(osds[id].font) - 1] = '\0';
         strncpy(osds[id].text, lines[i].macro, sizeof(osds[id].text) - 1);
         osds[id].text[sizeof(osds[id].text) - 1] = '\0';
