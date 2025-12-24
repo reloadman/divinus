@@ -4227,8 +4227,11 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "NR: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_nr";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_nr", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_nr", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_nr";
+    } else if (section_pos(ini, "static_nr", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "NR: no [static_nr] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -4242,16 +4245,16 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
     }
 
     int val;
-    if (parse_int(ini, "static_nr", "Enable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "Enable", 0, 1, &val) == CONFIG_OK)
         nr.bEnable = (HI_BOOL)val;
     nr.enOpType = OP_TYPE_AUTO;
 
     char buf[512];
-    if (parse_param_value(ini, "static_nr", "FineStr", buf) == CONFIG_OK)
+    if (parse_param_value(ini, sec, "FineStr", buf) == CONFIG_OK)
         v4_iq_parse_csv_u8(buf, nr.stAuto.au8FineStr, ISP_AUTO_ISO_STRENGTH_NUM);
     {
         HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
-        if (parse_param_value(ini, "static_nr", "CoringWgt", buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, "CoringWgt", buf) == CONFIG_OK) {
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int i = 0; i < n; i++)
                 nr.stAuto.au16CoringWgt[i] = (HI_U16)tmp[i];
@@ -4354,8 +4357,11 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "Sharpen: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_sharpen";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_sharpen", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_sharpen", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_sharpen";
+    } else if (section_pos(ini, "static_sharpen", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "Sharpen: no [static_sharpen] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -4369,7 +4375,7 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     }
 
     int val;
-    if (parse_int(ini, "static_sharpen", "Enable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "Enable", 0, 1, &val) == CONFIG_OK)
         shp.bEnable = (HI_BOOL)val;
     shp.enOpType = OP_TYPE_AUTO;
 
@@ -4378,7 +4384,7 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     for (int i = 0; i < ISP_SHARPEN_LUMA_NUM; i++) {
         char key[32];
         snprintf(key, sizeof(key), "AutoLumaWgt_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK)
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK)
             v4_iq_parse_csv_u8(buf, shp.stAuto.au8LumaWgt[i], ISP_AUTO_ISO_STRENGTH_NUM);
     }
 
@@ -4386,14 +4392,14 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     for (int i = 0; i < ISP_SHARPEN_GAIN_NUM; i++) {
         char key[32];
         snprintf(key, sizeof(key), "AutoTextureStr_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK) {
             HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int j = 0; j < n; j++)
                 shp.stAuto.au16TextureStr[i][j] = (HI_U16)tmp[j];
         }
         snprintf(key, sizeof(key), "AutoEdgeStr_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK) {
             HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int j = 0; j < n; j++)
