@@ -1782,7 +1782,10 @@ void respond_request(http_request_t *req) {
                 char *key = split(&value, "=");
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "fmt")) {
-                    strncpy(timefmt, value, 32);
+                    // Copy user-supplied time format safely (clamp + terminate).
+                    size_t fmt_len = strnlen(value, sizeof(timefmt) - 1);
+                    memcpy(timefmt, value, fmt_len);
+                    timefmt[fmt_len] = '\0';
                 } else if (EQUALS(key, "ts")) {
                     short result = strtol(value, &remain, 10);
                     if (remain == value) continue;
