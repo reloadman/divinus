@@ -3101,16 +3101,22 @@ static void *v4_iq_dynamic_thread(void *arg) {
             static time_t last_fx_try = 0;
             time_t now3 = time(NULL);
             HI_BOOL allow_fx = (now3 == (time_t)-1) ? HI_TRUE : ((now3 - last_fx_try) >= 2);
-            // Consider it "noisy lowlight" only when we actually need to hide noise.
+            // Consider it "noisy" only when we actually need to hide noise.
             // Thresholds are conservative; tune later if needed.
             // Separate thresholds: keep gamma longer, disable sharpen earlier.
+            //
+            // IMPORTANT: Apply this not only in "DAY-at-night" lowlight, but also in true IR mode.
+            // In IR the scene often sits at max exposure and high digital/ISP gain; leaving gamma/sharpen
+            // enabled makes noise look much worse ("sand"). This is NOT about "crank gain then denoise";
+            // it's about avoiding noise amplification by marketing processing.
+            const HI_BOOL allow_noisy_fx = (is_lowlight == HI_TRUE || is_ir_mode) ? HI_TRUE : HI_FALSE;
             const HI_BOOL noisy_gamma =
-                (is_lowlight == HI_TRUE) &&
+                allow_noisy_fx &&
                 ((noisy_gamma_iso && iso >= noisy_gamma_iso) ||
                  (noisy_gamma_dg && expi.u32DGain > noisy_gamma_dg) ||
                  (noisy_gamma_ispg && expi.u32ISPDGain > noisy_gamma_ispg));
             const HI_BOOL noisy_sharpen =
-                (is_lowlight == HI_TRUE) &&
+                allow_noisy_fx &&
                 ((noisy_sh_iso && iso >= noisy_sh_iso) ||
                  (noisy_sh_dg && expi.u32DGain > noisy_sh_dg) ||
                  (noisy_sh_ispg && expi.u32ISPDGain > noisy_sh_ispg));
