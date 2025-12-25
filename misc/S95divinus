@@ -69,9 +69,14 @@ restart() {
 
 reload() {
 	printf 'Reloading %s (SIGHUP): ' "$DAEMON"
-	if [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE" -s HUP; then
-		echo "OK"
-		return 0
+	if [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE" -s 0; then
+		if start-stop-daemon -K -q -p "$PIDFILE" -s HUP; then
+			echo "OK"
+			return 0
+		fi
+	else
+		# stale pidfile -> remove so start won't refuse to run
+		rm -f "$PIDFILE"
 	fi
 	echo "not running, starting..."
 	start
