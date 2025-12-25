@@ -260,6 +260,31 @@ static int yaml_map_add_scalarf(struct fy_document *fyd, struct fy_node *map, co
     return yaml_map_add(fyd, map, key, v);
 }
 
+// Ensure timefmt stays printable and null-terminated before persisting.
+static void normalize_timefmt(void) {
+    char clean[sizeof(timefmt)];
+    size_t raw_len = sizeof(timefmt);
+    const void *nul = memchr(timefmt, '\0', sizeof(timefmt));
+    if (nul)
+        raw_len = (size_t)((const char *)nul - timefmt);
+
+    size_t out = 0;
+    for (size_t i = 0; i < raw_len && out + 1 < sizeof(clean); i++) {
+        unsigned char c = (unsigned char)timefmt[i];
+        if (c >= 0x20 && c <= 0x7e) // printable ASCII
+            clean[out++] = (char)c;
+    }
+    clean[out] = '\0';
+
+    if (out == 0) {
+        strncpy(clean, DEF_TIMEFMT, sizeof(clean) - 1);
+        clean[sizeof(clean) - 1] = '\0';
+    }
+
+    strncpy(timefmt, clean, sizeof(timefmt) - 1);
+    timefmt[sizeof(timefmt) - 1] = '\0';
+}
+
 int save_app_config(void) {
     const char *conf_path = DIVINUS_CONFIG_PATH;
 
@@ -324,6 +349,7 @@ int save_app_config(void) {
     if (yaml_map_add_scalarf(fyd, system, "venc_stream_thread_stack_size", "%u", app_config.venc_stream_thread_stack_size)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "web_server_thread_stack_size", "%u", app_config.web_server_thread_stack_size)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "night_thread_stack_size", "%u", app_config.night_thread_stack_size)) goto EMIT_FAIL;
+    normalize_timefmt();
     if (!EMPTY(timefmt))
         if (yaml_map_add_quoted_str(fyd, system, "time_format", timefmt)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "watchdog", "%u", app_config.watchdog)) goto EMIT_FAIL;
@@ -757,8 +783,7 @@ enum ConfigError parse_app_config(void) {
     if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
         goto RET_ERR_YAML;
     yaml_get_string(fyd, "/system/time_format", timefmt, sizeof(timefmt));
-    if (EMPTY(timefmt))
-        strncpy(timefmt, DEF_TIMEFMT, sizeof(timefmt) - 1);
+    normalize_timefmt();
     yaml_get_uint(fyd, "/system/watchdog", 0, UINT_MAX, &app_config.watchdog);
 
     err = yaml_get_bool(fyd, "/night_mode/enable", &app_config.night_mode_enable);
