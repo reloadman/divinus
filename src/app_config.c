@@ -261,7 +261,8 @@ static int yaml_map_add_scalarf(struct fy_document *fyd, struct fy_node *map, co
 }
 
 // Ensure timefmt stays printable and null-terminated before persisting.
-static void normalize_timefmt(void) {
+// Returns true if the value was modified/cleaned.
+static bool normalize_timefmt(void) {
     char clean[sizeof(timefmt)];
     size_t raw_len = sizeof(timefmt);
     const void *nul = memchr(timefmt, '\0', sizeof(timefmt));
@@ -281,8 +282,10 @@ static void normalize_timefmt(void) {
         clean[sizeof(clean) - 1] = '\0';
     }
 
+    const bool changed = (strncmp(timefmt, clean, sizeof(timefmt)) != 0);
     strncpy(timefmt, clean, sizeof(timefmt) - 1);
     timefmt[sizeof(timefmt) - 1] = '\0';
+    return changed;
 }
 
 int save_app_config(void) {
@@ -589,6 +592,7 @@ EMIT_FAIL:
 
 enum ConfigError parse_app_config(void) {
     memset(&app_config, 0, sizeof(struct AppConfig));
+    bool timefmt_cleaned = false;
 
     // Initialize OSD defaults early so partial configs (e.g. only reg0_text)
     // still render with sane font/color/position/outline.
@@ -785,7 +789,7 @@ enum ConfigError parse_app_config(void) {
     if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
         goto RET_ERR_YAML;
     yaml_get_string(fyd, "/system/time_format", timefmt, sizeof(timefmt));
-    normalize_timefmt();
+    timefmt_cleaned |= normalize_timefmt();
     yaml_get_uint(fyd, "/system/watchdog", 0, UINT_MAX, &app_config.watchdog);
 
     err = yaml_get_bool(fyd, "/night_mode/enable", &app_config.night_mode_enable);
@@ -1146,6 +1150,16 @@ enum ConfigError parse_app_config(void) {
     }
 
     fy_document_destroy(fyd);
+
+    // If time_format contained junk and we cleaned it, persist the fixed value
+    // so subsequent runs start from a sane config.
+    if (timefmt_cleaned) {
+        HAL_WARNING("app_config", "time_format contained invalid bytes; resetting to '%s'\n", timefmt);
+        int sr = save_app_config();
+        if (sr != 0)
+            HAL_WARNING("app_config", "Failed to persist cleaned time_format (ret=%d)\n", sr);
+    }
+
     return CONFIG_OK;
 RET_ERR_YAML:
     fy_document_destroy(fyd);

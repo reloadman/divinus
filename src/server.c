@@ -1786,6 +1786,16 @@ void respond_request(http_request_t *req) {
                     size_t fmt_len = strnlen(value, sizeof(timefmt) - 1);
                     memcpy(timefmt, value, fmt_len);
                     timefmt[fmt_len] = '\0';
+                    // Strip non-printable bytes to avoid persisting junk later.
+                    size_t out = 0;
+                    for (size_t i = 0; timefmt[i] && out + 1 < sizeof(timefmt); i++) {
+                        unsigned char c = (unsigned char)timefmt[i];
+                        if (c >= 0x20 && c <= 0x7e)
+                            timefmt[out++] = (char)c;
+                    }
+                    timefmt[out] = '\0';
+                    if (timefmt[0] == '\0')
+                        strncpy(timefmt, DEF_TIMEFMT, sizeof(timefmt) - 1);
                 } else if (EQUALS(key, "ts")) {
                     short result = strtol(value, &remain, 10);
                     if (remain == value) continue;
