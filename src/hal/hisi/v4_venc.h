@@ -439,6 +439,11 @@ static int v4_venc_load(v4_venc_impl *venc_lib) {
             "HI_MPI_VENC_SetColor2Grey",
             "HI_MPI_VENC_SetColor2Gray",
             "HI_MPI_VENC_SetColorToGray",
+            "HI_MPI_VENC_SetColorToGrey",
+            "HI_MPI_VENC_SetColor2GreyEx",
+            "HI_MPI_VENC_SetColor2GrayEx",
+            "HI_MPI_VENC_SetColorToGrayEx",
+            "HI_MPI_VENC_SetColorToGreyEx",
             NULL
         };
         void *sym = NULL;

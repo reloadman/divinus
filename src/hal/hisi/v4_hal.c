@@ -696,12 +696,19 @@ int v4_channel_grayscale(char enable)
     }
 
     // Fallback: H26x-only via Get/SetChnParam (kept for compatibility).
-    // NOTE: We do NOT try this on MJPEG/JPEG, even when jpeg_unsafe_grayscale is enabled,
-    // because multiple vendor SDKs crash inside HI_MPI_VENC_GetChnParam for these codecs.
+    // NOTE: We do NOT try this on MJPEG/JPEG unless explicitly requested via
+    // jpeg.unsafe_grayscale_getparam, because multiple vendor SDKs crash inside
+    // HI_MPI_VENC_GetChnParam for these codecs.
     for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
         if (!v4_state[i].enable) continue;
-        if (v4_state[i].payload != HAL_VIDCODEC_H264 &&
-            v4_state[i].payload != HAL_VIDCODEC_H265)
+        const bool is_h26x =
+            (v4_state[i].payload == HAL_VIDCODEC_H264 ||
+             v4_state[i].payload == HAL_VIDCODEC_H265);
+        const bool is_mjpeg =
+            (v4_state[i].payload == HAL_VIDCODEC_MJPG ||
+             v4_state[i].payload == HAL_VIDCODEC_JPG);
+
+        if (!is_h26x && !(app_config.jpeg_unsafe_grayscale && app_config.jpeg_unsafe_grayscale_getparam && is_mjpeg))
             continue;
         v4_venc_para param;
         int ret = v4_venc.fnGetChannelParam(i, &param);
@@ -713,12 +720,12 @@ int v4_channel_grayscale(char enable)
 
     // If user explicitly enabled MJPEG grayscale but SDK doesn't expose a safe toggle,
     // warn once so it's obvious why MJPEG stays in color.
-    if (app_config.jpeg_unsafe_grayscale) {
+    if (app_config.jpeg_unsafe_grayscale && !app_config.jpeg_unsafe_grayscale_getparam) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
             HAL_WARNING("v4_venc",
-                "MJPEG/JPEG grayscale requested (jpeg.unsafe_grayscale=true), but SetColor2Gray API is unavailable; skipping to avoid SDK crash\n");
+                "MJPEG/JPEG grayscale requested (jpeg.unsafe_grayscale=true), but SetColor2Gray API is unavailable; skipping MJPEG/JPEG to avoid SDK crash (set jpeg.unsafe_grayscale_getparam=true to force Get/SetChnParam attempt)\n");
         }
     }
 

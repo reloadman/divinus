@@ -541,6 +541,7 @@ int save_app_config(void) {
     if (yaml_map_add_str(fyd, jpeg, "enable", app_config.jpeg_enable ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, jpeg, "osd_enable", app_config.jpeg_osd_enable ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_str(fyd, jpeg, "unsafe_grayscale", app_config.jpeg_unsafe_grayscale ? "true" : "false")) goto EMIT_FAIL;
+    if (yaml_map_add_str(fyd, jpeg, "unsafe_grayscale_getparam", app_config.jpeg_unsafe_grayscale_getparam ? "true" : "false")) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, jpeg, "mode", "%u", app_config.jpeg_mode)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, jpeg, "width", "%u", app_config.jpeg_width)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, jpeg, "height", "%u", app_config.jpeg_height)) goto EMIT_FAIL;
@@ -696,6 +697,7 @@ enum ConfigError parse_app_config(void) {
     app_config.jpeg_enable = false;
     app_config.jpeg_osd_enable = true;
     app_config.jpeg_unsafe_grayscale = false;
+    app_config.jpeg_unsafe_grayscale_getparam = false;
     app_config.jpeg_fps = 15;
     app_config.jpeg_width = 640;
     app_config.jpeg_height = 480;
@@ -1113,6 +1115,7 @@ enum ConfigError parse_app_config(void) {
         goto RET_ERR_YAML;
     yaml_get_bool(fyd, "/jpeg/osd_enable", &app_config.jpeg_osd_enable);
     yaml_get_bool(fyd, "/jpeg/unsafe_grayscale", &app_config.jpeg_unsafe_grayscale);
+    yaml_get_bool(fyd, "/jpeg/unsafe_grayscale_getparam", &app_config.jpeg_unsafe_grayscale_getparam);
     if (app_config.jpeg_enable) {
         int mode = 0;
         yaml_get_int(fyd, "/jpeg/mode", 0, INT_MAX, &mode);

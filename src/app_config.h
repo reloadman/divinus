@@ -171,6 +171,11 @@ struct AppConfig {
     // is used. This is platform-specific and may crash on some hisi/v4 SDK builds, so it
     // is opt-in (default false).
     bool jpeg_unsafe_grayscale;
+    // Even more unsafe fallback: allow grayscale toggling on MJPEG/JPEG via
+    // VENC Get/SetChnParam when the direct SetColor2Gray API is unavailable.
+    // Some hisi/v4 SDK builds are known to crash inside GetChnParam for MJPEG/JPEG.
+    // Default false.
+    bool jpeg_unsafe_grayscale_getparam;
     unsigned int jpeg_mode;
     unsigned int jpeg_fps;
     unsigned int jpeg_width;
