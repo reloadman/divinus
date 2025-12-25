@@ -1,6 +1,7 @@
 #if defined(__arm__) && !defined(__ARM_PCS_VFP)
 
 #include "v4_hal.h"
+#include "../../app_config.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
@@ -669,21 +670,56 @@ int v4_channel_create(char index, char mirror, char flip, char framerate)
 
 int v4_channel_grayscale(char enable)
 {
-    int ret;
+    int last_ret = EXIT_SUCCESS;
+    const int active = enable ? 1 : 0;
 
+    // Preferred path: use the direct SDK toggle when available.
+    // This is especially important for MJPEG/JPEG, where some SDK builds crash on GetChnParam.
+    if (v4_venc.fnSetColorToGray) {
+        for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
+            if (!v4_state[i].enable) continue;
+
+            const bool is_h26x =
+                (v4_state[i].payload == HAL_VIDCODEC_H264 ||
+                 v4_state[i].payload == HAL_VIDCODEC_H265);
+            const bool is_mjpeg =
+                (v4_state[i].payload == HAL_VIDCODEC_MJPG ||
+                 v4_state[i].payload == HAL_VIDCODEC_JPG);
+
+            if (!is_h26x && !(app_config.jpeg_unsafe_grayscale && is_mjpeg))
+                continue;
+
+            const int ret = v4_venc.fnSetColorToGray(i, (int *)&active);
+            if (ret) last_ret = ret;
+        }
+        return last_ret;
+    }
+
+    // Fallback: H26x-only via Get/SetChnParam (kept for compatibility).
+    // NOTE: We do NOT try this on MJPEG/JPEG, even when jpeg_unsafe_grayscale is enabled,
+    // because multiple vendor SDKs crash inside HI_MPI_VENC_GetChnParam for these codecs.
     for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
-        // Some SDK builds crash when querying MJPEG/JPEG channels for H26x-only
-        // params. Only toggle grayscale on H.264/H.265 channels.
+        if (!v4_state[i].enable) continue;
         if (v4_state[i].payload != HAL_VIDCODEC_H264 &&
             v4_state[i].payload != HAL_VIDCODEC_H265)
             continue;
         v4_venc_para param;
-        if (!v4_state[i].enable) continue;
-        if (ret = v4_venc.fnGetChannelParam(i, &param))
-            return ret;
+        int ret = v4_venc.fnGetChannelParam(i, &param);
+        if (ret) return ret;
         param.grayscaleOn = enable;
-        if (ret = v4_venc.fnSetChannelParam(i, &param))
-            return ret;
+        ret = v4_venc.fnSetChannelParam(i, &param);
+        if (ret) return ret;
+    }
+
+    // If user explicitly enabled MJPEG grayscale but SDK doesn't expose a safe toggle,
+    // warn once so it's obvious why MJPEG stays in color.
+    if (app_config.jpeg_unsafe_grayscale) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            HAL_WARNING("v4_venc",
+                "MJPEG/JPEG grayscale requested (jpeg.unsafe_grayscale=true), but SetColor2Gray API is unavailable; skipping to avoid SDK crash\n");
+        }
     }
 
     return EXIT_SUCCESS;

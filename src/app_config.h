@@ -167,6 +167,10 @@ struct AppConfig {
     // [jpeg]
     bool jpeg_enable;
     bool jpeg_osd_enable;
+    // Attempt to toggle grayscale on MJPEG/JPEG encoder channels when night_mode.grayscale
+    // is used. This is platform-specific and may crash on some hisi/v4 SDK builds, so it
+    // is opt-in (default false).
+    bool jpeg_unsafe_grayscale;
     unsigned int jpeg_mode;
     unsigned int jpeg_fps;
     unsigned int jpeg_width;
