@@ -113,11 +113,7 @@ osd:
 jpeg:
   enable: true
   osd_enable: false
-  # WARNING (hisi/v4): this tries to make MJPEG grayscale when night_mode.grayscale is used.
-  # It is SDK-dependent and may crash on some firmwares.
-  unsafe_grayscale: false
-  # Even more unsafe: allow Get/SetChnParam on MJPEG/JPEG if SetColor2Gray API is missing.
-  unsafe_grayscale_getparam: false
+  grayscale_night: true
   mode: 2
   width: 512
   height: 288
