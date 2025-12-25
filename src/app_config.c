@@ -6,6 +6,9 @@
 #include <libfyaml.h>
 
 struct AppConfig app_config;
+// Canonical copy of time_format to persist into config; runtime `timefmt`
+// may be manipulated elsewhere (OSD formatting), so we keep a clean copy here.
+static char timefmt_cfg[sizeof(timefmt)] = DEF_TIMEFMT;
 
 // Minimal path lookup for our config schema.
 // We intentionally avoid `fy_node_by_path()` to keep dependencies smaller
@@ -261,35 +264,68 @@ static int yaml_map_add_scalarf(struct fy_document *fyd, struct fy_node *map, co
 }
 
 // Ensure timefmt stays printable and null-terminated before persisting.
-// Returns true if the value was modified/cleaned.
-static bool normalize_timefmt(void) {
-    char clean[sizeof(timefmt)];
-    size_t raw_len = sizeof(timefmt);
-    const void *nul = memchr(timefmt, '\0', sizeof(timefmt));
-    if (nul)
-        raw_len = (size_t)((const char *)nul - timefmt);
+// Returns true if the input contained any invalid bytes or was empty (and got defaulted).
+static bool sanitize_timefmt(const char *src, char *dst) {
+    const char *input = src ? src : "";
+    const size_t max_len = sizeof(timefmt) - 1;
+    size_t raw_len = strnlen(input, max_len);
 
+    bool changed = false;
     size_t out = 0;
-    for (size_t i = 0; i < raw_len && out + 1 < sizeof(clean); i++) {
-        unsigned char c = (unsigned char)timefmt[i];
-        if (c >= 0x20 && c <= 0x7e) // printable ASCII
-            clean[out++] = (char)c;
+    for (size_t i = 0; i < raw_len && out + 1 < sizeof(timefmt); i++) {
+        unsigned char c = (unsigned char)input[i];
+        if (c >= 0x20 && c <= 0x7e) {
+            dst[out++] = (char)c;
+        } else {
+            changed = true;
+        }
     }
-    clean[out] = '\0';
+    dst[out] = '\0';
 
     if (out == 0) {
-        strncpy(clean, DEF_TIMEFMT, sizeof(clean) - 1);
-        clean[sizeof(clean) - 1] = '\0';
+        strncpy(dst, DEF_TIMEFMT, sizeof(timefmt) - 1);
+        dst[sizeof(timefmt) - 1] = '\0';
+        changed = true;
     }
 
-    const bool changed = (strncmp(timefmt, clean, sizeof(timefmt)) != 0);
+    if (!changed && raw_len != out)
+        changed = true;
+
+    return changed;
+}
+
+// Update both runtime (timefmt) and canonical (timefmt_cfg) copies.
+// Returns true if the provided value was altered during sanitization.
+bool timefmt_set(const char *src) {
+    char clean[sizeof(timefmt)];
+    bool cleaned = sanitize_timefmt(src, clean);
     strncpy(timefmt, clean, sizeof(timefmt) - 1);
     timefmt[sizeof(timefmt) - 1] = '\0';
-    return changed;
+    strncpy(timefmt_cfg, clean, sizeof(timefmt_cfg) - 1);
+    timefmt_cfg[sizeof(timefmt_cfg) - 1] = '\0';
+    return cleaned;
+}
+
+// Ensure runtime buffer is printable; if not, restore from canonical copy.
+void timefmt_repair_runtime(void) {
+    char clean[sizeof(timefmt)];
+    bool broken = sanitize_timefmt(timefmt, clean);
+    if (broken) {
+        // Prefer canonical clean copy; fallback to sanitized runtime.
+        const char *src = (!EMPTY(timefmt_cfg)) ? timefmt_cfg : clean;
+        strncpy(timefmt, src, sizeof(timefmt) - 1);
+        timefmt[sizeof(timefmt) - 1] = '\0';
+    }
 }
 
 int save_app_config(void) {
     const char *conf_path = DIVINUS_CONFIG_PATH;
+
+    // If runtime buffer was corrupted, restore from the clean copy to avoid
+    // persisting junk into config.
+    timefmt_repair_runtime();
+    if (EMPTY(timefmt_cfg))
+        timefmt_set(DEF_TIMEFMT);
 
     // Atomic save: write into a temp file in the same directory, then rename over target.
     // This avoids partially-written configs and removes the need for persistent *.bak files.
@@ -352,9 +388,9 @@ int save_app_config(void) {
     if (yaml_map_add_scalarf(fyd, system, "venc_stream_thread_stack_size", "%u", app_config.venc_stream_thread_stack_size)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "web_server_thread_stack_size", "%u", app_config.web_server_thread_stack_size)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "night_thread_stack_size", "%u", app_config.night_thread_stack_size)) goto EMIT_FAIL;
-    normalize_timefmt();
-    if (!EMPTY(timefmt))
-        if (yaml_map_add_quoted_str(fyd, system, "time_format", timefmt)) goto EMIT_FAIL;
+    // Use canonical copy to persist (runtime buffer may be touched elsewhere).
+    if (!EMPTY(timefmt_cfg))
+        if (yaml_map_add_quoted_str(fyd, system, "time_format", timefmt_cfg)) goto EMIT_FAIL;
     if (yaml_map_add_scalarf(fyd, system, "watchdog", "%u", app_config.watchdog)) goto EMIT_FAIL;
 
     // night_mode
@@ -695,6 +731,9 @@ enum ConfigError parse_app_config(void) {
     // JPEG/MJPEG stream (multipart/x-mixed-replace). Snapshots use last MJPEG frame.
     app_config.jpeg_enable = false;
     app_config.jpeg_osd_enable = true;
+    // Prefer grayscale OSD at night; this is independent from runtime timefmt handling.
+    // (Field renamed by user; keep defaults aligned.)
+    app_config.jpeg_grayscale_night = true;
     app_config.jpeg_grayscale_night = true;
     app_config.jpeg_fps = 15;
     app_config.jpeg_width = 640;
@@ -789,7 +828,7 @@ enum ConfigError parse_app_config(void) {
     if (err != CONFIG_OK && err != CONFIG_PARAM_NOT_FOUND)
         goto RET_ERR_YAML;
     yaml_get_string(fyd, "/system/time_format", timefmt, sizeof(timefmt));
-    timefmt_cleaned |= normalize_timefmt();
+    timefmt_cleaned |= timefmt_set(timefmt);
     yaml_get_uint(fyd, "/system/watchdog", 0, UINT_MAX, &app_config.watchdog);
 
     err = yaml_get_bool(fyd, "/night_mode/enable", &app_config.night_mode_enable);
@@ -1154,7 +1193,7 @@ enum ConfigError parse_app_config(void) {
     // If time_format contained junk and we cleaned it, persist the fixed value
     // so subsequent runs start from a sane config.
     if (timefmt_cleaned) {
-        HAL_WARNING("app_config", "time_format contained invalid bytes; resetting to '%s'\n", timefmt);
+        HAL_WARNING("app_config", "time_format contained invalid bytes; resetting to '%s'\n", timefmt_cfg);
         int sr = save_app_config();
         if (sr != 0)
             HAL_WARNING("app_config", "Failed to persist cleaned time_format (ret=%d)\n", sr);

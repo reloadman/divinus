@@ -191,3 +191,7 @@ struct AppConfig {
 extern struct AppConfig app_config;
 enum ConfigError parse_app_config(void);
 int save_app_config(void);
+// Sanitize and update the canonical/runtime time format strings.
+bool timefmt_set(const char *src);
+// Repair runtime timefmt if corrupted (uses canonical copy as source).
+void timefmt_repair_runtime(void);

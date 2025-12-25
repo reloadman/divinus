@@ -158,6 +158,7 @@ The snapshot endpoint (`/image.jpg`) returns the **last MJPEG frame** (no separa
 
 - **enable**: Boolean to activate MJPEG output.
 - **osd_enable**: Boolean to enable/disable OSD for the JPEG/MJPEG stream only (default: `true`).
+- **grayscale_night**: If `true`, the MJPEG/JPEG encoder channel follows `night_mode.grayscale` toggles (default: `true`).
 - **mode**: Encoding mode (kept for compatibility; MJPEG uses `QP` internally).
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.
