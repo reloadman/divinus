@@ -24,8 +24,8 @@ night_mode:
   ir_cut_pin2: 8
   isp_iso_low: 180
   isp_iso_hi: 320
-  isp_exptime_low: 25000
-  isp_switch_lockout_s: 3
+  isp_exptime_low: 22000
+  isp_switch_lockout_s: 5
   ir_led_pin: 16
   white_led_pin: 4
   pin_switch_delay_us: 150
