@@ -3,6 +3,7 @@
 DAEMON="divinus"
 DAEMON_PATH="/usr/bin/$DAEMON"
 PIDFILE="/run/$DAEMON.pid"
+CHILD_PIDFILE="/run/${DAEMON}.child.pid"
 DAEMON_ARGS=""
 # Seconds to wait before respawn after crash
 RESTART_DELAY="${RESTART_DELAY:-10}"
@@ -22,16 +23,18 @@ start() {
 	# shellcheck disable=SC2086 # we need the word splitting for args
 	start-stop-daemon -b -m -S -q -p "$PIDFILE" -x /bin/sh -- -c "
 		# Ensure children die with the supervisor and exit the loop on stop
-		trap ' 
+		trap '
 			if [ -n \"\$child\" ]; then
 				kill -TERM \"\$child\" 2>/dev/null
 				wait \"\$child\" 2>/dev/null
+				rm -f \"$CHILD_PIDFILE\"
 			fi
 			exit 0
 		' INT TERM EXIT
 		while true; do
 			$DAEMON_PATH $DAEMON_ARGS &
 			child=\$!
+			echo \$child > \"$CHILD_PIDFILE\"
 			wait \$child
 			status=\$?
 			logger -t $DAEMON \"exited with code \$status, restarting in $RESTART_DELAY s\"
@@ -54,6 +57,7 @@ stop() {
 		status=$?
 		if [ "$status" -eq 0 ]; then
 			rm -f "$PIDFILE"
+			rm -f "$CHILD_PIDFILE"
 			echo "OK"
 		else
 			echo "FAIL"
@@ -63,6 +67,7 @@ stop() {
 
 	# Not running (or stale pidfile).
 	rm -f "$PIDFILE"
+	rm -f "$CHILD_PIDFILE"
 	echo "not running"
 	return 0
 }
@@ -75,15 +80,25 @@ restart() {
 
 reload() {
 	printf 'Reloading %s (SIGHUP): ' "$DAEMON"
-	if [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE" -s 0; then
-		if start-stop-daemon -K -q -p "$PIDFILE" -s HUP; then
-			echo "OK"
-			return 0
+	if [ -f "$CHILD_PIDFILE" ]; then
+		child=$(cat "$CHILD_PIDFILE" 2>/dev/null)
+		case "$child" in
+			''|*[!0-9]*) child= ;;
+		esac
+		if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+			if kill -HUP "$child" 2>/dev/null; then
+				echo "OK"
+				return 0
+			fi
 		fi
-	else
-		# stale pidfile -> remove so start won't refuse to run
+	fi
+
+	# If supervisor pid exists but child vanished, clean up to allow start.
+	if [ -f "$PIDFILE" ] && ! start-stop-daemon -K -q -p "$PIDFILE" -s 0; then
 		rm -f "$PIDFILE"
 	fi
+
+	rm -f "$CHILD_PIDFILE"
 	echo "not running, starting..."
 	start
 }
