@@ -188,7 +188,7 @@ Configures the night mode parameters.
 | GET    | `ircut_pin2`   | GPIO pin 2 for IR-Cut     |
 | GET    | `irled`        | Control IR LEDs           |
 | GET    | `irled_pin`    | GPIO pin for IR LEDs      |
-| GET    | `whiteled`     | Control white LED (manual) |
+| GET    | `whiteled`     | Control white LED (manual): `on`/`off` |
 | GET    | `irsense_pin`  | GPIO pin for IR sensor    |
 | GET    | `adc_device`   | ADC device                |
 | GET    | `adc_threshold`| Activation threshold      |

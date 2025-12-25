@@ -1277,7 +1277,13 @@ void respond_request(http_request_t *req) {
                     irled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                 } else if (EQUALS(key, "whiteled")) {
                     set_whiteled = true;
-                    whiteled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    // Prefer on/off (new API), keep backward compatibility with true/false/1/0.
+                    if (EQUALS_CASE(value, "on"))
+                        whiteled_value = true;
+                    else if (EQUALS_CASE(value, "off"))
+                        whiteled_value = false;
+                    else
+                        whiteled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                     HAL_INFO("server", "Night API: whiteled=%s (parsed=%d)\n", value, whiteled_value ? 1 : 0);
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
