@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 char graceful = 0, keepRunning = 1;
+static volatile sig_atomic_t iq_reload_pending = 0;
 
 // Startup phase marker for crash diagnostics.
 // Not strictly async-signal-safe, but used only for printing a best-effort hint.
@@ -105,10 +106,18 @@ void handle_exit(int signo) {
     alarm(1);
 }
 
+static void handle_reload(int signo) {
+    (void)signo;
+    iq_reload_pending = 1;
+    // Nudge the main loop so it reloads promptly even if sleeping.
+    alarm(1);
+}
+
 int main(int argc, char *argv[]) {
     {
         char signal_error[] = {SIGABRT, SIGBUS, SIGFPE, SIGSEGV};
         char signal_exit[] = {SIGINT, SIGQUIT, SIGTERM};
+        char signal_reload[] = {SIGHUP};
         // SIGPIPE can occur on client disconnect/teardown; ignore it.
         char signal_null[] = {SIGPIPE};
 
@@ -116,6 +125,8 @@ int main(int argc, char *argv[]) {
             signal(*s, handle_error);
         for (char *s = signal_exit; s < (&signal_exit)[1]; s++)
             signal(*s, handle_exit);
+        for (char *s = signal_reload; s < (&signal_reload)[1]; s++)
+            signal(*s, handle_reload);
         for (char *s = signal_null; s < (&signal_null)[1]; s++)
             signal(*s, SIG_IGN);
     }
@@ -198,6 +209,14 @@ int main(int argc, char *argv[]) {
 
     g_phase = "main_loop";
     while (keepRunning) {
+        if (iq_reload_pending) {
+            iq_reload_pending = 0;
+            int rc = media_reload_iq();
+            if (rc == EXIT_SUCCESS)
+                HAL_INFO("main", "Reloaded IQ config (SIGHUP)\n");
+            else
+                HAL_WARNING("main", "IQ reload (SIGHUP) failed with %#x\n", rc);
+        }
         watchdog_reset();
         sleep(1);
     }

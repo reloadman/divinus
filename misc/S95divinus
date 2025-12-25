@@ -68,6 +68,12 @@ restart() {
 }
 
 reload() {
+	printf 'Reloading %s (SIGHUP): ' "$DAEMON"
+	if [ -f "$PIDFILE" ] && start-stop-daemon -K -q -p "$PIDFILE" -s HUP; then
+		echo "OK"
+		return 0
+	fi
+	echo "not running, starting..."
 	start
 }
 
