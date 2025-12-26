@@ -193,7 +193,7 @@ static enum ConfigError yaml_get_string_list(struct fy_document *fyd, const char
     unsigned int count = 0;
     while ((item = fy_node_sequence_iterate(n, &iter)) != NULL) {
         if (count >= max_entries)
-            break;
+        break;
         if (fy_node_get_type(item) != FYNT_SCALAR)
             return CONFIG_PARAM_INVALID_FORMAT;
         const char *s = fy_node_get_scalar0(item);
@@ -927,7 +927,7 @@ enum ConfigError parse_app_config(void) {
         }
         if (!fyd) {
             HAL_ERROR("app_config", "Failed to parse YAML config '%s'\n", conf_path);
-            return -1;
+        return -1;
         }
     }
 
@@ -1189,8 +1189,8 @@ enum ConfigError parse_app_config(void) {
                 } else if (!strcasecmp(codec_raw, "MP3")) {
                     HAL_WARNING("app_config", "audio.codec=MP3 is no longer supported; forcing AAC\n");
                     app_config.audio_codec = HAL_AUDCODEC_AAC;
-                }
             }
+        }
         }
         yaml_get_uint(fyd, "/audio/bitrate", 32, 320, &app_config.audio_bitrate);
         // `audio.gain` semantics are platform-specific.

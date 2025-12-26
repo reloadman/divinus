@@ -1776,6 +1776,10 @@ typedef struct {
     HI_BOOL nr3d_probe_logged;
 
     // Cache "not supported / rejected by SDK" to avoid repeating warnings every IQ apply.
+    // Also store presence of AE route tables so the dynamic thread can start even if
+    // only mode-switchable AE route/route-ex is desired.
+    HI_BOOL have_aerouteex_day;
+    HI_BOOL have_aerouteex_ir;
     HI_BOOL aerouteex_disabled;
     HI_BOOL ccm_disabled;
 
@@ -2506,6 +2510,15 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
             low_speed = day_speed;
         }
 
+        // Presence of RouteEx tables (used to trigger mode-switch AE apply even if other dynamics are off)
+        HI_BOOL have_rx_day = HI_FALSE, have_rx_ir = HI_FALSE;
+        {
+            int sec_s = 0, sec_e = 0;
+            have_rx_day = (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) ? HI_TRUE : HI_FALSE;
+            sec_s = sec_e = 0;
+            have_rx_ir = (section_pos(ini, "ir_static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) ? HI_TRUE : HI_FALSE;
+        }
+
         pthread_mutex_lock(&_v4_iq_dyn.lock);
         _v4_iq_dyn.upFrameIso = up;
         _v4_iq_dyn.downFrameIso = down;
@@ -2549,6 +2562,8 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         _v4_iq_dyn.fast_contrast_max = fast_cc_max;
         _v4_iq_dyn.have_ae_day = have_day;
         _v4_iq_dyn.have_ae_low = have_low;
+        _v4_iq_dyn.have_aerouteex_day = have_rx_day;
+        _v4_iq_dyn.have_aerouteex_ir = have_rx_ir;
         _v4_iq_dyn.last_ae_lowlight = HI_FALSE;
         _v4_iq_dyn.ae_day_comp = day_comp;
         _v4_iq_dyn.ae_low_comp = low_comp;
@@ -2691,6 +2706,9 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
     v4_iq_dyn_unbypass_modules(pipe);
 
+    HI_BOOL last_mode_valid = HI_FALSE;
+    bool last_ir_mode = false;
+
     for (;;) {
         v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
         v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
@@ -2821,6 +2839,14 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
         HI_U32 iso = expi.u32ISO;
         const bool is_ir_mode = night_mode_on();
+
+        if (!last_mode_valid || is_ir_mode != last_ir_mode) {
+            last_mode_valid = HI_TRUE;
+            last_ir_mode = is_ir_mode;
+            HAL_INFO("v4_iq", "AE route: mode switch -> apply %s tables\n", is_ir_mode ? "IR" : "DAY");
+            v4_iq_apply_ae_route_for_current_mode(pipe);
+        }
+
         const HI_BOOL is_lowlight =
             (!is_ir_mode &&
              ll_ae && have_ae_day && have_ae_low &&
@@ -3301,6 +3327,7 @@ static void v4_iq_dyn_maybe_start(int pipe) {
     need = (_v4_iq_dyn.dehaze_day.enabled || _v4_iq_dyn.dehaze_ir.enabled ||
             _v4_iq_dyn.linear_drc_day.enabled || _v4_iq_dyn.linear_drc_ir.enabled ||
             _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled ||
+            _v4_iq_dyn.have_aerouteex_day || _v4_iq_dyn.have_aerouteex_ir ||
             (_v4_iq_dyn.lowlight_auto_ae && _v4_iq_dyn.have_ae_day && _v4_iq_dyn.have_ae_low));
     if (need && !_v4_iq_dyn.thread_started) {
         _v4_iq_dyn.thread_started = true;
@@ -3318,6 +3345,30 @@ static void v4_iq_dyn_maybe_start(int pipe) {
         _v4_iq_dyn.thread_started = false;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
     }
+}
+
+static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe);
+static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe);
+
+static void v4_iq_apply_ae_route_for_current_mode(int pipe) {
+    if (!_v4_iq_cfg_path[0])
+        return;
+
+    struct IniConfig ini;
+    memset(&ini, 0, sizeof(ini));
+    FILE *file = fopen(_v4_iq_cfg_path, "r");
+    if (!open_config(&ini, &file))
+        return;
+    find_sections(&ini);
+
+    bool doStaticAE = true;
+    parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
+    if (doStaticAE) {
+        (void)v4_iq_apply_static_ae(&ini, pipe);
+        (void)v4_iq_apply_static_aerouteex(&ini, pipe);
+    }
+
+    free(ini.str);
 }
 
 static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
@@ -3482,8 +3533,11 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE route-ex: disabled (previous SDK reject), skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_aerouteex";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_aerouteex";
+    } else if (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE route-ex: no [static_aerouteex] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -3496,9 +3550,25 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         return ret;
     }
 
+    // Get current AE range limits so we can clamp route tables to what the firmware accepts.
+    HI_U32 exp_max = 0, exp_min = 0;
+    HI_U32 again_max = 0, dgain_max = 0, ispdgain_max = 0, sysgain_max = 0;
+    if (v4_isp.fnGetExposureAttr) {
+        ISP_EXPOSURE_ATTR_S exp;
+        memset(&exp, 0, sizeof(exp));
+        if (v4_isp.fnGetExposureAttr(pipe, &exp) == 0) {
+            exp_min = exp.stAuto.stExpTimeRange.u32Min;
+            exp_max = exp.stAuto.stExpTimeRange.u32Max;
+            again_max = exp.stAuto.stAGainRange.u32Max;
+            dgain_max = exp.stAuto.stDGainRange.u32Max;
+            ispdgain_max = exp.stAuto.stISPDGainRange.u32Max;
+            sysgain_max = exp.stAuto.stSysGainRange.u32Max;
+        }
+    }
+
     int total = 0;
-    if (parse_int(ini, "static_aerouteex", "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK) {
-        HAL_INFO("v4_iq", "AE route-ex: no static_aerouteex/TotalNum, skipping\n");
+    if (parse_int(ini, sec, "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE route-ex: no %s/TotalNum, skipping\n", sec);
         return EXIT_SUCCESS;
     }
 
@@ -3507,10 +3577,10 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     HI_U32 dgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
     HI_U32 ispdgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
 
-    int nInts = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXIntTime", ints, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nAgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXAGain", again, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXDGain", dgain, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nIspDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXISPDGain", ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nInts = v4_iq_parse_multiline_u32(ini, sec, "RouteEXIntTime", ints, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nAgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXAGain", again, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nDgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXDGain", dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nIspDgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXISPDGain", ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
 
     route.u32TotalNum = (HI_U32)total;
     for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
@@ -3520,7 +3590,55 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         if (i < nIspDgain) route.astRouteExNode[i].u32IspDgain = ispdgain[i];
     }
 
-    ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
+    // Build a sanitized table before first Set call:
+    // - strictly increasing exposure time
+    // - respects current AE exposure range (ExpTimeRange)
+    // - clamps gains into common ranges + current AE ranges (when available)
+    ISP_AE_ROUTE_EX_S clean;
+    memset(&clean, 0, sizeof(clean));
+    HI_U32 prevT = 0;
+    int outN = 0;
+    for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+        HI_U32 t = route.astRouteExNode[i].u32IntTime;
+        HI_U32 a = route.astRouteExNode[i].u32Again;
+        HI_U32 d = route.astRouteExNode[i].u32Dgain;
+        HI_U32 g = route.astRouteExNode[i].u32IspDgain;
+
+        if (t == 0) continue;
+        if (exp_min && t < exp_min) t = exp_min;
+        if (exp_max && t > exp_max) continue; // don't feed firmware out-of-range times
+        if (outN > 0 && t <= prevT) continue;
+        prevT = t;
+
+        // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
+        if (a < 0x400) a = 0x400;
+        if (d < 0x400) d = 0x400;
+        if (g < 0x400) g = 0x400;
+        if (a > 0x3FFFFF) a = 0x3FFFFF;
+        if (d > 0x3FFFFF) d = 0x3FFFFF;
+        if (g > 0x40000) g = 0x40000;
+
+        // Further clamp to current AE ranges when available.
+        if (again_max >= 0x400 && a > again_max) a = again_max;
+        if (dgain_max >= 0x400 && d > dgain_max) d = dgain_max;
+        if (ispdgain_max >= 0x400 && g > ispdgain_max) g = ispdgain_max;
+
+        clean.astRouteExNode[outN].u32IntTime = t;
+        clean.astRouteExNode[outN].u32Again = a;
+        clean.astRouteExNode[outN].u32Dgain = d;
+        clean.astRouteExNode[outN].u32IspDgain = g;
+        outN++;
+        if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+    }
+    clean.u32TotalNum = (HI_U32)outN;
+
+    if (outN < 2) {
+        HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after clamp (%s outN=%d exp=[%u..%u]), skipping\n",
+            sec, outN, (unsigned)exp_min, (unsigned)exp_max);
+        return EXIT_SUCCESS;
+    }
+
+    ret = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x (sanitizing & retry)\n", ret);
         {
@@ -3571,42 +3689,11 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
 
         // Some SDKs require strictly increasing exposure time and valid gain ranges.
         // Build a sanitized table and retry once.
-        ISP_AE_ROUTE_EX_S clean;
-        memset(&clean, 0, sizeof(clean));
-        HI_U32 prevT = 0;
-        int outN = 0;
-        for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
-            HI_U32 t = route.astRouteExNode[i].u32IntTime;
-            HI_U32 a = route.astRouteExNode[i].u32Again;
-            HI_U32 d = route.astRouteExNode[i].u32Dgain;
-            HI_U32 g = route.astRouteExNode[i].u32IspDgain;
-
-            if (t == 0) continue;
-            if (outN > 0 && t <= prevT) {
-                // drop duplicates/non-increasing nodes
-                continue;
-            }
-            prevT = t;
-
-            // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
-            if (a < 0x400) a = 0x400;
-            if (d < 0x400) d = 0x400;
-            if (g < 0x400) g = 0x400;
-            if (a > 0x3FFFFF) a = 0x3FFFFF;
-            if (d > 0x3FFFFF) d = 0x3FFFFF;
-            if (g > 0x40000) g = 0x40000;
-
-            clean.astRouteExNode[outN].u32IntTime = t;
-            clean.astRouteExNode[outN].u32Again = a;
-            clean.astRouteExNode[outN].u32Dgain = d;
-            clean.astRouteExNode[outN].u32IspDgain = g;
-            outN++;
-            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
-        }
-        clean.u32TotalNum = (HI_U32)outN;
-
-        if (outN >= 2) {
-            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%d nodes, dropped %d)\n", outN, total - outN);
+        // We already built a sanitized table as `clean` above; just retry once more
+        // to keep previous behavior/logs consistent.
+        if ((int)clean.u32TotalNum >= 2) {
+            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%u nodes, dropped %d)\n",
+                (unsigned)clean.u32TotalNum, total - (int)clean.u32TotalNum);
             int ret2 = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
             if (!ret2) {
                 route = clean;
@@ -3614,17 +3701,18 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             } else {
                 HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx retry failed with %#x\n", ret2);
                 {
-                    unsigned int t0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32IntTime : 0;
-                    unsigned int a0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32Again : 0;
-                    unsigned int d0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32Dgain : 0;
-                    unsigned int g0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32IspDgain : 0;
-                    unsigned int tl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32IntTime : 0;
-                    unsigned int al = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32Again : 0;
-                    unsigned int dl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32Dgain : 0;
-                    unsigned int gl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32IspDgain : 0;
+                    int outN2 = (int)clean.u32TotalNum;
+                    unsigned int t0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32IntTime : 0;
+                    unsigned int a0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32Again : 0;
+                    unsigned int d0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32Dgain : 0;
+                    unsigned int g0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32IspDgain : 0;
+                    unsigned int tl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32IntTime : 0;
+                    unsigned int al = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32Again : 0;
+                    unsigned int dl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32Dgain : 0;
+                    unsigned int gl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32IspDgain : 0;
                     HAL_WARNING("v4_iq",
-                        "AE route-ex reject dump (sanitized): outN=%d first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u}\n",
-                        outN, t0, a0, d0, g0, tl, al, dl, gl);
+                        "AE route-ex reject dump (sanitized): outN=%d exp=[%u..%u] first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u}\n",
+                        outN2, (unsigned)exp_min, (unsigned)exp_max, t0, a0, d0, g0, tl, al, dl, gl);
                 }
                 ret = ret2;
             }
@@ -3653,14 +3741,15 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetAERouteAttrEx(pipe, &rb);
         if (!gr && rb.u32TotalNum > 0) {
-            HAL_INFO("v4_iq", "AE route-ex: applied (%u nodes) first={t=%u again=%u dgain=%u ispd=%u}\n",
+            HAL_INFO("v4_iq", "AE route-ex: applied (%s %u nodes) first={t=%u again=%u dgain=%u ispd=%u}\n",
+                sec,
                 (unsigned)rb.u32TotalNum,
                 (unsigned)rb.astRouteExNode[0].u32IntTime,
                 (unsigned)rb.astRouteExNode[0].u32Again,
                 (unsigned)rb.astRouteExNode[0].u32Dgain,
                 (unsigned)rb.astRouteExNode[0].u32IspDgain);
         } else {
-            HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
+            HAL_INFO("v4_iq", "AE route-ex: applied (%s %d nodes)\n", sec, total);
         }
     }
 
@@ -3673,6 +3762,8 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
             HI_U32 t = route.astRouteExNode[i].u32IntTime;
             if (t == 0) continue;
+            if (exp_min && t < exp_min) t = exp_min;
+            if (exp_max && t > exp_max) continue;
             if (outN > 0 && t <= prevT) continue;
             prevT = t;
             r.astRouteNode[outN].u32IntTime = t;
@@ -3680,6 +3771,9 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
                 route.astRouteExNode[i].u32Again,
                 route.astRouteExNode[i].u32Dgain,
                 route.astRouteExNode[i].u32IspDgain);
+            if (r.astRouteNode[outN].u32SysGain < 0x400) r.astRouteNode[outN].u32SysGain = 0x400;
+            if (sysgain_max >= 0x400 && r.astRouteNode[outN].u32SysGain > sysgain_max)
+                r.astRouteNode[outN].u32SysGain = sysgain_max;
             outN++;
             if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
         }
@@ -4352,6 +4446,17 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
             for (int i = 0; i < n; i++)
                 nr.stAuto.au16CoringWgt[i] = (HI_U16)tmp[i];
         }
+    }
+
+    // Safety clamp: some SDKs reject out-of-range values with HI_ERR_ISP_ILLEGAL_PARAM.
+    // Ranges from hi_comm_isp.h:
+    // - FineStr:   [0x0, 0x80]
+    // - CoringWgt: [0x0, 0xc80]
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        if (nr.stAuto.au8FineStr[i] > 0x80)
+            nr.stAuto.au8FineStr[i] = 0x80;
+        if (nr.stAuto.au16CoringWgt[i] > 0x0C80)
+            nr.stAuto.au16CoringWgt[i] = 0x0C80;
     }
 
     ret = v4_isp.fnSetNRAttr(pipe, &nr);

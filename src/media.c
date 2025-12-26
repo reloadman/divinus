@@ -458,7 +458,7 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
         HAL_WARNING("media", "SpeexDSP preprocess is enabled but channels=%u; only mono is supported, bypassing.\n",
             channels);
         return;
-    }
+        }
 
     unsigned int frame_size = app_config.audio_speex_frame_size;
     if (frame_size == 0)
@@ -518,7 +518,7 @@ static void speex_aac_init_from_config(unsigned int srate, unsigned int channels
         speex_preprocess_state_destroy(st);
         pcm_ring_free(&speex_aac.in);
         return;
-    }
+            }
 
     speex_aac.st = st;
     speex_aac.srate = srate;
@@ -630,9 +630,9 @@ static void *aenc_thread_aac(void) {
         pthread_mutex_unlock(&aencMtx);
 
         if (app_config.mp4_enable && (server_mp4_clients > 0 || recordOn)) {
-            pthread_mutex_lock(&mp4Mtx);
-            mp4_ingest_audio((char *)aac_send_buf, frame_len);
-            pthread_mutex_unlock(&mp4Mtx);
+        pthread_mutex_lock(&mp4Mtx);
+        mp4_ingest_audio((char *)aac_send_buf, frame_len);
+        pthread_mutex_unlock(&mp4Mtx);
         }
 
         if (app_config.rtsp_enable)
@@ -664,7 +664,7 @@ int save_audio_stream(hal_audframe *frame) {
         send_pcm_to_client(frame);
 
     // MP3 support removed; AAC-only.
-    return save_audio_stream_aac(frame);
+        return save_audio_stream_aac(frame);
 }
 
 static int save_audio_stream_aac(hal_audframe *frame) {
@@ -782,7 +782,7 @@ int save_video_stream(char index, hal_vidstream *stream) {
             if (do_mp4) {
                 pthread_mutex_lock(&mp4Mtx);
                 if (have_mp4_clients)
-                    send_mp4_to_client(index, stream, isH265);
+                send_mp4_to_client(index, stream, isH265);
                 if (recordOn)
                     send_mp4_to_record(stream, isH265);
                 pthread_mutex_unlock(&mp4Mtx);
@@ -803,8 +803,8 @@ int save_video_stream(char index, hal_vidstream *stream) {
 
             if (app_config.stream_enable && udp_stream_has_clients())
                 for (int i = 0; i < stream->count; i++)
-                    udp_stream_send_nal(stream->pack[i].data + stream->pack[i].offset,
-                        stream->pack[i].length - stream->pack[i].offset,
+                    udp_stream_send_nal(stream->pack[i].data + stream->pack[i].offset, 
+                        stream->pack[i].length - stream->pack[i].offset, 
                         stream->pack[i].nalu[0].type == NalUnitType_CodedSliceIdr, isH265);
             
             break;
@@ -835,7 +835,7 @@ int save_video_stream(char index, hal_vidstream *stream) {
                     // send_mjpeg_to_client appends "\r\n" in-place; ensure capacity for 2 bytes once.
                     if (buf_size + 2 > mjpeg_buf_size)
                         mjpeg_buf = realloc(mjpeg_buf, mjpeg_buf_size = buf_size + 2);
-                    send_mjpeg_to_client(index, mjpeg_buf, buf_size);
+                send_mjpeg_to_client(index, mjpeg_buf, buf_size);
                 }
             }
             break;
@@ -1336,20 +1336,20 @@ int enable_audio(void) {
 
     (void)audio_ring_init(&aacBuf, AUDIO_ENC_BUF_MAX);
     aacEnc = faacEncOpen(app_config.audio_srate, aacChannels,
-        &aacInputSamples, &aacMaxOutputBytes);
-    if (!aacEnc) {
-        HAL_ERROR("media", "AAC encoder initialization failed!\n");
-        return EXIT_FAILURE;
-    }
-    HAL_INFO("media", "faacEncOpen ok: inputSamples=%lu maxOut=%lu\n",
-        aacInputSamples, aacMaxOutputBytes);
+            &aacInputSamples, &aacMaxOutputBytes);
+        if (!aacEnc) {
+            HAL_ERROR("media", "AAC encoder initialization failed!\n");
+            return EXIT_FAILURE;
+        }
+        HAL_INFO("media", "faacEncOpen ok: inputSamples=%lu maxOut=%lu\n",
+            aacInputSamples, aacMaxOutputBytes);
 
-    faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
-    cfg->aacObjectType = LOW;
-    cfg->mpegVersion = MPEG4;
+        faacEncConfigurationPtr cfg = faacEncGetCurrentConfiguration(aacEnc);
+        cfg->aacObjectType = LOW;
+        cfg->mpegVersion = MPEG4;
     cfg->useTns = app_config.audio_aac_tns ? 1 : 0;
-    cfg->allowMidside = aacChannels > 1;
-    cfg->outputFormat = 0; // raw AAC-LC frames
+        cfg->allowMidside = aacChannels > 1;
+        cfg->outputFormat = 0; // raw AAC-LC frames
     // FAAC supports two modes:
     // - bitrate mode: bitRate > 0 (per-channel), quantqual == 0
     // - quality/VBR mode: quantqual > 0, bitRate == 0
@@ -1361,24 +1361,24 @@ int enable_audio(void) {
         cfg->quantqual = 0;
         cfg->bitRate = app_config.audio_bitrate * 1000 / aacChannels;
     }
-    cfg->inputFormat = FAAC_INPUT_16BIT;
-    if (!faacEncSetConfiguration(aacEnc, cfg)) {
-        HAL_ERROR("media", "AAC encoder configuration failed!\n");
-        return EXIT_FAILURE;
-    }
+        cfg->inputFormat = FAAC_INPUT_16BIT;
+        if (!faacEncSetConfiguration(aacEnc, cfg)) {
+            HAL_ERROR("media", "AAC encoder configuration failed!\n");
+            return EXIT_FAILURE;
+        }
 
     aacPcm = calloc(aacInputSamples * aacChannels, sizeof(int16_t));
-    aacOut = malloc(aacMaxOutputBytes);
+        aacOut = malloc(aacMaxOutputBytes);
     if (!pcm_ring_init(&aacPcmStash, (uint32_t)aacInputSamples * aacChannels * 4U)) {
         HAL_ERROR("media", "AAC PCM stash ring allocation failed!\n");
         return EXIT_FAILURE;
     }
     if (!aacPcm || !aacOut) {
-        HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
-        return EXIT_FAILURE;
-    }
+            HAL_ERROR("media", "AAC encoder buffer allocation failed!\n");
+            return EXIT_FAILURE;
+        }
     pcm_ring_reset(&aacPcmStash);
-    HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
+        HAL_INFO("media", "AAC buffers allocated: pcm=%p out=%p\n", (void*)aacPcm, (void*)aacOut);
 
 #if defined(DIVINUS_WITH_SPEEXDSP)
     // Optional SpeexDSP preprocess for AAC PCM path (denoise/AGC/VAD).
