@@ -3788,6 +3788,27 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after sanitize, skipping\n");
             // continue to fallback below
         }
+
+        // If it still fails, determine whether this SDK supports route tables at all.
+        // Some GK builds export the symbols but always return ILLEGAL_PARAM.
+        if (ret && v4_isp.fnGetAERouteAttrEx && v4_isp.fnSetAERouteAttrEx) {
+            ISP_AE_ROUTE_EX_S cur;
+            memset(&cur, 0, sizeof(cur));
+            int gr = v4_isp.fnGetAERouteAttrEx(pipe, &cur);
+            if (!gr) {
+                int sr = v4_isp.fnSetAERouteAttrEx(pipe, &cur);
+                if (sr) {
+                    pthread_mutex_lock(&_v4_iq_dyn.lock);
+                    if (!_v4_iq_dyn.aerouteex_disabled) {
+                        _v4_iq_dyn.aerouteex_disabled = HI_TRUE;
+                        HAL_WARNING("v4_iq",
+                            "AE route-ex: SDK rejects even noop SetAERouteAttrEx(GetAERouteAttrEx) (%#x); disabling route tables\n",
+                            sr);
+                    }
+                    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                }
+            }
+        }
     } else {
         // Ensure AE is configured to actually use the RouteEx table.
         // Some SDKs require bAERouteExValid=1 in ExposureAttr.
@@ -3870,6 +3891,20 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
                 return EXIT_SUCCESS;
             } else {
                 HAL_WARNING("v4_iq", "AE route-ex: fallback HI_MPI_ISP_SetAERouteAttr failed with %#x\n", rret);
+                // Same check for non-Ex route: noop Set(Get()).
+                if (v4_isp.fnGetAERouteAttr) {
+                    ISP_AE_ROUTE_S cur;
+                    memset(&cur, 0, sizeof(cur));
+                    int gr = v4_isp.fnGetAERouteAttr(pipe, &cur);
+                    if (!gr) {
+                        int sr = v4_isp.fnSetAERouteAttr(pipe, &cur);
+                        if (sr) {
+                            HAL_WARNING("v4_iq",
+                                "AE route: SDK rejects even noop SetAERouteAttr(GetAERouteAttr) (%#x); route tables unsupported\n",
+                                sr);
+                        }
+                    }
+                }
             }
         }
     }
