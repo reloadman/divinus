@@ -1191,7 +1191,8 @@ void respond_request(http_request_t *req) {
             const int old_isp_exptime_low = app_config.isp_exptime_low;
             const int old_ir_sensor_pin = app_config.ir_sensor_pin;
             char old_adc_device[sizeof(app_config.adc_device)];
-            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
+            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device) - 1);
+            old_adc_device[sizeof(old_adc_device) - 1] = '\0';
 
             bool enable_seen = false;
             bool enable_value = app_config.night_mode_enable;
@@ -1216,7 +1217,8 @@ void respond_request(http_request_t *req) {
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
                         app_config.night_mode_enable = enable_value = 0;
                 } else if (EQUALS(key, "adc_device")) {
-                    strncpy(app_config.adc_device, value, sizeof(app_config.adc_device));
+                    strncpy(app_config.adc_device, value, sizeof(app_config.adc_device) - 1);
+                    app_config.adc_device[sizeof(app_config.adc_device) - 1] = '\0';
                 } else if (EQUALS(key, "adc_threshold")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)

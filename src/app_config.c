@@ -1,6 +1,7 @@
 #include "app_config.h"
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <strings.h>
 #include <libfyaml.h>
@@ -318,6 +319,155 @@ void timefmt_repair_runtime(void) {
     }
 }
 
+// Best-effort repair for configs that became unparseable due to malformed UTF-8,
+// typically caused by writing garbage into a double-quoted scalar (time_format).
+// This rewrites the file to ASCII (replacing non-ASCII bytes with '?') and forces
+// time_format to a sane default. Returns 0 on success, -1 on failure.
+static int repair_divinus_yaml_time_format(const char *conf_path) {
+    if (!conf_path) return -1;
+
+    FILE *in = fopen(conf_path, "rb");
+    if (!in) return -1;
+
+    if (fseek(in, 0, SEEK_END) != 0) { fclose(in); return -1; }
+    long sz_l = ftell(in);
+    if (sz_l < 0 || sz_l > (1024 * 1024)) { fclose(in); return -1; } // 1MB safety cap
+    size_t sz = (size_t)sz_l;
+    if (fseek(in, 0, SEEK_SET) != 0) { fclose(in); return -1; }
+
+    unsigned char *buf = (unsigned char *)malloc(sz ? sz : 1);
+    if (!buf) { fclose(in); return -1; }
+    if (sz && fread(buf, 1, sz, in) != sz) { free(buf); fclose(in); return -1; }
+    fclose(in);
+
+    // Output can be slightly larger due to replacement line.
+    unsigned char *out = (unsigned char *)malloc(sz + 256);
+    if (!out) { free(buf); return -1; }
+    size_t o = 0;
+
+    size_t i = 0;
+    while (i < sz) {
+        size_t line_start = i;
+        size_t line_end = i;
+        while (line_end < sz && buf[line_end] != '\n') line_end++;
+        size_t nl_end = (line_end < sz && buf[line_end] == '\n') ? (line_end + 1) : line_end;
+
+        // Find key at line start (after indent).
+        size_t k = line_start;
+        while (k < line_end && (buf[k] == ' ' || buf[k] == '\t')) k++;
+
+        const char key[] = "time_format";
+        const size_t key_len = sizeof(key) - 1;
+        bool is_timefmt = false;
+        if (k + key_len < line_end && memcmp(buf + k, key, key_len) == 0) {
+            size_t p = k + key_len;
+            while (p < line_end && (buf[p] == ' ' || buf[p] == '\t')) p++;
+            if (p < line_end && buf[p] == ':')
+                is_timefmt = true;
+        }
+
+        if (is_timefmt) {
+            // Preserve indentation (ASCII-only).
+            for (size_t j = line_start; j < k && o + 1 < sz + 256; j++) {
+                unsigned char c = buf[j];
+                if (c == '\t' || c == ' ')
+                    out[o++] = c;
+                else
+                    out[o++] = ' ';
+            }
+
+            // Write fixed line.
+            const char *fixed = "time_format: \"" DEF_TIMEFMT "\"";
+            for (const char *s = fixed; *s && o + 1 < sz + 256; s++)
+                out[o++] = (unsigned char)*s;
+            if (o + 1 < sz + 256)
+                out[o++] = '\n';
+
+            // Skip original scalar; handle broken multi-line quoted values.
+            size_t p = k + key_len;
+            while (p < line_end && buf[p] != ':') p++;
+            if (p < line_end) p++; // after ':'
+            while (p < line_end && (buf[p] == ' ' || buf[p] == '\t')) p++;
+
+            bool started_quote = (p < line_end && buf[p] == '"');
+            if (started_quote) {
+                // Look for closing quote on this line.
+                bool esc = false, closed = false;
+                for (size_t q = p + 1; q < line_end; q++) {
+                    unsigned char c = buf[q];
+                    if (esc) { esc = false; continue; }
+                    if (c == '\\') { esc = true; continue; }
+                    if (c == '"') { closed = true; break; }
+                }
+
+                if (!closed) {
+                    // Skip following lines until we find an unescaped closing quote.
+                    i = nl_end;
+                    bool esc2 = false;
+                    while (i < sz) {
+                        unsigned char c = buf[i++];
+                        if (c == '\n') esc2 = false; // reset at line boundaries
+                        if (esc2) { esc2 = false; continue; }
+                        if (c == '\\') { esc2 = true; continue; }
+                        if (c == '"') {
+                            // Skip until end of line after closing quote.
+                            while (i < sz && buf[i] != '\n') i++;
+                            if (i < sz && buf[i] == '\n') i++;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Normal (single-line) case: just skip this line.
+            i = nl_end;
+            continue;
+        }
+
+        // Copy line, but force ASCII to avoid malformed UTF-8 elsewhere.
+        for (size_t j = line_start; j < nl_end && o + 1 < sz + 256; j++) {
+            unsigned char c = buf[j];
+            if (c == '\n' || c == '\r' || c == '\t') {
+                out[o++] = c;
+            } else if (c >= 0x20 && c < 0x80) {
+                out[o++] = c;
+            } else {
+                out[o++] = '?';
+            }
+        }
+
+        i = nl_end;
+    }
+
+    free(buf);
+
+    // Atomic replace.
+    char tmp_template[PATH_MAX];
+    snprintf(tmp_template, sizeof(tmp_template), "%s.fixXXXXXX", conf_path);
+    int tfd = mkstemp(tmp_template);
+    if (tfd < 0) { free(out); return -1; }
+    FILE *of = fdopen(tfd, "wb");
+    if (!of) { close(tfd); remove(tmp_template); free(out); return -1; }
+
+    size_t wrote = fwrite(out, 1, o, of);
+    free(out);
+    int flush_rc = fflush(of);
+    int fsync_rc = fsync(fileno(of));
+    int close_rc = fclose(of);
+    if (wrote != o || flush_rc || fsync_rc || close_rc) {
+        remove(tmp_template);
+        return -1;
+    }
+
+    if (rename(tmp_template, conf_path) != 0) {
+        remove(tmp_template);
+        return -1;
+    }
+
+    return 0;
+}
+
 int save_app_config(void) {
     const char *conf_path = DIVINUS_CONFIG_PATH;
 
@@ -326,6 +476,8 @@ int save_app_config(void) {
     timefmt_repair_runtime();
     if (EMPTY(timefmt_cfg))
         timefmt_set(DEF_TIMEFMT);
+    // Even if memory corruption touched timefmt_cfg, re-sanitize right before saving.
+    timefmt_set(timefmt_cfg);
 
     // Atomic save: write into a temp file in the same directory, then rename over target.
     // This avoids partially-written configs and removes the need for persistent *.bak files.
@@ -734,7 +886,6 @@ enum ConfigError parse_app_config(void) {
     // Prefer grayscale OSD at night; this is independent from runtime timefmt handling.
     // (Field renamed by user; keep defaults aligned.)
     app_config.jpeg_grayscale_night = true;
-    app_config.jpeg_grayscale_night = true;
     app_config.jpeg_fps = 15;
     app_config.jpeg_width = 640;
     app_config.jpeg_height = 480;
@@ -769,8 +920,15 @@ enum ConfigError parse_app_config(void) {
     const char *conf_path = DIVINUS_CONFIG_PATH;
     struct fy_document *fyd = fy_document_build_from_file(NULL, conf_path);
     if (!fyd) {
-        HAL_ERROR("app_config", "Failed to parse YAML config '%s'\n", conf_path);
-        return -1;
+        // Config may be corrupted (e.g. malformed UTF-8 in time_format). Try to repair and retry once.
+        HAL_WARNING("app_config", "Failed to parse YAML config '%s' - attempting repair\n", conf_path);
+        if (repair_divinus_yaml_time_format(conf_path) == 0) {
+            fyd = fy_document_build_from_file(NULL, conf_path);
+        }
+        if (!fyd) {
+            HAL_ERROR("app_config", "Failed to parse YAML config '%s'\n", conf_path);
+            return -1;
+        }
     }
 
     enum ConfigError err = CONFIG_OK;

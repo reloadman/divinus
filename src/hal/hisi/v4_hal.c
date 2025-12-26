@@ -3523,6 +3523,51 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x (sanitizing & retry)\n", ret);
+        {
+            // Dump a compact summary to understand what the SDK rejects.
+            // Keep it small: first/last nodes and monotonicity hint.
+            unsigned int t0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32IntTime : 0;
+            unsigned int a0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32Again : 0;
+            unsigned int d0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32Dgain : 0;
+            unsigned int g0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32IspDgain : 0;
+            unsigned int tl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32IntTime : 0;
+            unsigned int al = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32Again : 0;
+            unsigned int dl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32Dgain : 0;
+            unsigned int gl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32IspDgain : 0;
+
+            int nonmono = -1;
+            HI_U32 prev = 0;
+            for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+                HI_U32 t = route.astRouteExNode[i].u32IntTime;
+                if (t == 0) continue;
+                if (prev && t <= prev) { nonmono = i; break; }
+                prev = t;
+            }
+
+            HAL_WARNING("v4_iq",
+                "AE route-ex reject dump: total=%d nInts=%d nAgain=%d nDgain=%d nIspDgain=%d "
+                "first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u} nonmono_idx=%d\n",
+                total, nInts, nAgain, nDgain, nIspDgain, t0, a0, d0, g0, tl, al, dl, gl, nonmono);
+            for (int i = 0; i < total && i < 4; i++) {
+                HAL_WARNING("v4_iq",
+                    "AE route-ex node[%d]={t=%u again=%u dgain=%u ispd=%u}\n",
+                    i,
+                    (unsigned)route.astRouteExNode[i].u32IntTime,
+                    (unsigned)route.astRouteExNode[i].u32Again,
+                    (unsigned)route.astRouteExNode[i].u32Dgain,
+                    (unsigned)route.astRouteExNode[i].u32IspDgain);
+            }
+            if (total > 4) {
+                int i = total - 1;
+                HAL_WARNING("v4_iq",
+                    "AE route-ex node[last=%d]={t=%u again=%u dgain=%u ispd=%u}\n",
+                    i,
+                    (unsigned)route.astRouteExNode[i].u32IntTime,
+                    (unsigned)route.astRouteExNode[i].u32Again,
+                    (unsigned)route.astRouteExNode[i].u32Dgain,
+                    (unsigned)route.astRouteExNode[i].u32IspDgain);
+            }
+        }
 
         // Some SDKs require strictly increasing exposure time and valid gain ranges.
         // Build a sanitized table and retry once.
@@ -3568,6 +3613,19 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
                 ret = 0;
             } else {
                 HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx retry failed with %#x\n", ret2);
+                {
+                    unsigned int t0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32IntTime : 0;
+                    unsigned int a0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32Again : 0;
+                    unsigned int d0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32Dgain : 0;
+                    unsigned int g0 = (outN > 0) ? (unsigned)clean.astRouteExNode[0].u32IspDgain : 0;
+                    unsigned int tl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32IntTime : 0;
+                    unsigned int al = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32Again : 0;
+                    unsigned int dl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32Dgain : 0;
+                    unsigned int gl = (outN > 0) ? (unsigned)clean.astRouteExNode[outN - 1].u32IspDgain : 0;
+                    HAL_WARNING("v4_iq",
+                        "AE route-ex reject dump (sanitized): outN=%d first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u}\n",
+                        outN, t0, a0, d0, g0, tl, al, dl, gl);
+                }
                 ret = ret2;
             }
         } else {
@@ -4299,6 +4357,18 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
     ret = v4_isp.fnSetNRAttr(pipe, &nr);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetNRAttr failed with %#x\n", ret);
+        // Dump a compact view of what we attempted to apply.
+        HAL_WARNING("v4_iq",
+            "NR reject dump: sec=%s en=%d opType=%d fine[0..3]=%u,%u,%u,%u coring[0..3]=%u,%u,%u,%u\n",
+            sec, (int)nr.bEnable, (int)nr.enOpType,
+            (unsigned)nr.stAuto.au8FineStr[0],
+            (unsigned)nr.stAuto.au8FineStr[1],
+            (unsigned)nr.stAuto.au8FineStr[2],
+            (unsigned)nr.stAuto.au8FineStr[3],
+            (unsigned)nr.stAuto.au16CoringWgt[0],
+            (unsigned)nr.stAuto.au16CoringWgt[1],
+            (unsigned)nr.stAuto.au16CoringWgt[2],
+            (unsigned)nr.stAuto.au16CoringWgt[3]);
     } else {
         ISP_NR_ATTR_S rb;
         memset(&rb, 0, sizeof(rb));
