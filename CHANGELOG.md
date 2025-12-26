@@ -1,20 +1,6 @@
 # Divinus fork — technical changelog (for upstream developers)
 
-This document describes **what changed in this fork** compared to the original upstream codebase located at:
-
-- **Upstream baseline (local path)**: `/Users/romannaumenko/Work/Faceter/OpenIPC/orig_divinus/divinus/`
-- **This fork (current branch working tree)**: `/Users/romannaumenko/Work/Faceter/OpenIPC/divinus/`
-
-Scope/constraints:
-
-- Only **current working tree code** was inspected (no git history; no assumptions).
-- Diff excludes `.git/`, `build/` and `.DS_Store`.
-
-High-level inventory (files):
-
-- **Added**: 1191
-- **Removed**: 1 (`divinus.yaml`)
-- **Modified**: 65 (mostly `src/*` + build + docs)
+This document describes **what changed in this fork** compared to the original upstream codebase located at https://github.com/OpenIPC/divinus/
 
 ## Summary of major functional changes
 
