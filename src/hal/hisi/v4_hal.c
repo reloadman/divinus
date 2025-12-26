@@ -3627,6 +3627,10 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         clean.astRouteExNode[outN].u32Again = a;
         clean.astRouteExNode[outN].u32Dgain = d;
         clean.astRouteExNode[outN].u32IspDgain = g;
+        // Some SDKs validate iris fields even if Piris isn't used.
+        // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
+        clean.astRouteExNode[outN].enIrisFNO = (ISP_IRIS_F_NO_E)0;
+        clean.astRouteExNode[outN].u32IrisFNOLin = 0x400;
         outN++;
         if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
     }
@@ -3774,6 +3778,9 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             if (r.astRouteNode[outN].u32SysGain < 0x400) r.astRouteNode[outN].u32SysGain = 0x400;
             if (sysgain_max >= 0x400 && r.astRouteNode[outN].u32SysGain > sysgain_max)
                 r.astRouteNode[outN].u32SysGain = sysgain_max;
+            // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
+            r.astRouteNode[outN].enIrisFNO = (ISP_IRIS_F_NO_E)0;
+            r.astRouteNode[outN].u32IrisFNOLin = 0x400;
             outN++;
             if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
         }
