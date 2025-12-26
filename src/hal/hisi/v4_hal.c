@@ -3630,9 +3630,14 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         clean.astRouteExNode[outN].u32Dgain = d;
         clean.astRouteExNode[outN].u32IspDgain = g;
         // Some SDKs validate iris fields even if Piris isn't used.
+        // Prefer copying whatever firmware currently reports to avoid "magic constants".
+        clean.astRouteExNode[outN].enIrisFNO = route.astRouteExNode[i].enIrisFNO;
+        clean.astRouteExNode[outN].u32IrisFNOLin = route.astRouteExNode[i].u32IrisFNOLin;
         // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
-        clean.astRouteExNode[outN].enIrisFNO = (ISP_IRIS_F_NO_E)0;
-        clean.astRouteExNode[outN].u32IrisFNOLin = 0x400;
+        if (clean.astRouteExNode[outN].u32IrisFNOLin < 0x1 || clean.astRouteExNode[outN].u32IrisFNOLin > 0x400)
+            clean.astRouteExNode[outN].u32IrisFNOLin = 0x400;
+        if ((int)clean.astRouteExNode[outN].enIrisFNO < 0 || (int)clean.astRouteExNode[outN].enIrisFNO >= (int)ISP_IRIS_F_NO_BUTT)
+            clean.astRouteExNode[outN].enIrisFNO = ISP_IRIS_F_NO_1_0;
         outN++;
         if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
     }
@@ -3642,6 +3647,56 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after clamp (%s outN=%d exp=[%u..%u]), skipping\n",
             sec, outN, (unsigned)exp_min, (unsigned)exp_max);
         return EXIT_SUCCESS;
+    }
+
+    // Some firmwares validate route nodes against current auto ranges.
+    // Ensure ExposureAttr ranges cover the route's max values (best-effort).
+    if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+        ISP_EXPOSURE_ATTR_S exp;
+        memset(&exp, 0, sizeof(exp));
+        if (v4_isp.fnGetExposureAttr(pipe, &exp) == 0) {
+            HI_U32 need_again = 0, need_dgain = 0, need_ispdgain = 0;
+            HI_U32 need_t = 0;
+            for (int i = 0; i < outN; i++) {
+                HI_U32 t = clean.astRouteExNode[i].u32IntTime;
+                HI_U32 a = clean.astRouteExNode[i].u32Again;
+                HI_U32 d = clean.astRouteExNode[i].u32Dgain;
+                HI_U32 g = clean.astRouteExNode[i].u32IspDgain;
+                if (t > need_t) need_t = t;
+                if (a > need_again) need_again = a;
+                if (d > need_dgain) need_dgain = d;
+                if (g > need_ispdgain) need_ispdgain = g;
+            }
+
+            HI_BOOL changed = HI_FALSE;
+            if (need_t > 0 && exp.stAuto.stExpTimeRange.u32Max < need_t) {
+                exp.stAuto.stExpTimeRange.u32Max = need_t;
+                changed = HI_TRUE;
+            }
+            if (need_again > 0 && exp.stAuto.stAGainRange.u32Max < need_again) {
+                exp.stAuto.stAGainRange.u32Max = need_again;
+                changed = HI_TRUE;
+            }
+            if (need_dgain > 0 && exp.stAuto.stDGainRange.u32Max < need_dgain) {
+                exp.stAuto.stDGainRange.u32Max = need_dgain;
+                changed = HI_TRUE;
+            }
+            if (need_ispdgain > 0 && exp.stAuto.stISPDGainRange.u32Max < need_ispdgain) {
+                exp.stAuto.stISPDGainRange.u32Max = need_ispdgain;
+                changed = HI_TRUE;
+            }
+
+            if (changed) {
+                int sr = v4_isp.fnSetExposureAttr(pipe, &exp);
+                if (sr) {
+                    HAL_WARNING("v4_iq", "AE route-ex: SetExposureAttr pre-adjust failed with %#x (need t=%u again=%u dgain=%u ispd=%u)\n",
+                        sr, (unsigned)need_t, (unsigned)need_again, (unsigned)need_dgain, (unsigned)need_ispdgain);
+                } else {
+                    HAL_INFO("v4_iq", "AE route-ex: adjusted ranges (tmax=%u againMax=%u dgainMax=%u ispdMax=%u)\n",
+                        (unsigned)need_t, (unsigned)need_again, (unsigned)need_dgain, (unsigned)need_ispdgain);
+                }
+            }
+        }
     }
 
     ret = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
@@ -3781,8 +3836,12 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             if (sysgain_max >= 0x400 && r.astRouteNode[outN].u32SysGain > sysgain_max)
                 r.astRouteNode[outN].u32SysGain = sysgain_max;
             // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
-            r.astRouteNode[outN].enIrisFNO = (ISP_IRIS_F_NO_E)0;
-            r.astRouteNode[outN].u32IrisFNOLin = 0x400;
+            r.astRouteNode[outN].enIrisFNO = route.astRouteExNode[i].enIrisFNO;
+            r.astRouteNode[outN].u32IrisFNOLin = route.astRouteExNode[i].u32IrisFNOLin;
+            if (r.astRouteNode[outN].u32IrisFNOLin < 0x1 || r.astRouteNode[outN].u32IrisFNOLin > 0x400)
+                r.astRouteNode[outN].u32IrisFNOLin = 0x400;
+            if ((int)r.astRouteNode[outN].enIrisFNO < 0 || (int)r.astRouteNode[outN].enIrisFNO >= (int)ISP_IRIS_F_NO_BUTT)
+                r.astRouteNode[outN].enIrisFNO = ISP_IRIS_F_NO_1_0;
             outN++;
             if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
         }
