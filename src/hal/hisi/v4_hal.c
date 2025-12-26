@@ -2695,6 +2695,8 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded [ir_dynamic_linear_drc] (%d points)\n", drc_ir.n);
 }
 
+static void v4_iq_apply_ae_route_for_current_mode(int pipe);
+
 static void *v4_iq_dynamic_thread(void *arg) {
     int pipe = (int)(intptr_t)arg;
     usleep(700 * 1000);
@@ -3319,8 +3321,6 @@ static void v4_iq_dyn_update_from_ini(struct IniConfig *ini, int pipe, bool enab
     pthread_mutex_unlock(&_v4_iq_dyn.lock);
     v4_iq_dyn_load_from_ini(ini, enableDynDehaze, enableDynLinearDRC);
 }
-
-static void v4_iq_apply_ae_route_for_current_mode(int pipe);
 
 static void v4_iq_dyn_maybe_start(int pipe) {
     bool need = false;
