@@ -3507,11 +3507,14 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         int gr = v4_isp.fnGetExposureAttr(pipe, &rb);
         if (!gr) {
             HAL_INFO("v4_iq",
-                "AE: applied (runInt=%u routeExValid=%d comp=%u expMax=%u sysGainMax=%u speed=%u histOff=%u histSlope=%u)\n",
+                "AE: applied (runInt=%u routeExValid=%d comp=%u expMax=%u aGainMax=%u dGainMax=%u ispdGainMax=%u sysGainMax=%u speed=%u histOff=%u histSlope=%u)\n",
                 (unsigned)rb.u8AERunInterval,
                 (int)rb.bAERouteExValid,
                 (unsigned)rb.stAuto.u8Compensation,
                 (unsigned)rb.stAuto.stExpTimeRange.u32Max,
+                (unsigned)rb.stAuto.stAGainRange.u32Max,
+                (unsigned)rb.stAuto.stDGainRange.u32Max,
+                (unsigned)rb.stAuto.stISPDGainRange.u32Max,
                 (unsigned)rb.stAuto.stSysGainRange.u32Max,
                 (unsigned)rb.stAuto.u8Speed,
                 (unsigned)rb.stAuto.u8MaxHistOffset,
@@ -3648,6 +3651,10 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             sec, outN, (unsigned)exp_min, (unsigned)exp_max);
         return EXIT_SUCCESS;
     }
+
+    HAL_INFO("v4_iq", "AE route-ex: current ranges exp=[%u..%u] againMax=%u dgainMax=%u ispdMax=%u sysGainMax=%u\n",
+        (unsigned)exp_min, (unsigned)exp_max,
+        (unsigned)again_max, (unsigned)dgain_max, (unsigned)ispdgain_max, (unsigned)sysgain_max);
 
     // Some firmwares validate route nodes against current auto ranges.
     // Ensure ExposureAttr ranges cover the route's max values (best-effort).
