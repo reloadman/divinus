@@ -720,7 +720,14 @@ void *region_thread(void) {
                             const unsigned int cur_area = (unsigned int)cw * (unsigned int)ch;
                             const unsigned int new_area = (unsigned int)bitmap.dim.width * (unsigned int)bitmap.dim.height;
                             const bool need_grow = (bitmap.dim.width > cw) || (bitmap.dim.height > ch);
-                            const bool shrink_big = (new_area * 100u) <= (cur_area * 90u);
+                            // On SigmaStar (i6/i6c/m6) dynamic overlays (ISP debug etc) can vary
+                            // width noticeably, which would otherwise trigger frequent region
+                            // recreation. Prefer "grow-only" sizing there and pad the bitmap.
+                            const bool allow_shrink =
+                                !(plat == HAL_PLATFORM_I6 ||
+                                  plat == HAL_PLATFORM_I6C ||
+                                  plat == HAL_PLATFORM_M6);
+                            const bool shrink_big = allow_shrink && (new_area * 100u) <= (cur_area * 90u);
                             if (need_grow || shrink_big) {
                                 osd_rgn_w[(unsigned char)id] = bitmap.dim.width;
                                 osd_rgn_h[(unsigned char)id] = bitmap.dim.height;

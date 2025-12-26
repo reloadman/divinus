@@ -444,12 +444,7 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     int ret;
     unsigned int h = (unsigned int)((unsigned char)handle + 1); // avoid handle 0
 
-    unsigned int venc_dev = 0;
-    if (i6_venc.fnGetChannelDeviceId(0, &venc_dev) != 0)
-        venc_dev = 0;
-
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC,
-        .device = venc_dev, .channel = 0, .port = _i6_venc_port };
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC, .port = _i6_venc_port };
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
 
@@ -467,20 +462,49 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         regionCurr.size.width != region.size.width) {
         HAL_INFO("i6_rgn", "Parameters are different, recreating "
             "region %d...\n", handle);
-        i6_rgn.fnDetachChannel(h, &dest);
+        // Detach from all channels (mp4/mjpeg can be on different VENC indices).
+        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+            unsigned int dev = 0;
+            if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
+                dev = 0;
+            dest.device = dev;
+            dest.channel = i;
+            i6_rgn.fnDetachChannel(h, &dest);
+        }
         i6_rgn.fnDestroyRegion(h);
         if (ret = i6_rgn.fnCreateRegion(h, &region))
             return ret;
     }
 
-    if (i6_rgn.fnGetChannelConfig(h, &dest, &attribCurr))
+    // Pick a representative enabled/allowed channel for config comparison.
+    int have_ref = 0;
+    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+        if (!i6_state[i].enable) continue;
+        if (!hal_osd_is_allowed_for_channel(&i6_state[i])) continue;
+        unsigned int dev = 0;
+        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
+            dev = 0;
+        dest.device = dev;
+        dest.channel = i;
+        have_ref = 1;
+        break;
+    }
+
+    if (!have_ref || i6_rgn.fnGetChannelConfig(h, &dest, &attribCurr)) {
         HAL_INFO("i6_rgn", "Attaching region %d...\n", handle);
-    else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
+    } else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
         attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
         attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("i6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
-        i6_rgn.fnDetachChannel(h, &dest);
+        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+            unsigned int dev = 0;
+            if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
+                dev = 0;
+            dest.device = dev;
+            dest.channel = i;
+            i6_rgn.fnDetachChannel(h, &dest);
+        }
     }
 
     memset(&attrib, 0, sizeof(attrib));
@@ -492,12 +516,30 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     attrib.osd.bgFgAlpha[0] = bg_opacity;
     attrib.osd.bgFgAlpha[1] = fg_opacity;
 
-    // Attach only to VENC ch0 (SigmaStar i6 overlay path).
-    int rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
-    if (rc) {
-        HAL_ERROR("i6_rgn", "reg%d attach VENC failed (dev=%u ch=%u port=%u rc=%d)\n",
-            handle, dest.device, dest.channel, dest.port, rc);
-        return rc;
+    // Attach to all enabled VENC channels; this matters because startup order can put
+    // MJPEG on ch0 and H26x (RTSP/MP4) on ch1+.
+    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+        unsigned int dev = 0;
+        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
+            dev = 0;
+        dest.device = dev;
+        dest.channel = i;
+
+        if (!i6_state[i].enable) {
+            i6_rgn.fnDetachChannel(h, &dest);
+            continue;
+        }
+        if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
+            i6_rgn.fnDetachChannel(h, &dest);
+            continue;
+        }
+
+        int rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
+        if (rc) {
+            HAL_ERROR("i6_rgn", "reg%d attach VENC failed (dev=%u ch=%u port=%u rc=%d)\n",
+                handle, dest.device, dest.channel, dest.port, rc);
+            // Keep going: other channels might still succeed.
+        }
     }
 
     return EXIT_SUCCESS;
@@ -511,12 +553,15 @@ void i6_region_deinit(void)
 void i6_region_destroy(char handle)
 {
     unsigned int h = (unsigned int)((unsigned char)handle + 1);
-    unsigned int venc_dev = 0;
-    if (i6_venc.fnGetChannelDeviceId(0, &venc_dev) != 0)
-        venc_dev = 0;
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC,
-        .device = venc_dev, .channel = 0, .port = _i6_venc_port };
-    i6_rgn.fnDetachChannel(h, &dest);
+    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC, .port = _i6_venc_port };
+    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+        unsigned int dev = 0;
+        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
+            dev = 0;
+        dest.device = dev;
+        dest.channel = i;
+        i6_rgn.fnDetachChannel(h, &dest);
+    }
     i6_rgn.fnDestroyRegion(h);
 }
 
