@@ -3682,16 +3682,42 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
             continue;
         }
 
-        // Now push the gain-change step at current time (t == prevT).
-        if ((t == prevT) && gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
-            clean.astRouteExNode[outN].u32IntTime = prevT;
-            clean.astRouteExNode[outN].u32Again = a;
-            clean.astRouteExNode[outN].u32Dgain = d;
-            clean.astRouteExNode[outN].u32IspDgain = g;
-            clean.astRouteExNode[outN].enIrisFNO = fno;
-            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
-            outN++;
-            prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+        // Now push gain-change steps at current time (t == prevT).
+        // New GK SDK prints "RouteExCheck node[i]&node[i+1] illegal" when too many params
+        // change at once, so change gains one-by-one: Again -> Dgain -> IspDgain.
+        if ((t == prevT) && gains_changed) {
+            HI_U32 curA = prevA, curD = prevD, curG = prevG;
+            if (a != curA && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = a;
+                clean.astRouteExNode[outN].u32Dgain = curD;
+                clean.astRouteExNode[outN].u32IspDgain = curG;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curA = a;
+            }
+            if (d != curD && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = curA;
+                clean.astRouteExNode[outN].u32Dgain = d;
+                clean.astRouteExNode[outN].u32IspDgain = curG;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curD = d;
+            }
+            if (g != curG && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = curA;
+                clean.astRouteExNode[outN].u32Dgain = curD;
+                clean.astRouteExNode[outN].u32IspDgain = g;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curG = g;
+            }
+            prevA = curA; prevD = curD; prevG = curG; prevFno = fno; prevFnoLin = fnolin;
             if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
         }
     }
@@ -3811,8 +3837,8 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         // We already built a sanitized table as `clean` above; just retry once more
         // to keep previous behavior/logs consistent.
         if ((int)clean.u32TotalNum >= 2) {
-            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%u nodes, dropped %d)\n",
-                (unsigned)clean.u32TotalNum, total - (int)clean.u32TotalNum);
+            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%u nodes, from %d)\n",
+                (unsigned)clean.u32TotalNum, total);
             int ret2 = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
             if (!ret2) {
                 route = clean;
