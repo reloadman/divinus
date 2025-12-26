@@ -30,59 +30,6 @@ char _i6_vpe_chn = 0;
 char _i6_vpe_dev = 0;
 char _i6_vpe_port = 0;
 
-// Track where each region is attached (VPE vs VENC) to detach correctly and allow fallback.
-#define I6_RGN_MAX_HANDLES 16
-static i6_sys_mod _i6_rgn_mod[I6_RGN_MAX_HANDLES] = {
-    [0 ... I6_RGN_MAX_HANDLES - 1] = I6_SYS_MOD_VPE
-};
-
-// Some SigmaStar firmwares reject attaching RGN to VPE (pre-encode).
-// Detect once and stop trying to avoid log spam and accidental failures.
-static int _i6_rgn_vpe_supported = 1;
-static unsigned char _i6_rgn_diag_logged[I6_RGN_MAX_HANDLES] = {0};
-
-static inline i6_sys_mod i6_rgn_mod_get(char handle) {
-    if ((unsigned char)handle < I6_RGN_MAX_HANDLES)
-        return _i6_rgn_mod[(unsigned char)handle];
-    return I6_SYS_MOD_VPE;
-}
-
-static inline void i6_rgn_mod_set(char handle, i6_sys_mod mod) {
-    if ((unsigned char)handle < I6_RGN_MAX_HANDLES)
-        _i6_rgn_mod[(unsigned char)handle] = mod;
-}
-
-static int i6_rgn_fill_dest(i6_sys_bind *dest, i6_sys_mod mod, char port) {
-    if (!dest)
-        return -1;
-    memset(dest, 0, sizeof(*dest));
-    dest->module = mod;
-    switch (mod) {
-        case I6_SYS_MOD_VPE:
-            dest->device = _i6_vpe_dev;
-            dest->channel = _i6_vpe_chn;
-            // Region overlay attaches to VPE output port (fixed), not per-stream index.
-            dest->port = _i6_vpe_port;
-            return 0;
-        case I6_SYS_MOD_VENC: {
-            // VENC device is fixed to 0 on i6; channel selects stream.
-            dest->device = 0;
-            // Attach all OSD regions to main VENC channel 0.
-            dest->channel = 0;
-            dest->port = _i6_venc_port;
-            return 0;
-        }
-        default:
-            return -1;
-    }
-}
-
-static void i6_rgn_detach(char handle, i6_sys_mod mod, char port) {
-    i6_sys_bind dest;
-    if (i6_rgn_fill_dest(&dest, mod, port) == 0)
-        i6_rgn.fnDetachChannel(handle, &dest);
-}
-
 void i6_hal_deinit(void)
 {
     i6_vpe_unload(&i6_vpe);
@@ -447,9 +394,11 @@ int i6_region_create(char handle, hal_rect rect, short opacity)
 int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
 {
     int ret;
-    unsigned int h = (unsigned int)((unsigned char)handle + 1); // avoid handle 0
 
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC, .port = _i6_venc_port };
+    // NOTE: This follows the original (working) SigmaStar i6 RGN attach scheme:
+    // - use handle as-is (no +1)
+    // - attach to module=0 with device/channel being VPE, and port selecting output stream
+    i6_sys_bind dest = { .module = 0, .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     i6_rgn_cnf region, regionCurr;
     i6_rgn_chn attrib, attribCurr;
 
@@ -458,74 +407,36 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     region.size.width = rect.width;
     region.size.height = rect.height;
 
-    if (i6_rgn.fnGetRegionConfig(h, &regionCurr)) {
+    if (i6_rgn.fnGetRegionConfig(handle, &regionCurr)) {
         HAL_INFO("i6_rgn", "Creating region %d...\n", handle);
-        if (ret = i6_rgn.fnCreateRegion(h, &region))
+        if (ret = i6_rgn.fnCreateRegion(handle, &region))
             return ret;
     } else if (regionCurr.type != region.type ||
         regionCurr.size.height != region.size.height || 
         regionCurr.size.width != region.size.width) {
         HAL_INFO("i6_rgn", "Parameters are different, recreating "
             "region %d...\n", handle);
-        // Detach from all targets: VENC channels and VPE output ports.
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-            unsigned int dev = 0;
-            if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
-                dev = 0;
-            dest.device = dev;
-            dest.channel = i;
-            i6_rgn.fnDetachChannel(h, &dest);
+            if (!i6_state[i].enable) continue;
+            dest.port = i;
+            i6_rgn.fnDetachChannel(handle, &dest);
         }
-        {
-            i6_sys_bind vpe = { .module = I6_SYS_MOD_VPE,
-                .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
-            for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-                vpe.port = i; // VPE output port corresponds to encoder channel index
-                i6_rgn.fnDetachChannel(h, &vpe);
-            }
-        }
-        i6_rgn.fnDestroyRegion(h);
-        if (ret = i6_rgn.fnCreateRegion(h, &region))
+        i6_rgn.fnDestroyRegion(handle);
+        if (ret = i6_rgn.fnCreateRegion(handle, &region))
             return ret;
     }
 
-    // Pick a representative created/enabled/allowed channel for config comparison.
-    int have_ref = 0;
-    for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-        if (!i6_state[i].enable) continue;
-        if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) continue; // channel not created yet
-        if (!hal_osd_is_allowed_for_channel(&i6_state[i])) continue;
-        unsigned int dev = 0;
-        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
-            dev = 0;
-        dest.device = dev;
-        dest.channel = i;
-        have_ref = 1;
-        break;
-    }
-
-    if (!have_ref || i6_rgn.fnGetChannelConfig(h, &dest, &attribCurr)) {
+    if (i6_rgn.fnGetChannelConfig(handle, &dest, &attribCurr))
         HAL_INFO("i6_rgn", "Attaching region %d...\n", handle);
-    } else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
+    else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
         attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
         attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("i6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-            unsigned int dev = 0;
-            if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
-                dev = 0;
-            dest.device = dev;
-            dest.channel = i;
-            i6_rgn.fnDetachChannel(h, &dest);
-        }
-        {
-            i6_sys_bind vpe = { .module = I6_SYS_MOD_VPE,
-                .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
-            for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-                vpe.port = i;
-                i6_rgn.fnDetachChannel(h, &vpe);
-            }
+            if (!i6_state[i].enable) continue;
+            dest.port = i;
+            i6_rgn.fnDetachChannel(handle, &dest);
         }
     }
 
@@ -535,117 +446,22 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     attrib.point.y = rect.y;
     attrib.osd.layer = 0;
     attrib.osd.constAlphaOn = 0;
-    attrib.osd.bgFgAlpha[0] = bg_opacity;
-    attrib.osd.bgFgAlpha[1] = fg_opacity;
+    attrib.osd.bgFgAlpha[0] = (unsigned char)bg_opacity;
+    attrib.osd.bgFgAlpha[1] = (unsigned char)fg_opacity;
 
-    // SigmaStar i6 firmwares differ:
-    // - some blend OSD in VENC
-    // - some blend OSD in VPE (pre-encode)
-    // Attach to both to maximize compatibility.
-
-    int any_attached = 0;
-    int last_err = EXIT_FAILURE;
-
-    // One-time diagnostics per handle: helps field debugging when OSD doesn't show up.
-    if ((unsigned char)handle < I6_RGN_MAX_HANDLES && !_i6_rgn_diag_logged[(unsigned char)handle]) {
-        _i6_rgn_diag_logged[(unsigned char)handle] = 1;
-        HAL_INFO("i6_rgn", "reg%d attach diag: vpe_supported=%d\n", handle, _i6_rgn_vpe_supported);
-        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-            unsigned int dev = 0;
-            int dev_rc = i6_venc.fnGetChannelDeviceId(i, &dev);
-            int allowed = (i6_state[i].enable && hal_osd_is_allowed_for_channel(&i6_state[i])) ? 1 : 0;
-            HAL_INFO("i6_rgn", "  ch%d enable=%d payload=%d allowed=%d venc_dev=%u (rc=%d)\n",
-                i, (int)i6_state[i].enable, (int)i6_state[i].payload, allowed, dev, dev_rc);
-        }
-    }
-
-    // 1) Attach to all created/enabled VENC channels (order can put MJPEG on ch0 and H26x on ch1+).
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-        unsigned int dev = 0;
-        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
-            dev = 0;
-        dest.device = dev;
-        dest.channel = i;
-
-        if (!i6_state[i].enable) {
-            i6_rgn.fnDetachChannel(h, &dest);
-            continue;
-        }
-        if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) {
-            // Channel reserved but not fully created yet: avoid "successful" attach that won't render.
-            i6_rgn.fnDetachChannel(h, &dest);
-            continue;
-        }
+        if (!i6_state[i].enable) continue;
+        dest.port = i;
         if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
-            i6_rgn.fnDetachChannel(h, &dest);
+            i6_rgn.fnDetachChannel(handle, &dest);
             continue;
         }
-
-        int rc = i6_rgn.fnAttachChannel(h, &dest, &attrib);
-        if (rc) {
-            HAL_ERROR("i6_rgn", "reg%d attach VENC failed (dev=%u ch=%u port=%u rc=%d)\n",
-                handle, dest.device, dest.channel, dest.port, rc);
-            // Keep going: other channels might still succeed.
-            last_err = rc;
-        } else {
-            any_attached = 1;
-            // Some SigmaStar SDK variants require SetDisplayAttr after attach.
-            int sc = i6_rgn.fnSetChannelConfig(h, &dest, &attrib);
-            if (sc) {
-                HAL_WARNING("i6_rgn", "reg%d SetDisplayAttr(VENC) failed (dev=%u ch=%u port=%u rc=%d)\n",
-                    handle, dest.device, dest.channel, dest.port, sc);
-            }
-        }
+        i6_rgn.fnAttachChannel(handle, &dest, &attrib);
+        // Best-effort: some SDK variants require explicit SetDisplayAttr after attach.
+        i6_rgn.fnSetChannelConfig(handle, &dest, &attrib);
     }
 
-    // 2) Attach to VPE output ports (pre-encode), matching encoder channel index.
-    {
-        if (!_i6_rgn_vpe_supported)
-            goto out;
-        i6_sys_bind vpe = { .module = I6_SYS_MOD_VPE,
-            .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
-        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-            vpe.port = i;
-            if (!i6_state[i].enable) {
-                i6_rgn.fnDetachChannel(h, &vpe);
-                continue;
-            }
-            if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) {
-                i6_rgn.fnDetachChannel(h, &vpe);
-                continue;
-            }
-            if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
-                i6_rgn.fnDetachChannel(h, &vpe);
-                continue;
-            }
-            int rc = i6_rgn.fnAttachChannel(h, &vpe, &attrib);
-            if (rc) {
-                HAL_ERROR("i6_rgn", "reg%d attach VPE failed (dev=%u ch=%u port=%u rc=%d)\n",
-                    handle, vpe.device, vpe.channel, vpe.port, rc);
-                last_err = rc;
-                // Known "NOT SUPPORT" code observed on infinity6b0 builds.
-                // Disable VPE path to avoid repeated failures.
-                if (rc == -1610407933) {
-                    _i6_rgn_vpe_supported = 0;
-                    HAL_WARNING("i6_rgn", "reg%d: VPE RGN attach not supported by this firmware; disabling VPE path\n", handle);
-                    break;
-                }
-            } else {
-                any_attached = 1;
-                int sc = i6_rgn.fnSetChannelConfig(h, &vpe, &attrib);
-                if (sc) {
-                    HAL_WARNING("i6_rgn", "reg%d SetDisplayAttr(VPE) failed (dev=%u ch=%u port=%u rc=%d)\n",
-                        handle, vpe.device, vpe.channel, vpe.port, sc);
-                }
-            }
-        }
-    }
-
-out:
-    // Return success if at least one attach succeeded; otherwise let region.c retry.
-    if (any_attached)
-        return EXIT_SUCCESS;
-    return (last_err != 0) ? last_err : EXIT_FAILURE;
+    return EXIT_SUCCESS;
 }
 
 void i6_region_deinit(void)
@@ -655,25 +471,13 @@ void i6_region_deinit(void)
 
 void i6_region_destroy(char handle)
 {
-    unsigned int h = (unsigned int)((unsigned char)handle + 1);
-    i6_sys_bind dest = { .module = I6_SYS_MOD_VENC, .port = _i6_venc_port };
+    i6_sys_bind dest = { .module = 0, .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-        unsigned int dev = 0;
-        if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
-            dev = 0;
-        dest.device = dev;
-        dest.channel = i;
-        i6_rgn.fnDetachChannel(h, &dest);
+        if (!i6_state[i].enable) continue;
+        dest.port = i;
+        i6_rgn.fnDetachChannel(handle, &dest);
     }
-    {
-        i6_sys_bind vpe = { .module = I6_SYS_MOD_VPE,
-            .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
-        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
-            vpe.port = i;
-            i6_rgn.fnDetachChannel(h, &vpe);
-        }
-    }
-    i6_rgn.fnDestroyRegion(h);
+    i6_rgn.fnDestroyRegion(handle);
 }
 
 void i6_region_init(void)
@@ -684,11 +488,10 @@ void i6_region_init(void)
 
 int i6_region_setbitmap(int handle, hal_bitmap *bitmap)
 {
-    unsigned int h = (unsigned int)((unsigned char)handle + 1);
     i6_rgn_bmp nativeBmp = { .data = bitmap->data, .pixFmt = I6_RGN_PIXFMT_ARGB1555,
         .size.height = bitmap->dim.height, .size.width = bitmap->dim.width };
 
-    return i6_rgn.fnSetBitmap(h, &nativeBmp);
+    return i6_rgn.fnSetBitmap(handle, &nativeBmp);
 }
 
 int i6_sensor_exposure(unsigned int micros)
