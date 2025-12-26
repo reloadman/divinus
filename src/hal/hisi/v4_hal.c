@@ -3601,19 +3601,22 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     // - clamps gains into common ranges + current AE ranges (when available)
     ISP_AE_ROUTE_EX_S clean;
     memset(&clean, 0, sizeof(clean));
-    HI_U32 prevT = 0;
+    HI_U32 prevT = 0, prevA = 0, prevD = 0, prevG = 0;
+    ISP_IRIS_F_NO_E prevFno = ISP_IRIS_F_NO_1_0;
+    HI_U32 prevFnoLin = 0x400;
+    HI_BOOL havePrev = HI_FALSE;
     int outN = 0;
     for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
         HI_U32 t = route.astRouteExNode[i].u32IntTime;
         HI_U32 a = route.astRouteExNode[i].u32Again;
         HI_U32 d = route.astRouteExNode[i].u32Dgain;
         HI_U32 g = route.astRouteExNode[i].u32IspDgain;
+        ISP_IRIS_F_NO_E fno = route.astRouteExNode[i].enIrisFNO;
+        HI_U32 fnolin = route.astRouteExNode[i].u32IrisFNOLin;
 
         if (t == 0) continue;
         if (exp_min && t < exp_min) t = exp_min;
         if (exp_max && t > exp_max) continue; // don't feed firmware out-of-range times
-        if (outN > 0 && t <= prevT) continue;
-        prevT = t;
 
         // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
         if (a < 0x400) a = 0x400;
@@ -3628,21 +3631,69 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         if (dgain_max >= 0x400 && d > dgain_max) d = dgain_max;
         if (ispdgain_max >= 0x400 && g > ispdgain_max) g = ispdgain_max;
 
-        clean.astRouteExNode[outN].u32IntTime = t;
-        clean.astRouteExNode[outN].u32Again = a;
-        clean.astRouteExNode[outN].u32Dgain = d;
-        clean.astRouteExNode[outN].u32IspDgain = g;
-        // Some SDKs validate iris fields even if Piris isn't used.
-        // Prefer copying whatever firmware currently reports to avoid "magic constants".
-        clean.astRouteExNode[outN].enIrisFNO = route.astRouteExNode[i].enIrisFNO;
-        clean.astRouteExNode[outN].u32IrisFNOLin = route.astRouteExNode[i].u32IrisFNOLin;
         // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
-        if (clean.astRouteExNode[outN].u32IrisFNOLin < 0x1 || clean.astRouteExNode[outN].u32IrisFNOLin > 0x400)
-            clean.astRouteExNode[outN].u32IrisFNOLin = 0x400;
-        if ((int)clean.astRouteExNode[outN].enIrisFNO < 0 || (int)clean.astRouteExNode[outN].enIrisFNO >= (int)ISP_IRIS_F_NO_BUTT)
-            clean.astRouteExNode[outN].enIrisFNO = ISP_IRIS_F_NO_1_0;
-        outN++;
-        if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+        if (fnolin < 0x1 || fnolin > 0x400) fnolin = 0x400;
+        if ((int)fno < 0 || (int)fno >= (int)ISP_IRIS_F_NO_BUTT) fno = ISP_IRIS_F_NO_1_0;
+
+        // Some GK SDK builds require "axis-aligned" route changes:
+        // do not change IntTime and gain(s) simultaneously between adjacent nodes.
+        // If we detect a diagonal step (t increases AND any gain changes), split into:
+        //  - (t, prevGains)
+        //  - (t, newGains)
+        if (!havePrev) {
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = a;
+            clean.astRouteExNode[outN].u32Dgain = d;
+            clean.astRouteExNode[outN].u32IspDgain = g;
+            clean.astRouteExNode[outN].enIrisFNO = fno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+            outN++;
+            havePrev = HI_TRUE;
+            prevT = t; prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+            continue;
+        }
+
+        if (t < prevT) continue;
+
+        const HI_BOOL gains_changed = (a != prevA || d != prevD || g != prevG) ? HI_TRUE : HI_FALSE;
+        if (t == prevT && !gains_changed) continue; // exact duplicate
+
+        if (t > prevT && gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = prevA;
+            clean.astRouteExNode[outN].u32Dgain = prevD;
+            clean.astRouteExNode[outN].u32IspDgain = prevG;
+            clean.astRouteExNode[outN].enIrisFNO = prevFno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = prevFnoLin;
+            outN++;
+            prevT = t; // advance time, keep gains
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+        } else if (t > prevT && !gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = a;
+            clean.astRouteExNode[outN].u32Dgain = d;
+            clean.astRouteExNode[outN].u32IspDgain = g;
+            clean.astRouteExNode[outN].enIrisFNO = fno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+            outN++;
+            prevT = t; prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+            continue;
+        }
+
+        // Now push the gain-change step at current time (t == prevT).
+        if ((t == prevT) && gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+            clean.astRouteExNode[outN].u32IntTime = prevT;
+            clean.astRouteExNode[outN].u32Again = a;
+            clean.astRouteExNode[outN].u32Dgain = d;
+            clean.astRouteExNode[outN].u32IspDgain = g;
+            clean.astRouteExNode[outN].enIrisFNO = fno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+            outN++;
+            prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+        }
     }
     clean.u32TotalNum = (HI_U32)outN;
 
@@ -3848,30 +3899,72 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         memset(&r, 0, sizeof(r));
         int outN = 0;
         HI_U32 prevT = 0;
+        HI_U32 prevSG = 0;
+        ISP_IRIS_F_NO_E prevFno = ISP_IRIS_F_NO_1_0;
+        HI_U32 prevFnoLin = 0x400;
+        HI_BOOL havePrev = HI_FALSE;
         for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
             HI_U32 t = route.astRouteExNode[i].u32IntTime;
             if (t == 0) continue;
             if (exp_min && t < exp_min) t = exp_min;
             if (exp_max && t > exp_max) continue;
-            if (outN > 0 && t <= prevT) continue;
-            prevT = t;
-            r.astRouteNode[outN].u32IntTime = t;
-            r.astRouteNode[outN].u32SysGain = v4_iq_sysgain_from_routeex(
+            HI_U32 sg = v4_iq_sysgain_from_routeex(
                 route.astRouteExNode[i].u32Again,
                 route.astRouteExNode[i].u32Dgain,
                 route.astRouteExNode[i].u32IspDgain);
-            if (r.astRouteNode[outN].u32SysGain < 0x400) r.astRouteNode[outN].u32SysGain = 0x400;
-            if (sysgain_max >= 0x400 && r.astRouteNode[outN].u32SysGain > sysgain_max)
-                r.astRouteNode[outN].u32SysGain = sysgain_max;
-            // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
-            r.astRouteNode[outN].enIrisFNO = route.astRouteExNode[i].enIrisFNO;
-            r.astRouteNode[outN].u32IrisFNOLin = route.astRouteExNode[i].u32IrisFNOLin;
-            if (r.astRouteNode[outN].u32IrisFNOLin < 0x1 || r.astRouteNode[outN].u32IrisFNOLin > 0x400)
-                r.astRouteNode[outN].u32IrisFNOLin = 0x400;
-            if ((int)r.astRouteNode[outN].enIrisFNO < 0 || (int)r.astRouteNode[outN].enIrisFNO >= (int)ISP_IRIS_F_NO_BUTT)
-                r.astRouteNode[outN].enIrisFNO = ISP_IRIS_F_NO_1_0;
-            outN++;
-            if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            if (sg < 0x400) sg = 0x400;
+            if (sysgain_max >= 0x400 && sg > sysgain_max) sg = sysgain_max;
+
+            ISP_IRIS_F_NO_E fno = route.astRouteExNode[i].enIrisFNO;
+            HI_U32 fnolin = route.astRouteExNode[i].u32IrisFNOLin;
+            if (fnolin < 0x1 || fnolin > 0x400) fnolin = 0x400;
+            if ((int)fno < 0 || (int)fno >= (int)ISP_IRIS_F_NO_BUTT) fno = ISP_IRIS_F_NO_1_0;
+
+            if (!havePrev) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                havePrev = HI_TRUE;
+                prevT = t; prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+                continue;
+            }
+
+            if (t < prevT) continue;
+            const HI_BOOL sg_changed = (sg != prevSG) ? HI_TRUE : HI_FALSE;
+            if (t == prevT && !sg_changed) continue;
+
+            // Axis-aligned rule: don't change IntTime and SysGain simultaneously.
+            if (t > prevT && sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = prevSG;
+                r.astRouteNode[outN].enIrisFNO = prevFno;
+                r.astRouteNode[outN].u32IrisFNOLin = prevFnoLin;
+                outN++;
+                prevT = t;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            } else if (t > prevT && !sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                prevT = t; prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+                continue;
+            }
+
+            if ((t == prevT) && sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = prevT;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            }
         }
         r.u32TotalNum = (HI_U32)outN;
 
@@ -4036,10 +4129,8 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
             a->enOpType = OP_TYPE_MANUAL;
             a->stManual.bSatEn = HI_FALSE;
             if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
-            a->stAuto.bISOActEn = HI_FALSE;
-            a->stAuto.bTempActEn = HI_FALSE;
-            a->stAuto.u16CCMTabNum = 0;
-            memset(a->stAuto.astCCMTab, 0, sizeof(a->stAuto.astCCMTab));
+            // Keep stAuto as-is (as returned by GetCCMAttr). Some GK SDK builds
+            // validate u16CCMTabNum even in manual mode and warn if we zero it.
         } else {
             a->enOpType = OP_TYPE_AUTO;
             if (isoActEn >= 0) a->stAuto.bISOActEn = (HI_BOOL)isoActEn;
