@@ -484,10 +484,11 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             return ret;
     }
 
-    // Pick a representative enabled/allowed channel for config comparison.
+    // Pick a representative created/enabled/allowed channel for config comparison.
     int have_ref = 0;
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         if (!i6_state[i].enable) continue;
+        if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) continue; // channel not created yet
         if (!hal_osd_is_allowed_for_channel(&i6_state[i])) continue;
         unsigned int dev = 0;
         if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
@@ -537,7 +538,10 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     // - some blend OSD in VPE (pre-encode)
     // Attach to both to maximize compatibility.
 
-    // 1) Attach to all enabled VENC channels (order can put MJPEG on ch0 and H26x on ch1+).
+    int any_attached = 0;
+    int last_err = EXIT_FAILURE;
+
+    // 1) Attach to all created/enabled VENC channels (order can put MJPEG on ch0 and H26x on ch1+).
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         unsigned int dev = 0;
         if (i6_venc.fnGetChannelDeviceId(i, &dev) != 0)
@@ -546,6 +550,11 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         dest.channel = i;
 
         if (!i6_state[i].enable) {
+            i6_rgn.fnDetachChannel(h, &dest);
+            continue;
+        }
+        if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) {
+            // Channel reserved but not fully created yet: avoid "successful" attach that won't render.
             i6_rgn.fnDetachChannel(h, &dest);
             continue;
         }
@@ -559,7 +568,9 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             HAL_ERROR("i6_rgn", "reg%d attach VENC failed (dev=%u ch=%u port=%u rc=%d)\n",
                 handle, dest.device, dest.channel, dest.port, rc);
             // Keep going: other channels might still succeed.
+            last_err = rc;
         } else {
+            any_attached = 1;
             // Some SigmaStar SDK variants require SetDisplayAttr after attach.
             int sc = i6_rgn.fnSetChannelConfig(h, &dest, &attrib);
             if (sc) {
@@ -579,6 +590,10 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
                 i6_rgn.fnDetachChannel(h, &vpe);
                 continue;
             }
+            if (i6_state[i].payload == HAL_VIDCODEC_UNSPEC) {
+                i6_rgn.fnDetachChannel(h, &vpe);
+                continue;
+            }
             if (!hal_osd_is_allowed_for_channel(&i6_state[i])) {
                 i6_rgn.fnDetachChannel(h, &vpe);
                 continue;
@@ -587,7 +602,9 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
             if (rc) {
                 HAL_ERROR("i6_rgn", "reg%d attach VPE failed (dev=%u ch=%u port=%u rc=%d)\n",
                     handle, vpe.device, vpe.channel, vpe.port, rc);
+                last_err = rc;
             } else {
+                any_attached = 1;
                 int sc = i6_rgn.fnSetChannelConfig(h, &vpe, &attrib);
                 if (sc) {
                     HAL_WARNING("i6_rgn", "reg%d SetDisplayAttr(VPE) failed (dev=%u ch=%u port=%u rc=%d)\n",
@@ -597,7 +614,10 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         }
     }
 
-    return EXIT_SUCCESS;
+    // Return success if at least one attach succeeded; otherwise let region.c retry.
+    if (any_attached)
+        return EXIT_SUCCESS;
+    return (last_err != 0) ? last_err : EXIT_FAILURE;
 }
 
 void i6_region_deinit(void)
