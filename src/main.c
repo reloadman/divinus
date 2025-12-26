@@ -6,6 +6,7 @@
 #include "night.h"
 #include "rtsp_smol.h"
 #include "server.h"
+#include "single_instance.h"
 #include "watchdog.h"
 
 #include <errno.h>
@@ -129,6 +130,21 @@ int main(int argc, char *argv[]) {
             signal(*s, handle_reload);
         for (char *s = signal_null; s < (&signal_null)[1]; s++)
             signal(*s, SIG_IGN);
+    }
+
+    // Protect against launching a second copy (BusyBox-friendly: pidfile + flock()).
+    // Acquire before touching hardware/network to avoid side effects from a duplicate start.
+    if (single_instance_acquire("divinus") != 0) {
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            const char *p = single_instance_pidfile_path();
+            if (p)
+                fprintf(stderr, "divinus: already running (pidfile locked: %s)\n", p);
+            else
+                fprintf(stderr, "divinus: already running (pidfile locked)\n");
+            return EXIT_FAILURE;
+        }
+        fprintf(stderr, "divinus: failed to acquire pidfile lock (%d:%s)\n", errno, strerror(errno));
+        return EXIT_FAILURE;
     }
 
     g_phase = "hal_identify";
