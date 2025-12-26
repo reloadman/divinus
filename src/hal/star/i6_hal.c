@@ -36,6 +36,11 @@ static i6_sys_mod _i6_rgn_mod[I6_RGN_MAX_HANDLES] = {
     [0 ... I6_RGN_MAX_HANDLES - 1] = I6_SYS_MOD_VPE
 };
 
+// Some SigmaStar firmwares reject attaching RGN to VPE (pre-encode).
+// Detect once and stop trying to avoid log spam and accidental failures.
+static int _i6_rgn_vpe_supported = 1;
+static unsigned char _i6_rgn_diag_logged[I6_RGN_MAX_HANDLES] = {0};
+
 static inline i6_sys_mod i6_rgn_mod_get(char handle) {
     if ((unsigned char)handle < I6_RGN_MAX_HANDLES)
         return _i6_rgn_mod[(unsigned char)handle];
@@ -541,6 +546,19 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
     int any_attached = 0;
     int last_err = EXIT_FAILURE;
 
+    // One-time diagnostics per handle: helps field debugging when OSD doesn't show up.
+    if ((unsigned char)handle < I6_RGN_MAX_HANDLES && !_i6_rgn_diag_logged[(unsigned char)handle]) {
+        _i6_rgn_diag_logged[(unsigned char)handle] = 1;
+        HAL_INFO("i6_rgn", "reg%d attach diag: vpe_supported=%d\n", handle, _i6_rgn_vpe_supported);
+        for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
+            unsigned int dev = 0;
+            int dev_rc = i6_venc.fnGetChannelDeviceId(i, &dev);
+            int allowed = (i6_state[i].enable && hal_osd_is_allowed_for_channel(&i6_state[i])) ? 1 : 0;
+            HAL_INFO("i6_rgn", "  ch%d enable=%d payload=%d allowed=%d venc_dev=%u (rc=%d)\n",
+                i, (int)i6_state[i].enable, (int)i6_state[i].payload, allowed, dev, dev_rc);
+        }
+    }
+
     // 1) Attach to all created/enabled VENC channels (order can put MJPEG on ch0 and H26x on ch1+).
     for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
         unsigned int dev = 0;
@@ -582,6 +600,8 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
 
     // 2) Attach to VPE output ports (pre-encode), matching encoder channel index.
     {
+        if (!_i6_rgn_vpe_supported)
+            goto out;
         i6_sys_bind vpe = { .module = I6_SYS_MOD_VPE,
             .device = _i6_vpe_dev, .channel = _i6_vpe_chn };
         for (char i = 0; i < I6_VENC_CHN_NUM; i++) {
@@ -603,6 +623,13 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
                 HAL_ERROR("i6_rgn", "reg%d attach VPE failed (dev=%u ch=%u port=%u rc=%d)\n",
                     handle, vpe.device, vpe.channel, vpe.port, rc);
                 last_err = rc;
+                // Known "NOT SUPPORT" code observed on infinity6b0 builds.
+                // Disable VPE path to avoid repeated failures.
+                if (rc == -1610407933) {
+                    _i6_rgn_vpe_supported = 0;
+                    HAL_WARNING("i6_rgn", "reg%d: VPE RGN attach not supported by this firmware; disabling VPE path\n", handle);
+                    break;
+                }
             } else {
                 any_attached = 1;
                 int sc = i6_rgn.fnSetChannelConfig(h, &vpe, &attrib);
@@ -614,6 +641,7 @@ int i6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_o
         }
     }
 
+out:
     // Return success if at least one attach succeeded; otherwise let region.c retry.
     if (any_attached)
         return EXIT_SUCCESS;
