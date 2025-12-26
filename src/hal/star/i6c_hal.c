@@ -225,6 +225,32 @@ int i6c_config_load(char *path)
     return i6c_isp.fnLoadChannelConfig(_i6c_isp_dev, _i6c_isp_chn, path, 1234);
 }
 
+int i6c_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max)
+{
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+
+    i6c_snr_plane p;
+    int ret = i6c_snr.fnGetPlaneInfo(_i6c_snr_index, 0, &p);
+    if (ret)
+        return ret;
+
+    *exp_time = p.shutter;       // us
+    *again = p.sensGain;         // x1024
+    *dgain = p.compGain;         // x1024
+    *ispdgain = p.compGain;      // best-effort
+
+    unsigned long long comb = (unsigned long long)p.sensGain * (unsigned long long)p.compGain;
+    comb /= 1024ull;
+    if (comb > 0xFFFFFFFFull) comb = 0xFFFFFFFFull;
+    *iso = (unsigned int)comb;
+
+    *exposure_is_max = 0;
+    return EXIT_SUCCESS;
+}
+
 int i6c_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate)
 {
     int ret;
@@ -405,6 +431,11 @@ int i6c_pipeline_create(char sensor, short width, short height, char mirror, cha
     return EXIT_SUCCESS;
 }
 
+int i6c_set_orientation(char mirror, char flip)
+{
+    return i6c_snr.fnSetOrientation(_i6c_snr_index, mirror, flip);
+}
+
 void i6c_pipeline_destroy(void)
 {
     for (char i = 0; i < 4; i++)
@@ -445,6 +476,12 @@ void i6c_pipeline_destroy(void)
 
 int i6c_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return i6c_region_create_ex(handle, rect, opacity, 0);
+}
+
+int i6c_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret = EXIT_SUCCESS;
 
     i6c_sys_bind dest = { .module = I6C_SYS_MOD_VENC, .port =_i6c_venc_port };
@@ -479,7 +516,8 @@ int i6c_region_create(char handle, hal_rect rect, short opacity)
     if (i6c_rgn.fnGetChannelConfig(0, handle, &dest, &attribCurr))
         HAL_INFO("i6c_rgn", "Attaching region %d...\n", handle);
     else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
-        attribCurr.osd.bgFgAlpha[1] != opacity) {
+        attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
+        attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("i6c_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
         for (char i = 0; i < I6C_VENC_CHN_NUM; i++) {
@@ -496,8 +534,8 @@ int i6c_region_create(char handle, hal_rect rect, short opacity)
     attrib.point.y = rect.y;
     attrib.osd.layer = 0;
     attrib.osd.constAlphaOn = 0;
-    attrib.osd.bgFgAlpha[0] = 0;
-    attrib.osd.bgFgAlpha[1] = opacity;
+    attrib.osd.bgFgAlpha[0] = bg_opacity;
+    attrib.osd.bgFgAlpha[1] = fg_opacity;
 
     for (char i = 0; i < I6C_VENC_CHN_NUM; i++) {
         if (!i6c_state[i].enable) continue;

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <libgen.h>
-#include <linux/limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,12 +9,19 @@
 #include "hal/support.h"
 #include "region.h"
 
+// Single, fixed config path (no fallback search).
+// If you need a different location, change it here and rebuild.
+#ifndef DIVINUS_CONFIG_PATH
+#define DIVINUS_CONFIG_PATH "/etc/divinus.yaml"
+#endif
+
 struct AppConfig {
     // [system]
     char sensor_config[128];
     // Optional ISP/IQ profile INI (platform-specific; used by hisi/v4 goke as "scene_auto" IQ)
     char iq_config[256];
     unsigned short web_port;
+    char web_bind[64];
     char web_whitelist[4][256];
     bool web_enable_auth;
     char web_auth_user[32];
@@ -26,17 +31,27 @@ struct AppConfig {
     unsigned int isp_thread_stack_size;
     unsigned int venc_stream_thread_stack_size;
     unsigned int web_server_thread_stack_size;
+    // Stack size for night mode worker thread (auto day/night switching + IQ reload).
+    // Some SDK/HAL paths (notably hisi/v4 IQ reload) can require more stack than 16KB.
+    unsigned int night_thread_stack_size;
     unsigned int watchdog;
 
     // [night_mode]
     bool night_mode_enable;
+    // Persisted manual mode (true disables automatic switching).
+    bool night_mode_manual;
     // If true, enable encoder grayscale when switching to night (IR) mode.
     // If false, stay in color when switching to night (IR) mode.
     bool night_mode_grayscale;
-    unsigned int ir_cut_pin1;
-    unsigned int ir_cut_pin2;
-    unsigned int ir_led_pin;
-    unsigned int ir_sensor_pin;
+    // GPIO pins can be configured as:
+    // - 999: disabled
+    // - N (0..PIN_MAX): GPIO number
+    // - any negative value: treated as disabled (for legacy configs)
+    int ir_cut_pin1;
+    int ir_cut_pin2;
+    int ir_led_pin;
+    int white_led_pin;
+    int ir_sensor_pin;
     unsigned int check_interval_s;
     unsigned int pin_switch_delay_us;
     char adc_device[128];
@@ -54,12 +69,17 @@ struct AppConfig {
     unsigned int isp_switch_lockout_s;
 
     // [isp]
+    // Fixed per-device orientation (factory), applied before user-facing mirror/flip.
+    bool sensor_mirror;
+    bool sensor_flip;
     bool mirror;
     bool flip;
     int antiflicker;
 
     // [osd]
     bool osd_enable;
+    // If true, show ISP/AE/IQ debug text in bottom-left (1 Hz).
+    bool osd_isp_debug;
 
     // [mdns]
     bool mdns_enable;
@@ -76,6 +96,7 @@ struct AppConfig {
     char rtsp_auth_user[32];
     char rtsp_auth_pass[32];
     int rtsp_port;
+    char rtsp_bind[64];
 
     // [record]
     bool record_enable;
@@ -92,6 +113,8 @@ struct AppConfig {
 
     // [audio]
     bool audio_enable;
+    // Persisted mute state: keep audio/RTSP track alive, but send silence.
+    bool audio_mute;
     hal_audcodec audio_codec;
     unsigned int audio_bitrate;
     int audio_gain;
@@ -144,6 +167,9 @@ struct AppConfig {
     // [jpeg]
     bool jpeg_enable;
     bool jpeg_osd_enable;
+    // If true, MJPEG/JPEG encoder channels will follow night_mode.grayscale toggles
+    // (best-effort; platform/SDK dependent).
+    bool jpeg_grayscale_night;
     unsigned int jpeg_mode;
     unsigned int jpeg_fps;
     unsigned int jpeg_width;
@@ -164,5 +190,8 @@ struct AppConfig {
 
 extern struct AppConfig app_config;
 enum ConfigError parse_app_config(void);
-void restore_app_config(void);
 int save_app_config(void);
+// Sanitize and update the canonical/runtime time format strings.
+bool timefmt_set(const char *src);
+// Repair runtime timefmt if corrupted (uses canonical copy as source).
+void timefmt_repair_runtime(void);

@@ -218,6 +218,32 @@ int m6_config_load(char *path)
     return m6_isp.fnLoadChannelConfig(_m6_isp_dev, _m6_isp_chn, path, 1234);
 }
 
+int m6_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max)
+{
+    if (!iso || !exp_time || !again || !dgain || !ispdgain || !exposure_is_max)
+        return EXIT_FAILURE;
+
+    m6_snr_plane p;
+    int ret = m6_snr.fnGetPlaneInfo(_m6_snr_index, 0, &p);
+    if (ret)
+        return ret;
+
+    *exp_time = p.shutter;       // us
+    *again = p.sensGain;         // x1024
+    *dgain = p.compGain;         // x1024
+    *ispdgain = p.compGain;      // best-effort
+
+    unsigned long long comb = (unsigned long long)p.sensGain * (unsigned long long)p.compGain;
+    comb /= 1024ull;
+    if (comb > 0xFFFFFFFFull) comb = 0xFFFFFFFFull;
+    *iso = (unsigned int)comb;
+
+    *exposure_is_max = 0;
+    return EXIT_SUCCESS;
+}
+
 int m6_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate)
 {
     int ret;
@@ -382,6 +408,11 @@ int m6_pipeline_create(char sensor, short width, short height, char mirror, char
     return EXIT_SUCCESS;
 }
 
+int m6_set_orientation(char mirror, char flip)
+{
+    return m6_snr.fnSetOrientation(_m6_snr_index, mirror, flip);
+}
+
 void m6_pipeline_destroy(void)
 {
     for (char i = 0; i < 4; i++)
@@ -422,6 +453,12 @@ void m6_pipeline_destroy(void)
 
 int m6_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return m6_region_create_ex(handle, rect, opacity, 0);
+}
+
+int m6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret;
 
     m6_sys_bind dest = { .module = M6_SYS_MOD_VENC, .port = _m6_venc_port };
@@ -456,7 +493,8 @@ int m6_region_create(char handle, hal_rect rect, short opacity)
     if (m6_rgn.fnGetChannelConfig(0, handle, &dest, &attribCurr))
         HAL_INFO("m6_rgn", "Attaching region %d...\n", handle);
     else if (attribCurr.point.x != rect.x || attribCurr.point.y != rect.y ||
-        attribCurr.osd.bgFgAlpha[1] != opacity) {
+        attribCurr.osd.bgFgAlpha[0] != bg_opacity ||
+        attribCurr.osd.bgFgAlpha[1] != fg_opacity) {
         HAL_INFO("m6_rgn", "Parameters are different, reattaching "
             "region %d...\n", handle);
         for (char i = 0; i < M6_VENC_CHN_NUM; i++) {
@@ -473,8 +511,8 @@ int m6_region_create(char handle, hal_rect rect, short opacity)
     attrib.point.y = rect.y;
     attrib.osd.layer = 0;
     attrib.osd.constAlphaOn = 0;
-    attrib.osd.bgFgAlpha[0] = 0;
-    attrib.osd.bgFgAlpha[1] = opacity;
+    attrib.osd.bgFgAlpha[0] = bg_opacity;
+    attrib.osd.bgFgAlpha[1] = fg_opacity;
 
     for (char i = 0; i < M6_VENC_CHN_NUM; i++) {
         if (!m6_state[i].enable) continue;

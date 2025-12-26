@@ -6,3 +6,6 @@
 /src/**/*.o
 /toolchain
 divinus
+/builds/*
+/builds
+/3dparty/*cache*

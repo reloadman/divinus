@@ -7,6 +7,11 @@ SFT_Image canvas;
 SFT_LMetrics lmtx;
 hal_bitmap bitmap;
 
+// Loading/parsing a TTF from storage every second can occasionally stall on embedded
+// systems and cause OSD updates to skip a second. Cache the last loaded font.
+static SFT_Font *g_cached_font = NULL;
+static char g_cached_font_path[512] = {0};
+
 int utf8_to_utf32(const unsigned char *utf8, 
     unsigned int *utf32, int max)
 {
@@ -87,10 +92,23 @@ void text_copy_rendered(SFT_Image *dest, const SFT_Image *source, int x0, int y0
 
 int text_load_font(SFT *sft, const char *path, double size, SFT_LMetrics *lmtx)
 {
-    SFT_Font *font = sft_loadfile(path);
-    if (font == NULL)
-        HAL_ERROR("text", "sft_loadfile failed");
-    sft->font = font;
+    if (!path || !*path)
+        HAL_ERROR("text", "font path is empty");
+
+    // Reload only when the path changes.
+    if (!g_cached_font || strcmp(g_cached_font_path, path) != 0) {
+        if (g_cached_font) {
+            sft_freefont(g_cached_font);
+            g_cached_font = NULL;
+            g_cached_font_path[0] = '\0';
+        }
+        g_cached_font = sft_loadfile(path);
+        if (g_cached_font == NULL)
+            HAL_ERROR("text", "sft_loadfile failed");
+        snprintf(g_cached_font_path, sizeof(g_cached_font_path), "%s", path);
+    }
+
+    sft->font = g_cached_font;
     sft->xScale = size;
     sft->yScale = size;
     sft->xOffset = 0.0;
@@ -153,14 +171,23 @@ void text_dim_rendered(double *margin, double *height, double *width, const char
     *width = MAX(*width, lwidth) + 2 * *margin;
 }
 
-hal_bitmap text_create_rendered(const char *font, double size, const char *text, 
-    int color, int outline, double thick)
+hal_bitmap text_create_rendered(const char *font, double size, const char *text,
+    int color, int outline, double thick,
+    int bg, int pad, int bg_enable)
 {
     text_load_font(&sft, font, size, &lmtx);
 
     double margin, height, width;
     text_dim_rendered(&margin, &height, &width, text);
-    text_new_rendered(&canvas, (CEILING(width) + 3) & ~3, CEILING(height), 0);
+    // Render text on a transparent canvas first, then (optionally) crop to the
+    // tight bounding box of drawn pixels and apply a background box with padding.
+    // This avoids "tall stripes" caused by font ascender/descender/lineGap metrics
+    // and yields a modern-looking badge.
+    const int req_pad = (pad > 0) ? pad : 0;
+    const int bg_fill = (bg_enable ? (bg & 0x7FFF) : 0); // RGB555 with alpha-bit 0
+    const int base_w = (CEILING(width) + 3) & ~3;
+    const int base_h = CEILING(height);
+    text_new_rendered(&canvas, base_w, base_h, 0);
 
     unsigned cps[strlen(text) + 1];
     int n = utf8_to_utf32(text, cps, strlen(text) + 1);
@@ -208,10 +235,57 @@ noOutline:;
         ogid = gid;
     }
 
+    // If background is requested, crop to tight bounds of any alpha-bit pixels
+    // (text + outline) and then add padding + background fill.
+    if (bg_enable) {
+        const int ow = canvas.width;
+        const int oh = canvas.height;
+        unsigned short *opx = (unsigned short *)canvas.pixels;
+
+        int minx = ow, miny = oh, maxx = -1, maxy = -1;
+        for (int yy = 0; yy < oh; yy++) {
+            unsigned short *row = opx + yy * ow;
+            for (int xx = 0; xx < ow; xx++) {
+                if (row[xx] & 0x8000) {
+                    if (xx < minx) minx = xx;
+                    if (yy < miny) miny = yy;
+                    if (xx > maxx) maxx = xx;
+                    if (yy > maxy) maxy = yy;
+                }
+            }
+        }
+
+        // If nothing was drawn (shouldn't happen for valid text), keep a small box.
+        if (maxx < minx || maxy < miny) {
+            free(canvas.pixels);
+            const int nw = (req_pad * 2 + 1 + 3) & ~3;
+            const int nh = req_pad * 2 + 1;
+            text_new_rendered(&canvas, nw, nh, bg_fill);
+        } else {
+            const int bw = (maxx - minx + 1);
+            const int bh = (maxy - miny + 1);
+            const int nw = ((bw + 2 * req_pad) + 3) & ~3;
+            const int nh = bh + 2 * req_pad;
+
+            SFT_Image out;
+            text_new_rendered(&out, nw, nh, bg_fill);
+            unsigned short *npx = (unsigned short *)out.pixels;
+
+            for (int yy = 0; yy < bh; yy++) {
+                unsigned short *src = opx + (miny + yy) * ow + minx;
+                unsigned short *dst = npx + (req_pad + yy) * nw + req_pad;
+                memcpy(dst, src, (size_t)bw * 2);
+            }
+
+            free(canvas.pixels);
+            canvas = out;
+        }
+    }
+
     bitmap.dim.width = canvas.width;
     bitmap.dim.height = canvas.height;
     bitmap.data = canvas.pixels;
 
-    sft_freefont(sft.font);
+    // Font is cached globally; do not free here.
     return bitmap;
 }

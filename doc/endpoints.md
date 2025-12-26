@@ -188,6 +188,7 @@ Configures the night mode parameters.
 | GET    | `ircut_pin2`   | GPIO pin 2 for IR-Cut     |
 | GET    | `irled`        | Control IR LEDs           |
 | GET    | `irled_pin`    | GPIO pin for IR LEDs      |
+| GET    | `whiteled`     | Control white LED (manual): `on`/`off` |
 | GET    | `irsense_pin`  | GPIO pin for IR sensor    |
 | GET    | `adc_device`   | ADC device                |
 | GET    | `adc_threshold`| Activation threshold      |
@@ -211,6 +212,8 @@ Configures the night mode parameters.
   "ircut_pin2": 18,
   "irled": true,
   "irled_pin": 20,
+  "whiteled": false,
+  "whiteled_pin": 4,
   "irsense_pin": 21,
   "adc_device": "/dev/adc",
   "adc_threshold": 800,
@@ -240,7 +243,7 @@ Configures text or image overlays by their ID (0-9 at the moment).
 |--------|------------|----------------------------------------------------|
 | GET    | `text`     | Text to display (special specifiers supported)     |
 | GET    | `img`      | Local image path to display (`text` must be empty) |
-| GET    | `font`     | Font name to be used                               |
+| GET    | `font`     | Font path (preferred) or legacy font name          |
 | GET    | `size`     | Font size (decimal in pt)                          |
 | GET    | `color`    | Font color (hex format, RGB555 format)             |
 | GET    | `opal`     | Opacity level (0-255)                              |

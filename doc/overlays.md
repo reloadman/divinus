@@ -38,6 +38,26 @@ curl http://192.168.1.17/api/osd/2?text=$t&posy=120
 ```
 N.B. Percent signs have to be escaped with %25 in curl URL syntaxes
 
+### Proportional UI font for time (tabular digits, no shaping engine)
+
+Divinus' current text renderer does not apply OpenType features like `tnum` (tabular numbers).
+If you want a modern proportional UI font (Inter-style) **without the time string width "dancing"**,
+generate a small dedicated TTF with baked tabular digit metrics:
+
+```
+python3 -m pip install fonttools
+python3 tools/make_inter_time_font.py --in misc/Inter-Regular.ttf --out build/fonts/InterTime.ttf --subset-time
+```
+
+By default, `--subset-time` keeps:
+- digits and common separators for time/date
+- **Latin alphabet (A–Z, a–z)** for short labels (e.g. CAM, FRONTDOOR)
+
+You can override the kept character set with `--text=...` if you need extra symbols.
+
+Copy the resulting `InterTime.ttf` onto the device (e.g. `/usr/share/fonts/truetype/InterTime.ttf`)
+and set `reg0_font: InterTime` in `divinus.yaml`.
+
 UTC date and time can be set using Unix timestamps:
 ```
 curl http://192.168.1.17/api/time?ts=1712320920
@@ -48,3 +68,21 @@ curl http://192.168.1.17/api/time?ts=1712320920
 curl -F data=@.\Desktop\myimage.bmp http://192.168.1.17/api/osd/3
 ```
 N.B. curl already implies "-X POST" when passing a file with "-F"
+
+### Faceter logo mask (PNG)
+
+This repository includes a ready-to-upload Faceter logo mask:
+- `res/faceter_mask.png` (transparent background, opaque logo; gradient is baked into RGB)
+
+Generate it (and the reference SVG) locally:
+```
+python3 tools/gen_faceter_osd.py
+```
+
+Upload to OSD region 3 and place it (example):
+```
+curl -F data=@res/faceter_mask.png "http://192.168.1.17/api/osd/3?posx=16&posy=16&opal=255"
+```
+
+Tip: to show a local image on boot, set `osd.regN_img` to a filesystem path (e.g. `/tmp/osd3.png`)
+and keep `osd.regN_text` empty.

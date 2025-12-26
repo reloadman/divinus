@@ -1,6 +1,7 @@
 #if defined(__arm__) && !defined(__ARM_PCS_VFP)
 
 #include "v4_hal.h"
+#include "../../app_config.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
@@ -8,6 +9,7 @@
 #include <stdbool.h>
 #include <strings.h>
 #include <pthread.h>
+#include <time.h>
 
 // Night mode state is implemented in src/night.c. We only need this one symbol here.
 extern bool night_mode_on(void);
@@ -76,6 +78,19 @@ static int v4_gain_percent_to_db(int percent) {
 static int v4_iq_apply(const char *path, int pipe);
 static void v4_iq_dyn_update_from_ini(struct IniConfig *ini, int pipe, bool enableDynDehaze, bool enableDynLinearDRC);
 static void v4_iq_dyn_maybe_start(int pipe);
+
+int v4_iq_reload(void) {
+    if (!_v4_iq_cfg_path[0])
+        return EXIT_SUCCESS;
+
+    // Apply immediately using the currently active mode (DAY vs IR).
+    // This ensures ir_* sections take effect right after night_mode() toggles IR.
+    int ret = v4_iq_apply(_v4_iq_cfg_path, _v4_vi_pipe);
+
+    // If dynamic IQ sections exist, ensure the dynamic thread is started.
+    v4_iq_dyn_maybe_start(_v4_vi_pipe);
+    return ret;
+}
 
 typedef struct {
     char path[256];
@@ -655,19 +670,95 @@ int v4_channel_create(char index, char mirror, char flip, char framerate)
 
 int v4_channel_grayscale(char enable)
 {
-    int ret;
+    int last_ret = EXIT_SUCCESS;
+    const int active = enable ? 1 : 0;
 
+    // Preferred path: use the direct SDK toggle when available.
+    // This is especially important for MJPEG/JPEG, where some SDK builds crash on GetChnParam.
+    if (v4_venc.fnSetColorToGray) {
+        for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
+            if (!v4_state[i].enable) continue;
+
+            const bool is_h26x =
+                (v4_state[i].payload == HAL_VIDCODEC_H264 ||
+                 v4_state[i].payload == HAL_VIDCODEC_H265);
+            const bool is_mjpeg =
+                (v4_state[i].payload == HAL_VIDCODEC_MJPG ||
+                 v4_state[i].payload == HAL_VIDCODEC_JPG);
+
+            if (!is_h26x && !(app_config.jpeg_grayscale_night && is_mjpeg))
+                continue;
+
+            const int ret = v4_venc.fnSetColorToGray(i, (int *)&active);
+            if (ret) last_ret = ret;
+        }
+        return last_ret;
+    }
+
+    // Fallback: Get/SetChnParam.
     for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
-        v4_venc_para param;
         if (!v4_state[i].enable) continue;
-        if (ret = v4_venc.fnGetChannelParam(i, &param))
-            return ret;
+        const bool is_h26x =
+            (v4_state[i].payload == HAL_VIDCODEC_H264 ||
+             v4_state[i].payload == HAL_VIDCODEC_H265);
+        const bool is_mjpeg =
+            (v4_state[i].payload == HAL_VIDCODEC_MJPG ||
+             v4_state[i].payload == HAL_VIDCODEC_JPG);
+
+        if (!is_h26x && !(app_config.jpeg_grayscale_night && is_mjpeg))
+            continue;
+        v4_venc_para param;
+        int ret = v4_venc.fnGetChannelParam(i, &param);
+        if (ret) return ret;
         param.grayscaleOn = enable;
-        if (ret = v4_venc.fnSetChannelParam(i, &param))
-            return ret;
+        ret = v4_venc.fnSetChannelParam(i, &param);
+        if (ret) return ret;
     }
 
     return EXIT_SUCCESS;
+}
+
+int v4_channel_set_orientation(char mirror, char flip, char h26x_fps, char mjpeg_fps)
+{
+    int last_ret = EXIT_SUCCESS;
+
+    for (char i = 0; i < V4_VENC_CHN_NUM; i++) {
+        if (!v4_state[i].enable) continue;
+
+        char fps = h26x_fps;
+        if (v4_state[i].payload == HAL_VIDCODEC_MJPG)
+            fps = mjpeg_fps;
+        else if (v4_state[i].payload == HAL_VIDCODEC_JPG)
+            fps = 1;
+        else if (v4_state[i].payload == HAL_VIDCODEC_UNSPEC)
+            continue;
+
+        v4_vpss_chn channel;
+        memset(&channel, 0, sizeof(channel));
+        channel.dest.width = v4_config.isp.capt.width;
+        channel.dest.height = v4_config.isp.capt.height;
+        channel.pixFmt = V4_PIXFMT_YVU420SP;
+        channel.hdr = V4_HDR_SDR8;
+        channel.srcFps = v4_config.isp.framerate;
+        channel.dstFps = fps;
+        channel.mirror = mirror;
+        channel.flip = flip;
+
+        int ret = v4_vpss.fnSetChannelConfig(_v4_vpss_grp, i, &channel);
+        if (ret) {
+            // Some SDKs require the channel to be disabled before updating attrs.
+            v4_vpss.fnDisableChannel(_v4_vpss_grp, i);
+            ret = v4_vpss.fnSetChannelConfig(_v4_vpss_grp, i, &channel);
+            if (!ret)
+                ret = v4_vpss.fnEnableChannel(_v4_vpss_grp, i);
+        }
+
+        if (ret) {
+            last_ret = ret;
+        }
+    }
+
+    return last_ret;
 }
 
 int v4_channel_unbind(char index)
@@ -994,6 +1085,25 @@ typedef struct {
     ISP_COLORMATRIX_AUTO_S stAuto;
 } ISP_COLORMATRIX_ATTR_S;
 
+// Alternative CCM layout used by some MPP generations (e.g. hi3519-style):
+// Auto has 3 fixed matrices (High/Mid/Low) with explicit color temperatures.
+typedef struct {
+    HI_BOOL bISOActEn;
+    HI_BOOL bTempActEn;
+    HI_U16  u16HighColorTemp;
+    HI_U16  au16HighCCM[CCM_MATRIX_SIZE];
+    HI_U16  u16MidColorTemp;
+    HI_U16  au16MidCCM[CCM_MATRIX_SIZE];
+    HI_U16  u16LowColorTemp;
+    HI_U16  au16LowCCM[CCM_MATRIX_SIZE];
+} ISP_COLORMATRIX_AUTO_HML_S;
+
+typedef struct {
+    ISP_OP_TYPE_E enOpType;
+    ISP_COLORMATRIX_MANUAL_S stManual;
+    ISP_COLORMATRIX_AUTO_HML_S stAuto;
+} ISP_COLORMATRIX_ATTR_HML_S;
+
 #define ISP_AUTO_ISO_STRENGTH_NUM 16
 typedef struct {
     HI_U8 u8Saturation;
@@ -1207,6 +1317,21 @@ typedef struct {
     ISP_DRC_CUBIC_POINT_ATTR_S astCubicPoint[HI_ISP_DRC_CUBIC_POINT_NUM];
     ISP_DRC_ASYMMETRY_CURVE_ATTR_S stAsymmetryCurve;
 } ISP_DRC_ATTR_S;
+
+int v4_get_drc_strength(unsigned int *strength) {
+    if (!strength) return EXIT_FAILURE;
+    if (!v4_isp.fnGetDRCAttr) return EXIT_FAILURE;
+    ISP_DRC_ATTR_S da;
+    memset(&da, 0, sizeof(da));
+    if (v4_isp.fnGetDRCAttr(_v4_vi_pipe, &da))
+        return EXIT_FAILURE;
+    // Prefer the currently-selected op type.
+    if (da.enOpType == OP_TYPE_AUTO)
+        *strength = (unsigned int)da.stAuto.u16Strength;
+    else
+        *strength = (unsigned int)da.stManual.u16Strength;
+    return EXIT_SUCCESS;
+}
 
 // ---- NR ----
 #ifndef ISP_BAYER_CHN_NUM
@@ -1583,6 +1708,64 @@ typedef struct {
     HI_U32 upFrameIso;
     HI_U32 downFrameIso;
 
+    // Low-light auto AE (works even if user keeps DAY mode at night)
+    HI_BOOL lowlight_auto_ae;
+    HI_U32 lowlight_iso;
+    HI_U32 lowlight_exptime;
+    // Optional "fast lowlight" overrides to reduce motion blur in bright-enough lowlight scenes.
+    // Triggered when u8AveLum >= lowlight_fast_lum.
+    HI_BOOL have_lowlight_fast;
+    HI_U8  lowlight_fast_lum;
+    HI_U32 lowlight_fast_expmax;
+    HI_U32 lowlight_fast_againmax;
+    HI_U8  lowlight_fast_comp_boost;
+
+    // Optional lowlight FX/marketing logic (enabled only if config section exists in IQ).
+    HI_BOOL have_lowlight_fx;
+    HI_U32 noisy_gamma_iso;
+    HI_U32 noisy_gamma_dgain;
+    HI_U32 noisy_gamma_ispdgain;
+    HI_U32 noisy_sharpen_iso;
+    HI_U32 noisy_sharpen_dgain;
+    HI_U32 noisy_sharpen_ispdgain;
+
+    // Optional lowlight anti-halo sharpen tuning (enabled only if section exists).
+    HI_BOOL have_lowlight_sharpen_ah;
+    HI_U8  ah_over_pct;
+    HI_U8  ah_under_pct;
+    HI_U8  ah_min_over;
+    HI_U8  ah_min_under;
+    HI_U8  ah_shootsup_min;
+    HI_U8  ah_edgefilt_min;
+    HI_U16 ah_maxsharpgain_cap;
+    HI_U8  ah_edgestr_pct;
+    HI_U8  ah_texstr_pct;
+
+    // Optional lowlight DRC caps (enabled only if section exists).
+    HI_BOOL have_lowlight_drc_caps;
+    HI_U16 ll_drc_strength_max;
+    HI_U16 fast_drc_strength_max;
+    HI_U8  ll_bright_mix_max;
+    HI_U8  ll_bright_mix_min;
+    HI_U8  ll_bright_gain_lmt;
+    HI_U8  ll_bright_gain_step;
+    HI_U8  ll_dark_mix_max;
+    HI_U8  ll_dark_mix_min;
+    HI_U8  ll_contrast_max;
+    HI_U8  fast_dark_mix_max;
+    HI_U8  fast_dark_mix_min;
+    HI_U8  fast_contrast_max;
+    HI_BOOL have_ae_day;
+    HI_BOOL have_ae_low;
+    HI_BOOL last_ae_lowlight;
+    HI_U8  ae_day_comp, ae_low_comp;
+    HI_U32 ae_day_expmax, ae_low_expmax;
+    HI_U32 ae_day_sysgainmax, ae_low_sysgainmax;
+    HI_U32 ae_day_againmax, ae_low_againmax;
+    HI_U8  ae_day_histoff, ae_low_histoff;
+    HI_U16 ae_day_histslope, ae_low_histslope;
+    HI_U8  ae_day_speed, ae_low_speed;
+
     // 3DNR (VPSS NRX) day/ir profiles
     v4_iq_3dnr_cfg nr3d_day;
     v4_iq_3dnr_cfg nr3d_ir;
@@ -1593,15 +1776,63 @@ typedef struct {
     HI_BOOL nr3d_probe_logged;
 
     // Cache "not supported / rejected by SDK" to avoid repeating warnings every IQ apply.
+    // Also store presence of AE route tables so the dynamic thread can start even if
+    // only mode-switchable AE route/route-ex is desired.
+    HI_BOOL have_aerouteex_day;
+    HI_BOOL have_aerouteex_ir;
     HI_BOOL aerouteex_disabled;
     HI_BOOL ccm_disabled;
 
     HI_BOOL have_last;
     HI_U8  last_dehaze_strength;
     v4_iq_dyn_drc_sig last_drc;
+    int drc_fail_count;
+    HI_BOOL drc_disabled;
 } v4_iq_dyn_state;
 
 static v4_iq_dyn_state _v4_iq_dyn = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+int v4_get_iq_lowlight_state(unsigned int iso, unsigned int exp_time, int *active) {
+    if (!active) return EXIT_FAILURE;
+
+    // LowLightAutoAE is designed for "DAY-at-night" (color) usage.
+    // In true night/IR mode we must NOT activate lowlight switching; instead use [ir_*] sections.
+    if (night_mode_on()) {
+        *active = 0;
+        return EXIT_SUCCESS;
+    }
+
+    HI_BOOL ll_ae = HI_FALSE;
+    HI_BOOL have_day = HI_FALSE;
+    HI_BOOL have_low = HI_FALSE;
+    HI_U32 ll_iso = 0;
+    HI_U32 ll_exptime = 0;
+
+    pthread_mutex_lock(&_v4_iq_dyn.lock);
+    ll_ae = _v4_iq_dyn.lowlight_auto_ae;
+    have_day = _v4_iq_dyn.have_ae_day;
+    have_low = _v4_iq_dyn.have_ae_low;
+    ll_iso = _v4_iq_dyn.lowlight_iso;
+    ll_exptime = _v4_iq_dyn.lowlight_exptime;
+    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
+    *active = (ll_ae && have_day && have_low &&
+        ((HI_U32)iso >= ll_iso || (HI_U32)exp_time >= ll_exptime)) ? 1 : 0;
+    return EXIT_SUCCESS;
+}
+
+int v4_get_ae_auto_params(unsigned int *comp, unsigned int *expmax, unsigned int *sysgainmax) {
+    if (!comp || !expmax || !sysgainmax) return EXIT_FAILURE;
+    if (!v4_isp.fnGetExposureAttr) return EXIT_FAILURE;
+    ISP_EXPOSURE_ATTR_S ea;
+    memset(&ea, 0, sizeof(ea));
+    if (v4_isp.fnGetExposureAttr(_v4_vi_pipe, &ea))
+        return EXIT_FAILURE;
+    *comp = (unsigned int)ea.stAuto.u8Compensation;
+    *expmax = (unsigned int)ea.stAuto.stExpTimeRange.u32Max;
+    *sysgainmax = (unsigned int)ea.stAuto.stSysGainRange.u32Max;
+    return EXIT_SUCCESS;
+}
 
 static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U32 *yp, int n) {
     if (n <= 1) return (n == 1) ? yp[0] : 0;
@@ -1612,7 +1843,14 @@ static inline HI_U32 v4_iq_dyn_interp_u32(HI_U32 x, const HI_U32 *xp, const HI_U
         if (x >= x0 && x <= x1) {
             HI_U32 y0 = yp[i], y1 = yp[i + 1];
             if (x1 == x0) return y1;
-            return (HI_U32)(y0 + (HI_U64)(y1 - y0) * (x - x0) / (x1 - x0));
+            // IMPORTANT: y can be decreasing (e.g. Strength 260->250->...).
+            // Use signed math to avoid unsigned underflow producing garbage.
+            HI_S64 dy = (HI_S64)y1 - (HI_S64)y0;
+            HI_S64 num = dy * (HI_S64)(x - x0);
+            HI_S64 den = (HI_S64)(x1 - x0);
+            HI_S64 val = (HI_S64)y0 + (den ? (num / den) : 0);
+            if (val < 0) val = 0;
+            return (HI_U32)val;
         }
     }
     return yp[n - 1];
@@ -1828,10 +2066,16 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
     }
 
     VPSS_GRP_NRX_PARAM_S p;
-    memset(&p, 0, sizeof(p));
+    int ret = -1;
     // Many SDKs require caller to specify which NRX version to get/set.
-    p.enNRVer = 3; // VPSS_NR_V3
-    int ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
+    // GK/HiSilicon forks vary: some accept 3 (V3), others use 0/1/2. Probe a few.
+    int chosen_ver = -1;
+    for (int ver_try = 3; ver_try >= 0; ver_try--) {
+        memset(&p, 0, sizeof(p));
+        p.enNRVer = ver_try;
+        ret = v4_vpss.fnGetGrpNRXParam(grp, &p);
+        if (!ret) { chosen_ver = ver_try; break; }
+    }
     if (ret) {
         HAL_WARNING("v4_iq", "3DNR: HI_MPI_VPSS_GetGrpNRXParam failed with %#x\n", ret);
         return ret;
@@ -1839,7 +2083,8 @@ static int v4_iq_apply_vpss_3dnr_nrc(int grp, const v4_iq_3dnr_nrc *cfg) {
 
     // Expect EV200-style V3 on GK7205V210; if not, don't risk corrupting union.
     if (p.enNRVer != 3) {
-        HAL_INFO("v4_iq", "3DNR: unsupported VPSS NRX version %d, skipping\n", (int)p.enNRVer);
+        HAL_INFO("v4_iq", "3DNR: VPSS NRX version %d (chosen=%d) not supported by our V3 struct, skipping\n",
+                 (int)p.enNRVer, chosen_ver);
         return EXIT_SUCCESS;
     }
 
@@ -2065,6 +2310,22 @@ static void v4_iq_dyn_parse_iso_list(struct IniConfig *ini, const char *section,
     if (*ioN == 0 || n < *ioN) *ioN = n;
 }
 
+static void v4_iq_dyn_load_ae_profile(struct IniConfig *ini, const char *sec,
+                                      HI_BOOL *have, HI_U8 *comp, HI_U32 *expmax, HI_U32 *sysgainmax, HI_U32 *againmax,
+                                      HI_U8 *histoff, HI_U16 *histslope, HI_U8 *speed) {
+    int sec_s = 0, sec_e = 0;
+    if (section_pos(ini, sec, &sec_s, &sec_e) != CONFIG_OK) return;
+    int v;
+    if (parse_int(ini, sec, "AutoCompensation", 0, 255, &v) == CONFIG_OK) *comp = (HI_U8)v;
+    if (parse_int(ini, sec, "AutoExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK) *expmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoSysGainMax", 0, INT_MAX, &v) == CONFIG_OK) *sysgainmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoAGainMax", 0, INT_MAX, &v) == CONFIG_OK) *againmax = (HI_U32)v;
+    if (parse_int(ini, sec, "AutoMaxHistOffset", 0, 255, &v) == CONFIG_OK) *histoff = (HI_U8)v;
+    if (parse_int(ini, sec, "AutoHistRatioSlope", 0, 65535, &v) == CONFIG_OK) *histslope = (HI_U16)v;
+    if (parse_int(ini, sec, "AutoSpeed", 0, 255, &v) == CONFIG_OK) *speed = (HI_U8)v;
+    *have = HI_TRUE;
+}
+
 static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze, bool enableDynLinearDRC) {
     v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
     v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
@@ -2107,7 +2368,7 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
     }
 
     // dynamic_linear_drc
-    // all_param hysteresis
+    // all_param hysteresis + low-light auto AE (even when user keeps DAY mode at night)
     {
         HI_U32 up = 0, down = 0;
         int v;
@@ -2115,12 +2376,216 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
             up = (HI_U32)v;
         if (parse_int(ini, "all_param", "DownFrameIso", 0, INT_MAX, &v) == CONFIG_OK)
             down = (HI_U32)v;
+
+        HI_BOOL ll_en = HI_FALSE;
+        HI_U32 ll_iso = 1500;
+        HI_U32 ll_exptime = 15000;
+        HI_BOOL have_fast = HI_FALSE;
+        HI_U8  ll_fast_lum = 0;
+        HI_U32 ll_fast_expmax = 0;
+        HI_U32 ll_fast_againmax = 0;
+        HI_U8  ll_fast_comp_boost = 0;
+        if (parse_int(ini, "all_param", "LowLightAutoAE", 0, 1, &v) == CONFIG_OK)
+            ll_en = (v != 0) ? HI_TRUE : HI_FALSE;
+        if (parse_int(ini, "all_param", "LowLightIso", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_iso = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightExpTime", 0, INT_MAX, &v) == CONFIG_OK)
+            ll_exptime = (HI_U32)v;
+        if (parse_int(ini, "all_param", "LowLightFastLum", 0, 255, &v) == CONFIG_OK) {
+            ll_fast_lum = (HI_U8)v;
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastExpTimeMax", 0, INT_MAX, &v) == CONFIG_OK) {
+            ll_fast_expmax = (HI_U32)v;
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastAGainMax", 0, INT_MAX, &v) == CONFIG_OK) {
+            ll_fast_againmax = (HI_U32)v;
+            have_fast = HI_TRUE;
+        }
+        if (parse_int(ini, "all_param", "LowLightFastCompBoost", 0, 64, &v) == CONFIG_OK) {
+            ll_fast_comp_boost = (HI_U8)v;
+            have_fast = HI_TRUE;
+        }
+
+        // Optional lowlight FX thresholds (only if section exists).
+        HI_BOOL have_fx = HI_FALSE;
+        HI_U32 noisy_gamma_iso = 0, noisy_gamma_dg = 0, noisy_gamma_ispg = 0;
+        HI_U32 noisy_sh_iso = 0, noisy_sh_dg = 0, noisy_sh_ispg = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_fx", &sec_s, &sec_e) == CONFIG_OK) {
+                have_fx = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_fx", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_fx = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaIso", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_iso = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_dg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisyGammaISPDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_gamma_ispg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenIso", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_iso = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_dg = (HI_U32)v;
+                if (parse_int(ini, "lowlight_fx", "NoisySharpenISPDGain", 0, INT_MAX, &v) == CONFIG_OK) noisy_sh_ispg = (HI_U32)v;
+            }
+        }
+
+        // Optional anti-halo sharpen (only if section exists).
+        HI_BOOL have_ah = HI_FALSE;
+        HI_U8 ah_over_pct = 0, ah_under_pct = 0, ah_min_over = 0, ah_min_under = 0;
+        HI_U8 ah_shootsup_min = 0, ah_edgefilt_min = 0, ah_edgestr_pct = 0, ah_texstr_pct = 0;
+        HI_U16 ah_maxsharp_cap = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_sharpen", &sec_s, &sec_e) == CONFIG_OK) {
+                have_ah = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_sharpen", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_ah = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_sharpen", "OverShootScalePct", 0, 100, &v) == CONFIG_OK) ah_over_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "UnderShootScalePct", 0, 100, &v) == CONFIG_OK) ah_under_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MinOverShoot", 0, 255, &v) == CONFIG_OK) ah_min_over = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MinUnderShoot", 0, 255, &v) == CONFIG_OK) ah_min_under = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "ShootSupStrMin", 0, 255, &v) == CONFIG_OK) ah_shootsup_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "EdgeFiltStrMin", 0, 255, &v) == CONFIG_OK) ah_edgefilt_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "MaxSharpGainCap", 0, INT_MAX, &v) == CONFIG_OK) ah_maxsharp_cap = (HI_U16)v;
+                if (parse_int(ini, "lowlight_sharpen", "EdgeStrScalePct", 0, 100, &v) == CONFIG_OK) ah_edgestr_pct = (HI_U8)v;
+                if (parse_int(ini, "lowlight_sharpen", "TextureStrScalePct", 0, 100, &v) == CONFIG_OK) ah_texstr_pct = (HI_U8)v;
+            }
+        }
+
+        // Optional lowlight DRC caps (only if section exists).
+        HI_BOOL have_drc_caps = HI_FALSE;
+        HI_U16 ll_str_max = 0, fast_str_max = 0;
+        HI_U8 ll_bm_max = 0, ll_bm_min = 0, ll_bg_lmt = 0, ll_bg_step = 0;
+        HI_U8 ll_dm_max = 0, ll_dm_min = 0, ll_cc_max = 0;
+        HI_U8 fast_dm_max = 0, fast_dm_min = 0, fast_cc_max = 0;
+        {
+            int sec_s = 0, sec_e = 0;
+            if (section_pos(ini, "lowlight_drc_caps", &sec_s, &sec_e) == CONFIG_OK) {
+                have_drc_caps = HI_TRUE;
+                int en = 1;
+                if (parse_int(ini, "lowlight_drc_caps", "Enable", 0, 1, &en) == CONFIG_OK)
+                    have_drc_caps = (en != 0) ? HI_TRUE : HI_FALSE;
+                if (parse_int(ini, "lowlight_drc_caps", "LowLightStrengthMax", 0, INT_MAX, &v) == CONFIG_OK) ll_str_max = (HI_U16)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastLowLightStrengthMax", 0, INT_MAX, &v) == CONFIG_OK) fast_str_max = (HI_U16)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightMixMax", 0, 255, &v) == CONFIG_OK) ll_bm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightMixMin", 0, 255, &v) == CONFIG_OK) ll_bm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightGainLmt", 0, 255, &v) == CONFIG_OK) ll_bg_lmt = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "BrightGainStep", 0, 255, &v) == CONFIG_OK) ll_bg_step = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "DarkMixMax", 0, 255, &v) == CONFIG_OK) ll_dm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "DarkMixMin", 0, 255, &v) == CONFIG_OK) ll_dm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "ContrastMax", 0, 255, &v) == CONFIG_OK) ll_cc_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastDarkMixMax", 0, 255, &v) == CONFIG_OK) fast_dm_max = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastDarkMixMin", 0, 255, &v) == CONFIG_OK) fast_dm_min = (HI_U8)v;
+                if (parse_int(ini, "lowlight_drc_caps", "FastContrastMax", 0, 255, &v) == CONFIG_OK) fast_cc_max = (HI_U8)v;
+            }
+        }
+
+        // Load AE profiles (day + low-light)
+        HI_BOOL have_day = HI_FALSE, have_low = HI_FALSE;
+        HI_U8 day_comp = 0, low_comp = 0;
+        HI_U32 day_expmax = 0, low_expmax = 0;
+        HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U32 day_againmax = 0, low_againmax = 0;
+        HI_U8 day_histoff = 0, low_histoff = 0;
+        HI_U16 day_histslope = 0, low_histslope = 0;
+        HI_U8 day_speed = 0, low_speed = 0;
+        v4_iq_dyn_load_ae_profile(ini, "static_ae", &have_day, &day_comp, &day_expmax, &day_sysgainmax, &day_againmax,
+                                  &day_histoff, &day_histslope, &day_speed);
+        // Prefer dedicated low-light color profile (for "DAY-at-night") if present.
+        // Fallback to ir_static_ae for legacy configs.
+        v4_iq_dyn_load_ae_profile(ini, "lowlight_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax, &low_againmax,
+                                  &low_histoff, &low_histslope, &low_speed);
+        if (!have_low) {
+            v4_iq_dyn_load_ae_profile(ini, "ir_static_ae", &have_low, &low_comp, &low_expmax, &low_sysgainmax, &low_againmax,
+                                      &low_histoff, &low_histslope, &low_speed);
+        }
+        if (!have_low) {
+            have_low = have_day;
+            low_comp = day_comp;
+            low_expmax = day_expmax;
+            low_sysgainmax = day_sysgainmax;
+            low_againmax = day_againmax;
+            low_histoff = day_histoff;
+            low_histslope = day_histslope;
+            low_speed = day_speed;
+        }
+
+        // Presence of RouteEx tables (used to trigger mode-switch AE apply even if other dynamics are off)
+        HI_BOOL have_rx_day = HI_FALSE, have_rx_ir = HI_FALSE;
+        {
+            int sec_s = 0, sec_e = 0;
+            have_rx_day = (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) ? HI_TRUE : HI_FALSE;
+            sec_s = sec_e = 0;
+            have_rx_ir = (section_pos(ini, "ir_static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) ? HI_TRUE : HI_FALSE;
+        }
+
         pthread_mutex_lock(&_v4_iq_dyn.lock);
         _v4_iq_dyn.upFrameIso = up;
         _v4_iq_dyn.downFrameIso = down;
+        _v4_iq_dyn.lowlight_auto_ae = ll_en;
+        _v4_iq_dyn.lowlight_iso = ll_iso;
+        _v4_iq_dyn.lowlight_exptime = ll_exptime;
+        _v4_iq_dyn.have_lowlight_fast = have_fast;
+        _v4_iq_dyn.lowlight_fast_lum = ll_fast_lum;
+        _v4_iq_dyn.lowlight_fast_expmax = ll_fast_expmax;
+        _v4_iq_dyn.lowlight_fast_againmax = ll_fast_againmax;
+        _v4_iq_dyn.lowlight_fast_comp_boost = ll_fast_comp_boost;
+        _v4_iq_dyn.have_lowlight_fx = have_fx;
+        _v4_iq_dyn.noisy_gamma_iso = noisy_gamma_iso;
+        _v4_iq_dyn.noisy_gamma_dgain = noisy_gamma_dg;
+        _v4_iq_dyn.noisy_gamma_ispdgain = noisy_gamma_ispg;
+        _v4_iq_dyn.noisy_sharpen_iso = noisy_sh_iso;
+        _v4_iq_dyn.noisy_sharpen_dgain = noisy_sh_dg;
+        _v4_iq_dyn.noisy_sharpen_ispdgain = noisy_sh_ispg;
+        _v4_iq_dyn.have_lowlight_sharpen_ah = have_ah;
+        _v4_iq_dyn.ah_over_pct = ah_over_pct;
+        _v4_iq_dyn.ah_under_pct = ah_under_pct;
+        _v4_iq_dyn.ah_min_over = ah_min_over;
+        _v4_iq_dyn.ah_min_under = ah_min_under;
+        _v4_iq_dyn.ah_shootsup_min = ah_shootsup_min;
+        _v4_iq_dyn.ah_edgefilt_min = ah_edgefilt_min;
+        _v4_iq_dyn.ah_maxsharpgain_cap = ah_maxsharp_cap;
+        _v4_iq_dyn.ah_edgestr_pct = ah_edgestr_pct;
+        _v4_iq_dyn.ah_texstr_pct = ah_texstr_pct;
+        _v4_iq_dyn.have_lowlight_drc_caps = have_drc_caps;
+        _v4_iq_dyn.ll_drc_strength_max = ll_str_max;
+        _v4_iq_dyn.fast_drc_strength_max = fast_str_max;
+        _v4_iq_dyn.ll_bright_mix_max = ll_bm_max;
+        _v4_iq_dyn.ll_bright_mix_min = ll_bm_min;
+        _v4_iq_dyn.ll_bright_gain_lmt = ll_bg_lmt;
+        _v4_iq_dyn.ll_bright_gain_step = ll_bg_step;
+        _v4_iq_dyn.ll_dark_mix_max = ll_dm_max;
+        _v4_iq_dyn.ll_dark_mix_min = ll_dm_min;
+        _v4_iq_dyn.ll_contrast_max = ll_cc_max;
+        _v4_iq_dyn.fast_dark_mix_max = fast_dm_max;
+        _v4_iq_dyn.fast_dark_mix_min = fast_dm_min;
+        _v4_iq_dyn.fast_contrast_max = fast_cc_max;
+        _v4_iq_dyn.have_ae_day = have_day;
+        _v4_iq_dyn.have_ae_low = have_low;
+        _v4_iq_dyn.have_aerouteex_day = have_rx_day;
+        _v4_iq_dyn.have_aerouteex_ir = have_rx_ir;
+        _v4_iq_dyn.last_ae_lowlight = HI_FALSE;
+        _v4_iq_dyn.ae_day_comp = day_comp;
+        _v4_iq_dyn.ae_low_comp = low_comp;
+        _v4_iq_dyn.ae_day_expmax = day_expmax;
+        _v4_iq_dyn.ae_low_expmax = low_expmax;
+        _v4_iq_dyn.ae_day_sysgainmax = day_sysgainmax;
+        _v4_iq_dyn.ae_low_sysgainmax = low_sysgainmax;
+        _v4_iq_dyn.ae_day_againmax = day_againmax;
+        _v4_iq_dyn.ae_low_againmax = low_againmax;
+        _v4_iq_dyn.ae_day_histoff = day_histoff;
+        _v4_iq_dyn.ae_low_histoff = low_histoff;
+        _v4_iq_dyn.ae_day_histslope = day_histslope;
+        _v4_iq_dyn.ae_low_histslope = low_histslope;
+        _v4_iq_dyn.ae_day_speed = day_speed;
+        _v4_iq_dyn.ae_low_speed = low_speed;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
+
         if (up || down)
             HAL_INFO("v4_iq", "all_param: UpFrameIso=%u DownFrameIso=%u\n", (unsigned)up, (unsigned)down);
+        if (ll_en)
+            HAL_INFO("v4_iq", "all_param: LowLightAutoAE=1 LowLightIso=%u LowLightExpTime=%u\n",
+                     (unsigned)ll_iso, (unsigned)ll_exptime);
     }
 
     // static_3dnr (day) and ir_static_3dnr (night)
@@ -2230,6 +2695,8 @@ static void v4_iq_dyn_load_from_ini(struct IniConfig *ini, bool enableDynDehaze,
         HAL_INFO("v4_iq", "Dynamic Linear DRC: loaded [ir_dynamic_linear_drc] (%d points)\n", drc_ir.n);
 }
 
+static void v4_iq_apply_ae_route_for_current_mode(int pipe);
+
 static void *v4_iq_dynamic_thread(void *arg) {
     int pipe = (int)(intptr_t)arg;
     usleep(700 * 1000);
@@ -2241,11 +2708,42 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
     v4_iq_dyn_unbypass_modules(pipe);
 
+    HI_BOOL last_mode_valid = HI_FALSE;
+    bool last_ir_mode = false;
+
     for (;;) {
         v4_iq_dyn_dehaze_cfg deh_day, deh_ir;
         v4_iq_dyn_linear_drc_cfg drc_day, drc_ir;
         v4_iq_3dnr_cfg nr_day, nr_ir;
         HI_U32 upIso = 0, downIso = 0;
+        HI_BOOL ll_ae = HI_FALSE;
+        HI_U32 ll_iso = 0, ll_exptime = 0;
+        HI_BOOL have_ae_day = HI_FALSE, have_ae_low = HI_FALSE;
+        HI_BOOL last_ae_low = HI_FALSE;
+        HI_U8 day_comp = 0, low_comp = 0;
+        HI_U32 day_expmax = 0, low_expmax = 0;
+        HI_U32 day_sysgainmax = 0, low_sysgainmax = 0;
+        HI_U32 day_againmax = 0, low_againmax = 0;
+        HI_U8 day_histoff = 0, low_histoff = 0;
+        HI_U16 day_histslope = 0, low_histslope = 0;
+        HI_U8 day_speed = 0, low_speed = 0;
+        HI_BOOL have_fast = HI_FALSE;
+        HI_U8 ll_fast_lum = 0;
+        HI_U32 ll_fast_expmax = 0;
+        HI_U32 ll_fast_againmax = 0;
+        HI_U8 ll_fast_comp_boost = 0;
+        HI_BOOL have_fx = HI_FALSE;
+        HI_U32 noisy_gamma_iso = 0, noisy_gamma_dg = 0, noisy_gamma_ispg = 0;
+        HI_U32 noisy_sh_iso = 0, noisy_sh_dg = 0, noisy_sh_ispg = 0;
+        HI_BOOL have_ah = HI_FALSE;
+        HI_U8 ah_over_pct = 0, ah_under_pct = 0, ah_min_over = 0, ah_min_under = 0;
+        HI_U8 ah_shootsup_min = 0, ah_edgefilt_min = 0, ah_edgestr_pct = 0, ah_texstr_pct = 0;
+        HI_U16 ah_maxsharp_cap = 0;
+        HI_BOOL have_drc_caps = HI_FALSE;
+        HI_U16 ll_str_max = 0, fast_str_max = 0;
+        HI_U8 ll_bm_max = 0, ll_bm_min = 0, ll_bg_lmt = 0, ll_bg_step = 0;
+        HI_U8 ll_dm_max = 0, ll_dm_min = 0, ll_cc_max = 0;
+        HI_U8 fast_dm_max = 0, fast_dm_min = 0, fast_cc_max = 0;
         int last_nr_idx = -1;
         HI_BOOL last_nr_ir = HI_FALSE;
         int nr3d_fail_count = 0;
@@ -2263,6 +2761,61 @@ static void *v4_iq_dynamic_thread(void *arg) {
         nr_ir = _v4_iq_dyn.nr3d_ir;
         upIso = _v4_iq_dyn.upFrameIso;
         downIso = _v4_iq_dyn.downFrameIso;
+        ll_ae = _v4_iq_dyn.lowlight_auto_ae;
+        ll_iso = _v4_iq_dyn.lowlight_iso;
+        ll_exptime = _v4_iq_dyn.lowlight_exptime;
+        have_ae_day = _v4_iq_dyn.have_ae_day;
+        have_ae_low = _v4_iq_dyn.have_ae_low;
+        last_ae_low = _v4_iq_dyn.last_ae_lowlight;
+        day_comp = _v4_iq_dyn.ae_day_comp;
+        low_comp = _v4_iq_dyn.ae_low_comp;
+        day_expmax = _v4_iq_dyn.ae_day_expmax;
+        low_expmax = _v4_iq_dyn.ae_low_expmax;
+        day_sysgainmax = _v4_iq_dyn.ae_day_sysgainmax;
+        low_sysgainmax = _v4_iq_dyn.ae_low_sysgainmax;
+        day_againmax = _v4_iq_dyn.ae_day_againmax;
+        low_againmax = _v4_iq_dyn.ae_low_againmax;
+        day_histoff = _v4_iq_dyn.ae_day_histoff;
+        low_histoff = _v4_iq_dyn.ae_low_histoff;
+        day_histslope = _v4_iq_dyn.ae_day_histslope;
+        low_histslope = _v4_iq_dyn.ae_low_histslope;
+        day_speed = _v4_iq_dyn.ae_day_speed;
+        low_speed = _v4_iq_dyn.ae_low_speed;
+        have_fast = _v4_iq_dyn.have_lowlight_fast;
+        ll_fast_lum = _v4_iq_dyn.lowlight_fast_lum;
+        ll_fast_expmax = _v4_iq_dyn.lowlight_fast_expmax;
+        ll_fast_againmax = _v4_iq_dyn.lowlight_fast_againmax;
+        ll_fast_comp_boost = _v4_iq_dyn.lowlight_fast_comp_boost;
+        have_fx = _v4_iq_dyn.have_lowlight_fx;
+        noisy_gamma_iso = _v4_iq_dyn.noisy_gamma_iso;
+        noisy_gamma_dg = _v4_iq_dyn.noisy_gamma_dgain;
+        noisy_gamma_ispg = _v4_iq_dyn.noisy_gamma_ispdgain;
+        noisy_sh_iso = _v4_iq_dyn.noisy_sharpen_iso;
+        noisy_sh_dg = _v4_iq_dyn.noisy_sharpen_dgain;
+        noisy_sh_ispg = _v4_iq_dyn.noisy_sharpen_ispdgain;
+        have_ah = _v4_iq_dyn.have_lowlight_sharpen_ah;
+        ah_over_pct = _v4_iq_dyn.ah_over_pct;
+        ah_under_pct = _v4_iq_dyn.ah_under_pct;
+        ah_min_over = _v4_iq_dyn.ah_min_over;
+        ah_min_under = _v4_iq_dyn.ah_min_under;
+        ah_shootsup_min = _v4_iq_dyn.ah_shootsup_min;
+        ah_edgefilt_min = _v4_iq_dyn.ah_edgefilt_min;
+        ah_maxsharp_cap = _v4_iq_dyn.ah_maxsharpgain_cap;
+        ah_edgestr_pct = _v4_iq_dyn.ah_edgestr_pct;
+        ah_texstr_pct = _v4_iq_dyn.ah_texstr_pct;
+        have_drc_caps = _v4_iq_dyn.have_lowlight_drc_caps;
+        ll_str_max = _v4_iq_dyn.ll_drc_strength_max;
+        fast_str_max = _v4_iq_dyn.fast_drc_strength_max;
+        ll_bm_max = _v4_iq_dyn.ll_bright_mix_max;
+        ll_bm_min = _v4_iq_dyn.ll_bright_mix_min;
+        ll_bg_lmt = _v4_iq_dyn.ll_bright_gain_lmt;
+        ll_bg_step = _v4_iq_dyn.ll_bright_gain_step;
+        ll_dm_max = _v4_iq_dyn.ll_dark_mix_max;
+        ll_dm_min = _v4_iq_dyn.ll_dark_mix_min;
+        ll_cc_max = _v4_iq_dyn.ll_contrast_max;
+        fast_dm_max = _v4_iq_dyn.fast_dark_mix_max;
+        fast_dm_min = _v4_iq_dyn.fast_dark_mix_min;
+        fast_cc_max = _v4_iq_dyn.fast_contrast_max;
         last_nr_idx = _v4_iq_dyn.last_nr3d_idx;
         last_nr_ir = _v4_iq_dyn.last_nr3d_is_ir;
         nr3d_fail_count = _v4_iq_dyn.nr3d_fail_count;
@@ -2274,7 +2827,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
 
         if (!deh_day.enabled && !deh_ir.enabled &&
             !drc_day.enabled && !drc_ir.enabled &&
-            !nr_day.enabled && !nr_ir.enabled) {
+            !nr_day.enabled && !nr_ir.enabled &&
+            !(ll_ae && have_ae_day && have_ae_low)) {
             usleep(1000 * 1000);
             continue;
         }
@@ -2286,10 +2840,47 @@ static void *v4_iq_dynamic_thread(void *arg) {
             continue;
         }
         HI_U32 iso = expi.u32ISO;
-
         const bool is_ir_mode = night_mode_on();
+
+        if (!last_mode_valid || is_ir_mode != last_ir_mode) {
+            last_mode_valid = HI_TRUE;
+            last_ir_mode = is_ir_mode;
+            HAL_INFO("v4_iq", "AE route: mode switch -> apply %s tables\n", is_ir_mode ? "IR" : "DAY");
+            v4_iq_apply_ae_route_for_current_mode(pipe);
+        }
+
+        const HI_BOOL is_lowlight =
+            (!is_ir_mode &&
+             ll_ae && have_ae_day && have_ae_low &&
+             (iso >= ll_iso || expi.u32ExpTime >= ll_exptime)) ? HI_TRUE : HI_FALSE;
+
+        // Debug: log exposure state periodically, and always when very bright (snow clipping).
+        // This makes AE/DRC tuning deterministic.
+        static time_t last_dbg = 0;
+        time_t now = time(NULL);
+        HI_BOOL very_bright = (expi.u8AveLum >= 210) ? HI_TRUE : HI_FALSE;
+        if (now != (time_t)-1 && (very_bright || (now - last_dbg) >= 5)) {
+            last_dbg = now;
+            HAL_INFO("v4_iq",
+                "ISP exp: iso=%u expTime=%u again=%u dgain=%u ispdgain=%u aveLum=%u expIsMax=%d (mode=%s)\n",
+                (unsigned)expi.u32ISO,
+                (unsigned)expi.u32ExpTime,
+                (unsigned)expi.u32AGain,
+                (unsigned)expi.u32DGain,
+                (unsigned)expi.u32ISPDGain,
+                (unsigned)expi.u8AveLum,
+                (int)expi.bExposureIsMAX,
+                night_mode_on() ? "IR" : "DAY");
+        }
+
         const v4_iq_dyn_dehaze_cfg *deh = is_ir_mode ? &deh_ir : &deh_day;
         const v4_iq_dyn_linear_drc_cfg *drc = is_ir_mode ? &drc_ir : &drc_day;
+        int drc_fail_count = 0;
+        HI_BOOL drc_disabled = HI_FALSE;
+        pthread_mutex_lock(&_v4_iq_dyn.lock);
+        drc_fail_count = _v4_iq_dyn.drc_fail_count;
+        drc_disabled = _v4_iq_dyn.drc_disabled;
+        pthread_mutex_unlock(&_v4_iq_dyn.lock);
 
         // Dehaze by ISO
         if (deh->enabled && v4_isp.fnGetDehazeAttr && v4_isp.fnSetDehazeAttr) {
@@ -2315,7 +2906,8 @@ static void *v4_iq_dynamic_thread(void *arg) {
         }
 
         // Linear DRC by ISO
-        if (drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
+        // NOTE: In low-light (DAY-at-night) we intentionally reduce shadow lift to avoid amplifying noise.
+        if (!drc_disabled && drc->enabled && v4_isp.fnGetDRCAttr && v4_isp.fnSetDRCAttr) {
             HI_U32 u16vals[V4_IQ_DYN_MAX_POINTS];
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->strength[i];
             HI_U16 strength = (HI_U16)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
@@ -2361,10 +2953,42 @@ static void *v4_iq_dynamic_thread(void *arg) {
             for (int i = 0; i < drc->n; i++) u16vals[i] = drc->stretch[i];
             cur.stretch = (HI_U8)v4_iq_dyn_interp_u32(iso, drc->iso, u16vals, drc->n);
 
+            if (is_lowlight && have_drc_caps) {
+                const HI_BOOL fast_ll = (have_fast && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
+                // Choose caps (fast caps fallback to normal caps if not provided)
+                HI_U16 max_strength = fast_ll ? fast_str_max : ll_str_max;
+                if (max_strength == 0) max_strength = cur.strength; // no cap if not configured
+
+                HI_U8 bm_max = ll_bm_max, bm_min = ll_bm_min, bg_lmt = ll_bg_lmt, bg_step = ll_bg_step;
+                HI_U8 dm_max = fast_ll ? (fast_dm_max ? fast_dm_max : ll_dm_max) : ll_dm_max;
+                HI_U8 dm_min = fast_ll ? (fast_dm_min ? fast_dm_min : ll_dm_min) : ll_dm_min;
+                HI_U8 cc_max = fast_ll ? (fast_cc_max ? fast_cc_max : ll_cc_max) : ll_cc_max;
+
+                if (max_strength && cur.strength > max_strength) cur.strength = max_strength;
+                if (bm_max && cur.localMixBrightMax > bm_max) cur.localMixBrightMax = bm_max;
+                if (bm_min && cur.localMixBrightMin > bm_min) cur.localMixBrightMin = bm_min;
+                if (bg_lmt && cur.brightGainLmt > bg_lmt) cur.brightGainLmt = bg_lmt;
+                if (bg_step && cur.brightGainLmtStep > bg_step) cur.brightGainLmtStep = bg_step;
+                if (dm_max && cur.localMixDarkMax > dm_max) cur.localMixDarkMax = dm_max;
+                if (dm_min && cur.localMixDarkMin > dm_min) cur.localMixDarkMin = dm_min;
+                if (cc_max && cur.contrastControl > cc_max) cur.contrastControl = cc_max;
+            }
+
             if (!have_last || memcmp(&cur, &last_drc, sizeof(cur)) != 0) {
                 ISP_DRC_ATTR_S da;
                 memset(&da, 0, sizeof(da));
                 if (!v4_isp.fnGetDRCAttr(pipe, &da)) {
+                    // Ensure DRC module isn't bypassed (some firmwares default to bypass in linear mode).
+                    if (v4_isp.fnGetModuleControl && v4_isp.fnSetModuleControl) {
+                        ISP_MODULE_CTRL_U mc;
+                        memset(&mc, 0, sizeof(mc));
+                        if (!v4_isp.fnGetModuleControl(pipe, &mc)) {
+                            mc.u64Key &= ~(1ULL << 8); // bitBypassDRC
+                            (void)v4_isp.fnSetModuleControl(pipe, &mc);
+                        }
+                    }
+
+                    ISP_DRC_ATTR_S orig = da;
                     da.bEnable = HI_TRUE;
                     da.enOpType = OP_TYPE_AUTO;
                     da.enCurveSelect = DRC_CURVE_ASYMMETRY;
@@ -2386,16 +3010,243 @@ static void *v4_iq_dynamic_thread(void *arg) {
                     da.stAsymmetryCurve.u8Compress = cur.compress;
                     da.stAsymmetryCurve.u8Stretch = cur.stretch;
 
-                    if (!v4_isp.fnSetDRCAttr(pipe, &da)) {
+                    int sr = v4_isp.fnSetDRCAttr(pipe, &da);
+                    if (!sr) {
                         pthread_mutex_lock(&_v4_iq_dyn.lock);
                         _v4_iq_dyn.last_drc = cur;
                         _v4_iq_dyn.have_last = HI_TRUE;
+                        _v4_iq_dyn.drc_fail_count = 0;
+                        _v4_iq_dyn.drc_disabled = HI_FALSE;
                         pthread_mutex_unlock(&_v4_iq_dyn.lock);
                         HAL_INFO("v4_iq", "Dynamic Linear DRC: iso=%u strength=%u contrast=%u\n",
                             (unsigned)iso, (unsigned)cur.strength, (unsigned)cur.contrastControl);
+                    } else {
+                        // Some SDK builds reject ASYMMETRY params (enum/layout differences).
+                        // Fallback: enable DRC with minimal fields and keep existing curve select.
+                        HAL_WARNING("v4_iq",
+                            "Dynamic Linear DRC: SetDRCAttr(ASYMMETRY) failed with %#x (iso=%u strength=%u); retrying minimal\n",
+                            sr, (unsigned)iso, (unsigned)cur.strength);
+
+                        ISP_DRC_ATTR_S fb = orig;
+                        fb.bEnable = HI_TRUE;
+                        fb.enOpType = OP_TYPE_AUTO;
+                        fb.stAuto.u16Strength = cur.strength;
+                        // Try a safer curve select if orig is out of range.
+                        if (fb.enCurveSelect < DRC_CURVE_ASYMMETRY || fb.enCurveSelect > DRC_CURVE_USER)
+                            fb.enCurveSelect = DRC_CURVE_CUBIC;
+                        sr = v4_isp.fnSetDRCAttr(pipe, &fb);
+                        if (!sr) {
+                            pthread_mutex_lock(&_v4_iq_dyn.lock);
+                            _v4_iq_dyn.last_drc = cur;
+                            _v4_iq_dyn.have_last = HI_TRUE;
+                            _v4_iq_dyn.drc_fail_count = 0;
+                            _v4_iq_dyn.drc_disabled = HI_FALSE;
+                            pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                            HAL_INFO("v4_iq", "Dynamic Linear DRC: applied via fallback (curve=%d strength=%u)\n",
+                                (int)fb.enCurveSelect, (unsigned)cur.strength);
+                        } else {
+                            HAL_WARNING("v4_iq",
+                                "Dynamic Linear DRC: fallback SetDRCAttr failed with %#x (curve=%d strength=%u)\n",
+                                sr, (int)fb.enCurveSelect, (unsigned)cur.strength);
+
+                            pthread_mutex_lock(&_v4_iq_dyn.lock);
+                            _v4_iq_dyn.drc_fail_count++;
+                            int fc = _v4_iq_dyn.drc_fail_count;
+                            if (fc >= 3) {
+                                _v4_iq_dyn.drc_disabled = HI_TRUE;
+                                HAL_WARNING("v4_iq",
+                                    "Dynamic Linear DRC: disabling due to repeated failures (last=%#x)\n", sr);
+                            }
+                            pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        }
                     }
                 }
             }
+        }
+
+        // Auto AE switching by low-light (even if user keeps DAY mode at night)
+        // IMPORTANT: do NOT apply this logic in true IR mode; IR must use [ir_static_ae].
+        if (!is_ir_mode && ll_ae && have_ae_day && have_ae_low &&
+            v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+            ISP_EXPOSURE_ATTR_S ea;
+            memset(&ea, 0, sizeof(ea));
+            if (v4_isp.fnGetExposureAttr(pipe, &ea) == 0) {
+                // Compute desired knobs for current lowlight state
+                HI_U8 want_comp = is_lowlight ? low_comp : day_comp;
+                HI_U32 want_expmax = is_lowlight ? low_expmax : day_expmax;
+                HI_U32 want_sysgainmax = is_lowlight ? low_sysgainmax : day_sysgainmax;
+                HI_U32 want_againmax = is_lowlight ? low_againmax : day_againmax;
+                HI_U8 want_histoff = is_lowlight ? low_histoff : day_histoff;
+                HI_U16 want_histslope = is_lowlight ? low_histslope : day_histslope;
+                HI_U8 want_speed = is_lowlight ? low_speed : day_speed;
+
+                // Fast lowlight: if configured and scene is bright enough, prefer shorter shutter to reduce motion blur.
+                // Comp boost helps keep the image from looking "too dark" when we cut shutter time.
+                const HI_BOOL fast_ll = (is_lowlight && have_fast && ll_fast_expmax > 0 && expi.u8AveLum >= ll_fast_lum) ? HI_TRUE : HI_FALSE;
+                if (fast_ll) {
+                    if (want_expmax > ll_fast_expmax) want_expmax = ll_fast_expmax;
+                    if (ll_fast_againmax > 0) want_againmax = ll_fast_againmax;
+                    if (ll_fast_comp_boost > 0) {
+                        HI_U32 c = (HI_U32)want_comp + (HI_U32)ll_fast_comp_boost;
+                        if (c > 255) c = 255;
+                        want_comp = (HI_U8)c;
+                    }
+                }
+
+                // Apply if state changed OR if current params don't match desired
+                const HI_BOOL mismatch =
+                    (ea.stAuto.u8Compensation != want_comp) ||
+                    (ea.stAuto.stExpTimeRange.u32Max != want_expmax) ||
+                    (ea.stAuto.stSysGainRange.u32Max != want_sysgainmax) ||
+                    ((want_againmax != 0) && (ea.stAuto.stAGainRange.u32Max != want_againmax)) ||
+                    (ea.stAuto.u8MaxHistOffset != want_histoff) ||
+                    (ea.stAuto.u16HistRatioSlope != want_histslope) ||
+                    (ea.stAuto.u8Speed != want_speed);
+
+                // Rate limit retries to avoid log spam
+                static time_t last_ae_try = 0;
+                time_t now2 = time(NULL);
+                const HI_BOOL allow_try =
+                    (now2 == (time_t)-1) ? HI_TRUE : ((now2 - last_ae_try) >= 2);
+
+                if ((is_lowlight != last_ae_low || mismatch) && allow_try) {
+                    last_ae_try = now2;
+
+                    ea.stAuto.u8Compensation = want_comp;
+                    ea.stAuto.stExpTimeRange.u32Max = want_expmax;
+                    ea.stAuto.stSysGainRange.u32Max = want_sysgainmax;
+                    if (want_againmax != 0)
+                        ea.stAuto.stAGainRange.u32Max = want_againmax;
+                    ea.stAuto.u8MaxHistOffset = want_histoff;
+                    ea.stAuto.u16HistRatioSlope = want_histslope;
+                    ea.stAuto.u8Speed = want_speed;
+
+                    int sr = v4_isp.fnSetExposureAttr(pipe, &ea);
+                    if (!sr) {
+                        pthread_mutex_lock(&_v4_iq_dyn.lock);
+                        _v4_iq_dyn.last_ae_lowlight = is_lowlight;
+                        pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                        HAL_INFO("v4_iq",
+                            "Dynamic AE: lowlight=%d iso=%u expTime=%u aveLum=%u comp=%u expMax=%u aGainMax=%u sysGainMax=%u\n",
+                            (int)is_lowlight, (unsigned)iso, (unsigned)expi.u32ExpTime, (unsigned)expi.u8AveLum,
+                            (unsigned)want_comp, (unsigned)want_expmax, (unsigned)want_againmax, (unsigned)want_sysgainmax);
+                    } else {
+                        HAL_WARNING("v4_iq",
+                            "Dynamic AE: SetExposureAttr failed with %#x (lowlight=%d wantComp=%u wantExpMax=%u)\n",
+                            sr, (int)is_lowlight, (unsigned)want_comp, (unsigned)want_expmax);
+                    }
+                }
+            }
+        }
+
+        // Optional lowlight FX/marketing processing (enabled only if configured in IQ):
+        // When lowlight is active and the image is truly noisy, reduce "marketing" processing:
+        // - Gamma often raises shadows and reveals noise
+        // - Sharpen turns noise into grain
+        // But if ISO/gains are low (clean image), keep original IQ look.
+        {
+            if (!have_fx) {
+                // No lowlight FX section in IQ => do not touch gamma/sharpen dynamically.
+                goto fx_done;
+            }
+            static HI_BOOL baseline_init = HI_FALSE;
+            static HI_BOOL baseline_gamma = HI_TRUE;
+            static HI_BOOL baseline_sharpen = HI_TRUE;
+            static HI_BOOL baseline_sh_attr_valid = HI_FALSE;
+            static ISP_SHARPEN_ATTR_S baseline_sh_attr;
+            static HI_BOOL last_noisy_fx = HI_FALSE;
+            static time_t last_fx_try = 0;
+            time_t now3 = time(NULL);
+            HI_BOOL allow_fx = (now3 == (time_t)-1) ? HI_TRUE : ((now3 - last_fx_try) >= 2);
+            // Consider it "noisy" only when we actually need to hide noise.
+            // Thresholds are conservative; tune later if needed.
+            // Separate thresholds: keep gamma longer, disable sharpen earlier.
+            //
+            // IMPORTANT: Apply this not only in "DAY-at-night" lowlight, but also in true IR mode.
+            // In IR the scene often sits at max exposure and high digital/ISP gain; leaving gamma/sharpen
+            // enabled makes noise look much worse ("sand"). This is NOT about "crank gain then denoise";
+            // it's about avoiding noise amplification by marketing processing.
+            const HI_BOOL allow_noisy_fx = (is_lowlight == HI_TRUE || is_ir_mode) ? HI_TRUE : HI_FALSE;
+            const HI_BOOL noisy_gamma =
+                allow_noisy_fx &&
+                ((noisy_gamma_iso && iso >= noisy_gamma_iso) ||
+                 (noisy_gamma_dg && expi.u32DGain > noisy_gamma_dg) ||
+                 (noisy_gamma_ispg && expi.u32ISPDGain > noisy_gamma_ispg));
+            const HI_BOOL noisy_sharpen =
+                allow_noisy_fx &&
+                ((noisy_sh_iso && iso >= noisy_sh_iso) ||
+                 (noisy_sh_dg && expi.u32DGain > noisy_sh_dg) ||
+                 (noisy_sh_ispg && expi.u32ISPDGain > noisy_sh_ispg));
+            const HI_BOOL noisy_lowlight = (noisy_gamma || noisy_sharpen) ? HI_TRUE : HI_FALSE;
+
+            if (allow_fx && (!baseline_init || noisy_lowlight != last_noisy_fx)) {
+                last_fx_try = now3;
+
+                if (v4_isp.fnGetGammaAttr && v4_isp.fnSetGammaAttr) {
+                    ISP_GAMMA_ATTR_S ga;
+                    memset(&ga, 0, sizeof(ga));
+                    if (!v4_isp.fnGetGammaAttr(pipe, &ga)) {
+                        if (!baseline_init) baseline_gamma = ga.bEnable;
+                        ga.bEnable = noisy_gamma ? HI_FALSE : baseline_gamma;
+                        (void)v4_isp.fnSetGammaAttr(pipe, &ga);
+                    }
+                }
+
+                if (v4_isp.fnGetIspSharpenAttr && v4_isp.fnSetIspSharpenAttr) {
+                    ISP_SHARPEN_ATTR_S sh;
+                    memset(&sh, 0, sizeof(sh));
+                    if (!v4_isp.fnGetIspSharpenAttr(pipe, &sh)) {
+                        if (!baseline_init) baseline_sharpen = sh.bEnable;
+                        if (!baseline_sh_attr_valid) {
+                            baseline_sh_attr = sh;
+                            baseline_sh_attr_valid = HI_TRUE;
+                        }
+
+                        // Start from baseline each time to avoid accumulating modifications.
+                        if (baseline_sh_attr_valid) sh = baseline_sh_attr;
+
+                        // Anti-halo sharpen in lowlight (optional, enabled only if configured):
+                        // keep sharpening ON for marketing, but reduce overshoot/undershoot which causes glow around lamps.
+                        if (is_lowlight && !noisy_sharpen && have_ah) {
+                            sh.bEnable = baseline_sharpen;
+                            if (sh.enOpType == OP_TYPE_AUTO) {
+                                for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+                                    // Soften ringing/halos
+                                    if (ah_over_pct)  sh.stAuto.au8OverShoot[i]  = (HI_U8)((sh.stAuto.au8OverShoot[i]  * ah_over_pct) / 100);
+                                    if (ah_under_pct) sh.stAuto.au8UnderShoot[i] = (HI_U8)((sh.stAuto.au8UnderShoot[i] * ah_under_pct) / 100);
+                                    if (ah_min_over && sh.stAuto.au8OverShoot[i] < ah_min_over)   sh.stAuto.au8OverShoot[i] = ah_min_over;
+                                    if (ah_min_under && sh.stAuto.au8UnderShoot[i] < ah_min_under) sh.stAuto.au8UnderShoot[i] = ah_min_under;
+                                    // Increase suppression/filter a bit to reduce edge glow
+                                    if (ah_shootsup_min && sh.stAuto.au8ShootSupStr[i] < ah_shootsup_min) sh.stAuto.au8ShootSupStr[i] = ah_shootsup_min;
+                                    if (ah_edgefilt_min && sh.stAuto.au8EdgeFiltStr[i]  < ah_edgefilt_min) sh.stAuto.au8EdgeFiltStr[i] = ah_edgefilt_min;
+                                    if (ah_maxsharp_cap && sh.stAuto.au16MaxSharpGain[i] > ah_maxsharp_cap) sh.stAuto.au16MaxSharpGain[i] = ah_maxsharp_cap;
+                                }
+                                // Slightly reduce overall edge/texture strength to reduce halos, but keep crispness.
+                                for (int g = 0; g < ISP_SHARPEN_GAIN_NUM; g++) {
+                                    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+                                        if (ah_texstr_pct)  sh.stAuto.au16TextureStr[g][i] = (HI_U16)((sh.stAuto.au16TextureStr[g][i] * ah_texstr_pct) / 100);
+                                        if (ah_edgestr_pct) sh.stAuto.au16EdgeStr[g][i]    = (HI_U16)((sh.stAuto.au16EdgeStr[g][i]    * ah_edgestr_pct) / 100);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Noisy: disable sharpening to avoid turning noise into grain
+                            sh.bEnable = noisy_sharpen ? HI_FALSE : baseline_sharpen;
+                        }
+                        (void)v4_isp.fnSetIspSharpenAttr(pipe, &sh);
+                    }
+                }
+
+                baseline_init = HI_TRUE;
+                last_noisy_fx = noisy_lowlight;
+                HAL_INFO("v4_iq", "Dynamic FX: lowlight=%d noisy=%d gamma=%s sharpen=%s (iso=%u dg=%u ispdg=%u)\n",
+                    (int)is_lowlight, (int)noisy_lowlight,
+                    noisy_gamma ? "off" : (baseline_gamma ? "on" : "off"),
+                    noisy_sharpen ? "off" : (baseline_sharpen ? "on" : "off"),
+                    (unsigned)iso, (unsigned)expi.u32DGain, (unsigned)expi.u32ISPDGain);
+            }
+fx_done:
+            ;
         }
 
         // 3DNR (VPSS NRX) by ISO + night mode
@@ -2477,7 +3328,9 @@ static void v4_iq_dyn_maybe_start(int pipe) {
     pthread_mutex_lock(&_v4_iq_dyn.lock);
     need = (_v4_iq_dyn.dehaze_day.enabled || _v4_iq_dyn.dehaze_ir.enabled ||
             _v4_iq_dyn.linear_drc_day.enabled || _v4_iq_dyn.linear_drc_ir.enabled ||
-            _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled);
+            _v4_iq_dyn.nr3d_day.enabled || _v4_iq_dyn.nr3d_ir.enabled ||
+            _v4_iq_dyn.have_aerouteex_day || _v4_iq_dyn.have_aerouteex_ir ||
+            (_v4_iq_dyn.lowlight_auto_ae && _v4_iq_dyn.have_ae_day && _v4_iq_dyn.have_ae_low));
     if (need && !_v4_iq_dyn.thread_started) {
         _v4_iq_dyn.thread_started = true;
         start = true;
@@ -2496,13 +3349,40 @@ static void v4_iq_dyn_maybe_start(int pipe) {
     }
 }
 
+static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe);
+static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe);
+
+static void v4_iq_apply_ae_route_for_current_mode(int pipe) {
+    if (!_v4_iq_cfg_path[0])
+        return;
+
+    struct IniConfig ini;
+    memset(&ini, 0, sizeof(ini));
+    FILE *file = fopen(_v4_iq_cfg_path, "r");
+    if (!open_config(&ini, &file))
+        return;
+    find_sections(&ini);
+
+    bool doStaticAE = true;
+    parse_bool(&ini, "module_state", "bStaticAE", &doStaticAE);
+    if (doStaticAE) {
+        (void)v4_iq_apply_static_ae(&ini, pipe);
+        (void)v4_iq_apply_static_aerouteex(&ini, pipe);
+    }
+
+    free(ini.str);
+}
+
 static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
     if (!v4_isp.fnGetExposureAttr || !v4_isp.fnSetExposureAttr) {
         HAL_INFO("v4_iq", "AE: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_ae";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_ae", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_ae", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_ae";
+    } else if (section_pos(ini, "static_ae", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE: no [static_ae] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -2517,13 +3397,13 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
 
     int val;
     // Top-level AE/exposure switches
-    if (parse_int(ini, "static_ae", "ByPass", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ByPass", 0, 1, &val) == CONFIG_OK)
         exp.bByPass = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "HistStatAdjust", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "HistStatAdjust", 0, 1, &val) == CONFIG_OK)
         exp.bHistStatAdjust = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AERunInterval", 1, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AERunInterval", 1, 255, &val) == CONFIG_OK)
         exp.u8AERunInterval = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AERouteExValid", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AERouteExValid", 0, 1, &val) == CONFIG_OK)
         exp.bAERouteExValid = (HI_BOOL)val;
     // If RouteEx table is known to be rejected by this SDK, don't let firmware try to use it.
     if (exp.bAERouteExValid) {
@@ -2532,90 +3412,90 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
         if (disabled) exp.bAERouteExValid = HI_FALSE;
     }
-    if (parse_int(ini, "static_ae", "PriorFrame", 0, 2, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "PriorFrame", 0, 2, &val) == CONFIG_OK)
         exp.enPriorFrame = (ISP_PRIOR_FRAME_E)val;
-    if (parse_int(ini, "static_ae", "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AEGainSepCfg", 0, 1, &val) == CONFIG_OK)
         exp.bAEGainSepCfg = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AEOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AEOpType", 0, 1, &val) == CONFIG_OK)
         exp.enOpType = (ISP_OP_TYPE_E)val;
 
     // Auto ranges (the most common knobs in vendor IQ)
-    if (parse_int(ini, "static_ae", "AutoExpTimeMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoExpTimeMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stExpTimeRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoExpTimeMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoExpTimeMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stExpTimeRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoAGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stAGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoAGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stAGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stDGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stDGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoISPDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoISPDGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stISPDGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoISPDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoISPDGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stISPDGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoSysGainMin", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSysGainMin", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stSysGainRange.u32Min = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSysGainMax", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.stSysGainRange.u32Max = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "AutoGainThreshold", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoGainThreshold", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stAuto.u32GainThreshold = (HI_U32)val;
 
     // Auto behavior
-    if (parse_int(ini, "static_ae", "AutoSpeed", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoSpeed", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Speed = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoBlackSpeedBias", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoBlackSpeedBias", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16BlackSpeedBias = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoTolerance", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoTolerance", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Tolerance = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoCompensation", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoCompensation", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8Compensation = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoEVBias", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoEVBias", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16EVBias = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoAEStrategyMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAEStrategyMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.enAEStrategyMode = (ISP_AE_STRATEGY_E)val;
-    if (parse_int(ini, "static_ae", "AutoHistRatioSlope", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoHistRatioSlope", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.u16HistRatioSlope = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoMaxHistOffset", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoMaxHistOffset", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.u8MaxHistOffset = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AutoAEMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoAEMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.enAEMode = (ISP_AE_MODE_E)val;
 
     // Anti-flicker (optional)
-    if (parse_int(ini, "static_ae", "AntiFlickerEnable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerEnable", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.bEnable = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "AntiFlickerFrequency", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerFrequency", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.u8Frequency = (HI_U8)val;
-    if (parse_int(ini, "static_ae", "AntiFlickerMode", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AntiFlickerMode", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stAntiflicker.enMode = (ISP_ANTIFLICKER_MODE_E)val;
-    if (parse_int(ini, "static_ae", "SubFlickerEnable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "SubFlickerEnable", 0, 1, &val) == CONFIG_OK)
         exp.stAuto.stSubflicker.bEnable = (HI_BOOL)val;
-    if (parse_int(ini, "static_ae", "SubFlickerLumaDiff", 0, 255, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "SubFlickerLumaDiff", 0, 255, &val) == CONFIG_OK)
         exp.stAuto.stSubflicker.u8LumaDiff = (HI_U8)val;
 
     // Manual exposure (optional)
-    if (parse_int(ini, "static_ae", "ManualExpTimeOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualExpTimeOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enExpTimeOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualAGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualAGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enAGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualDGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualDGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enDGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualISPDGainOpType", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualISPDGainOpType", 0, 1, &val) == CONFIG_OK)
         exp.stManual.enISPDGainOpType = (ISP_OP_TYPE_E)val;
-    if (parse_int(ini, "static_ae", "ManualExpTime", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualExpTime", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32ExpTime = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualAGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualAGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32AGain = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualDGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualDGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32DGain = (HI_U32)val;
-    if (parse_int(ini, "static_ae", "ManualISPDGain", 0, INT_MAX, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "ManualISPDGain", 0, INT_MAX, &val) == CONFIG_OK)
         exp.stManual.u32ISPDGain = (HI_U32)val;
 
-    if (parse_int(ini, "static_ae", "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoBlackDelayFrame", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.stAEDelayAttr.u16BlackDelayFrame = (HI_U16)val;
-    if (parse_int(ini, "static_ae", "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "AutoWhiteDelayFrame", 0, 65535, &val) == CONFIG_OK)
         exp.stAuto.stAEDelayAttr.u16WhiteDelayFrame = (HI_U16)val;
 
     ret = v4_isp.fnSetExposureAttr(pipe, &exp);
@@ -2626,8 +3506,19 @@ static int v4_iq_apply_static_ae(struct IniConfig *ini, int pipe) {
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetExposureAttr(pipe, &rb);
         if (!gr) {
-            HAL_INFO("v4_iq", "AE: applied (runInt=%u routeExValid=%d)\n",
-                (unsigned)rb.u8AERunInterval, (int)rb.bAERouteExValid);
+            HAL_INFO("v4_iq",
+                "AE: applied (runInt=%u routeExValid=%d comp=%u expMax=%u aGainMax=%u dGainMax=%u ispdGainMax=%u sysGainMax=%u speed=%u histOff=%u histSlope=%u)\n",
+                (unsigned)rb.u8AERunInterval,
+                (int)rb.bAERouteExValid,
+                (unsigned)rb.stAuto.u8Compensation,
+                (unsigned)rb.stAuto.stExpTimeRange.u32Max,
+                (unsigned)rb.stAuto.stAGainRange.u32Max,
+                (unsigned)rb.stAuto.stDGainRange.u32Max,
+                (unsigned)rb.stAuto.stISPDGainRange.u32Max,
+                (unsigned)rb.stAuto.stSysGainRange.u32Max,
+                (unsigned)rb.stAuto.u8Speed,
+                (unsigned)rb.stAuto.u8MaxHistOffset,
+                (unsigned)rb.stAuto.u16HistRatioSlope);
         } else {
             HAL_INFO("v4_iq", "AE: applied\n");
         }
@@ -2647,8 +3538,11 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE route-ex: disabled (previous SDK reject), skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_aerouteex";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_aerouteex", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_aerouteex";
+    } else if (section_pos(ini, "static_aerouteex", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE route-ex: no [static_aerouteex] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -2661,9 +3555,25 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         return ret;
     }
 
+    // Get current AE range limits so we can clamp route tables to what the firmware accepts.
+    HI_U32 exp_max = 0, exp_min = 0;
+    HI_U32 again_max = 0, dgain_max = 0, ispdgain_max = 0, sysgain_max = 0;
+    if (v4_isp.fnGetExposureAttr) {
+        ISP_EXPOSURE_ATTR_S exp;
+        memset(&exp, 0, sizeof(exp));
+        if (v4_isp.fnGetExposureAttr(pipe, &exp) == 0) {
+            exp_min = exp.stAuto.stExpTimeRange.u32Min;
+            exp_max = exp.stAuto.stExpTimeRange.u32Max;
+            again_max = exp.stAuto.stAGainRange.u32Max;
+            dgain_max = exp.stAuto.stDGainRange.u32Max;
+            ispdgain_max = exp.stAuto.stISPDGainRange.u32Max;
+            sysgain_max = exp.stAuto.stSysGainRange.u32Max;
+        }
+    }
+
     int total = 0;
-    if (parse_int(ini, "static_aerouteex", "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK) {
-        HAL_INFO("v4_iq", "AE route-ex: no static_aerouteex/TotalNum, skipping\n");
+    if (parse_int(ini, sec, "TotalNum", 0, ISP_AE_ROUTE_EX_MAX_NODES, &total) != CONFIG_OK) {
+        HAL_INFO("v4_iq", "AE route-ex: no %s/TotalNum, skipping\n", sec);
         return EXIT_SUCCESS;
     }
 
@@ -2672,10 +3582,10 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
     HI_U32 dgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
     HI_U32 ispdgain[ISP_AE_ROUTE_EX_MAX_NODES] = {0};
 
-    int nInts = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXIntTime", ints, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nAgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXAGain", again, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXDGain", dgain, ISP_AE_ROUTE_EX_MAX_NODES);
-    int nIspDgain = v4_iq_parse_multiline_u32(ini, "static_aerouteex", "RouteEXISPDGain", ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nInts = v4_iq_parse_multiline_u32(ini, sec, "RouteEXIntTime", ints, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nAgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXAGain", again, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nDgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXDGain", dgain, ISP_AE_ROUTE_EX_MAX_NODES);
+    int nIspDgain = v4_iq_parse_multiline_u32(ini, sec, "RouteEXISPDGain", ispdgain, ISP_AE_ROUTE_EX_MAX_NODES);
 
     route.u32TotalNum = (HI_U32)total;
     for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
@@ -2685,59 +3595,296 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         if (i < nIspDgain) route.astRouteExNode[i].u32IspDgain = ispdgain[i];
     }
 
-    ret = v4_isp.fnSetAERouteAttrEx(pipe, &route);
-    if (ret) {
-        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x (sanitizing & retry)\n", ret);
+    // Build a sanitized table before first Set call:
+    // - strictly increasing exposure time
+    // - respects current AE exposure range (ExpTimeRange)
+    // - clamps gains into common ranges + current AE ranges (when available)
+    ISP_AE_ROUTE_EX_S clean;
+    memset(&clean, 0, sizeof(clean));
+    HI_U32 prevT = 0, prevA = 0, prevD = 0, prevG = 0;
+    ISP_IRIS_F_NO_E prevFno = ISP_IRIS_F_NO_1_0;
+    HI_U32 prevFnoLin = 0x400;
+    HI_BOOL havePrev = HI_FALSE;
+    int outN = 0;
+    for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+        HI_U32 t = route.astRouteExNode[i].u32IntTime;
+        HI_U32 a = route.astRouteExNode[i].u32Again;
+        HI_U32 d = route.astRouteExNode[i].u32Dgain;
+        HI_U32 g = route.astRouteExNode[i].u32IspDgain;
+        ISP_IRIS_F_NO_E fno = route.astRouteExNode[i].enIrisFNO;
+        HI_U32 fnolin = route.astRouteExNode[i].u32IrisFNOLin;
 
-        // Some SDKs require strictly increasing exposure time and valid gain ranges.
-        // Build a sanitized table and retry once.
-        ISP_AE_ROUTE_EX_S clean;
-        memset(&clean, 0, sizeof(clean));
-        HI_U32 prevT = 0;
-        int outN = 0;
-        for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
-            HI_U32 t = route.astRouteExNode[i].u32IntTime;
-            HI_U32 a = route.astRouteExNode[i].u32Again;
-            HI_U32 d = route.astRouteExNode[i].u32Dgain;
-            HI_U32 g = route.astRouteExNode[i].u32IspDgain;
+        if (t == 0) continue;
+        if (exp_min && t < exp_min) t = exp_min;
+        if (exp_max && t > exp_max) continue; // don't feed firmware out-of-range times
 
-            if (t == 0) continue;
-            if (outN > 0 && t <= prevT) {
-                // drop duplicates/non-increasing nodes
-                continue;
-            }
-            prevT = t;
+        // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
+        if (a < 0x400) a = 0x400;
+        if (d < 0x400) d = 0x400;
+        if (g < 0x400) g = 0x400;
+        if (a > 0x3FFFFF) a = 0x3FFFFF;
+        if (d > 0x3FFFFF) d = 0x3FFFFF;
+        if (g > 0x40000) g = 0x40000;
 
-            // Clamp to common ranges from hi_comm_isp.h (safe for GK too)
-            if (a < 0x400) a = 0x400;
-            if (d < 0x400) d = 0x400;
-            if (g < 0x400) g = 0x400;
-            if (a > 0x3FFFFF) a = 0x3FFFFF;
-            if (d > 0x3FFFFF) d = 0x3FFFFF;
-            if (g > 0x40000) g = 0x40000;
+        // Further clamp to current AE ranges when available.
+        if (again_max >= 0x400 && a > again_max) a = again_max;
+        if (dgain_max >= 0x400 && d > dgain_max) d = dgain_max;
+        if (ispdgain_max >= 0x400 && g > ispdgain_max) g = ispdgain_max;
 
+        // hi_comm_isp.h: u32IrisFNOLin Range:[0x1, 0x400]
+        if (fnolin < 0x1 || fnolin > 0x400) fnolin = 0x400;
+        if ((int)fno < 0 || (int)fno >= (int)ISP_IRIS_F_NO_BUTT) fno = ISP_IRIS_F_NO_1_0;
+
+        // Some GK SDK builds require "axis-aligned" route changes:
+        // do not change IntTime and gain(s) simultaneously between adjacent nodes.
+        // If we detect a diagonal step (t increases AND any gain changes), split into:
+        //  - (t, prevGains)
+        //  - (t, newGains)
+        if (!havePrev) {
             clean.astRouteExNode[outN].u32IntTime = t;
             clean.astRouteExNode[outN].u32Again = a;
             clean.astRouteExNode[outN].u32Dgain = d;
             clean.astRouteExNode[outN].u32IspDgain = g;
+            clean.astRouteExNode[outN].enIrisFNO = fno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
             outN++;
+            havePrev = HI_TRUE;
+            prevT = t; prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+            continue;
+        }
+
+        if (t < prevT) continue;
+
+        const HI_BOOL gains_changed = (a != prevA || d != prevD || g != prevG) ? HI_TRUE : HI_FALSE;
+        if (t == prevT && !gains_changed) continue; // exact duplicate
+
+        if (t > prevT && gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = prevA;
+            clean.astRouteExNode[outN].u32Dgain = prevD;
+            clean.astRouteExNode[outN].u32IspDgain = prevG;
+            clean.astRouteExNode[outN].enIrisFNO = prevFno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = prevFnoLin;
+            outN++;
+            prevT = t; // advance time, keep gains
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+        } else if (t > prevT && !gains_changed && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+            clean.astRouteExNode[outN].u32IntTime = t;
+            clean.astRouteExNode[outN].u32Again = a;
+            clean.astRouteExNode[outN].u32Dgain = d;
+            clean.astRouteExNode[outN].u32IspDgain = g;
+            clean.astRouteExNode[outN].enIrisFNO = fno;
+            clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+            outN++;
+            prevT = t; prevA = a; prevD = d; prevG = g; prevFno = fno; prevFnoLin = fnolin;
+            if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
+            continue;
+        }
+
+        // Now push gain-change steps at current time (t == prevT).
+        // New GK SDK prints "RouteExCheck node[i]&node[i+1] illegal" when too many params
+        // change at once, so change gains one-by-one: Again -> Dgain -> IspDgain.
+        if ((t == prevT) && gains_changed) {
+            HI_U32 curA = prevA, curD = prevD, curG = prevG;
+            if (a != curA && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = a;
+                clean.astRouteExNode[outN].u32Dgain = curD;
+                clean.astRouteExNode[outN].u32IspDgain = curG;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curA = a;
+            }
+            if (d != curD && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = curA;
+                clean.astRouteExNode[outN].u32Dgain = d;
+                clean.astRouteExNode[outN].u32IspDgain = curG;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curD = d;
+            }
+            if (g != curG && outN < ISP_AE_ROUTE_EX_MAX_NODES) {
+                clean.astRouteExNode[outN].u32IntTime = prevT;
+                clean.astRouteExNode[outN].u32Again = curA;
+                clean.astRouteExNode[outN].u32Dgain = curD;
+                clean.astRouteExNode[outN].u32IspDgain = g;
+                clean.astRouteExNode[outN].enIrisFNO = fno;
+                clean.astRouteExNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                curG = g;
+            }
+            prevA = curA; prevD = curD; prevG = curG; prevFno = fno; prevFnoLin = fnolin;
             if (outN >= ISP_AE_ROUTE_EX_MAX_NODES) break;
         }
-        clean.u32TotalNum = (HI_U32)outN;
+    }
+    clean.u32TotalNum = (HI_U32)outN;
 
-        if (outN >= 2) {
-            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%d nodes, dropped %d)\n", outN, total - outN);
+    if (outN < 2) {
+        HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after clamp (%s outN=%d exp=[%u..%u]), skipping\n",
+            sec, outN, (unsigned)exp_min, (unsigned)exp_max);
+        return EXIT_SUCCESS;
+    }
+
+    HAL_INFO("v4_iq", "AE route-ex: current ranges exp=[%u..%u] againMax=%u dgainMax=%u ispdMax=%u sysGainMax=%u\n",
+        (unsigned)exp_min, (unsigned)exp_max,
+        (unsigned)again_max, (unsigned)dgain_max, (unsigned)ispdgain_max, (unsigned)sysgain_max);
+
+    // Some firmwares validate route nodes against current auto ranges.
+    // Ensure ExposureAttr ranges cover the route's max values (best-effort).
+    if (v4_isp.fnGetExposureAttr && v4_isp.fnSetExposureAttr) {
+        ISP_EXPOSURE_ATTR_S exp;
+        memset(&exp, 0, sizeof(exp));
+        if (v4_isp.fnGetExposureAttr(pipe, &exp) == 0) {
+            HI_U32 need_again = 0, need_dgain = 0, need_ispdgain = 0;
+            HI_U32 need_t = 0;
+            for (int i = 0; i < outN; i++) {
+                HI_U32 t = clean.astRouteExNode[i].u32IntTime;
+                HI_U32 a = clean.astRouteExNode[i].u32Again;
+                HI_U32 d = clean.astRouteExNode[i].u32Dgain;
+                HI_U32 g = clean.astRouteExNode[i].u32IspDgain;
+                if (t > need_t) need_t = t;
+                if (a > need_again) need_again = a;
+                if (d > need_dgain) need_dgain = d;
+                if (g > need_ispdgain) need_ispdgain = g;
+            }
+
+            HI_BOOL changed = HI_FALSE;
+            if (need_t > 0 && exp.stAuto.stExpTimeRange.u32Max < need_t) {
+                exp.stAuto.stExpTimeRange.u32Max = need_t;
+                changed = HI_TRUE;
+            }
+            if (need_again > 0 && exp.stAuto.stAGainRange.u32Max < need_again) {
+                exp.stAuto.stAGainRange.u32Max = need_again;
+                changed = HI_TRUE;
+            }
+            if (need_dgain > 0 && exp.stAuto.stDGainRange.u32Max < need_dgain) {
+                exp.stAuto.stDGainRange.u32Max = need_dgain;
+                changed = HI_TRUE;
+            }
+            if (need_ispdgain > 0 && exp.stAuto.stISPDGainRange.u32Max < need_ispdgain) {
+                exp.stAuto.stISPDGainRange.u32Max = need_ispdgain;
+                changed = HI_TRUE;
+            }
+
+            if (changed) {
+                int sr = v4_isp.fnSetExposureAttr(pipe, &exp);
+                if (sr) {
+                    HAL_WARNING("v4_iq", "AE route-ex: SetExposureAttr pre-adjust failed with %#x (need t=%u again=%u dgain=%u ispd=%u)\n",
+                        sr, (unsigned)need_t, (unsigned)need_again, (unsigned)need_dgain, (unsigned)need_ispdgain);
+                } else {
+                    HAL_INFO("v4_iq", "AE route-ex: adjusted ranges (tmax=%u againMax=%u dgainMax=%u ispdMax=%u)\n",
+                        (unsigned)need_t, (unsigned)need_again, (unsigned)need_dgain, (unsigned)need_ispdgain);
+                }
+            }
+        }
+    }
+
+    ret = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
+    if (ret) {
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx failed with %#x (sanitizing & retry)\n", ret);
+        {
+            // Dump a compact summary to understand what the SDK rejects.
+            // Keep it small: first/last nodes and monotonicity hint.
+            unsigned int t0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32IntTime : 0;
+            unsigned int a0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32Again : 0;
+            unsigned int d0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32Dgain : 0;
+            unsigned int g0 = (total > 0) ? (unsigned)route.astRouteExNode[0].u32IspDgain : 0;
+            unsigned int tl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32IntTime : 0;
+            unsigned int al = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32Again : 0;
+            unsigned int dl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32Dgain : 0;
+            unsigned int gl = (total > 0) ? (unsigned)route.astRouteExNode[total - 1].u32IspDgain : 0;
+
+            int nonmono = -1;
+            HI_U32 prev = 0;
+            for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
+                HI_U32 t = route.astRouteExNode[i].u32IntTime;
+                if (t == 0) continue;
+                if (prev && t <= prev) { nonmono = i; break; }
+                prev = t;
+            }
+
+            HAL_WARNING("v4_iq",
+                "AE route-ex reject dump: total=%d nInts=%d nAgain=%d nDgain=%d nIspDgain=%d "
+                "first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u} nonmono_idx=%d\n",
+                total, nInts, nAgain, nDgain, nIspDgain, t0, a0, d0, g0, tl, al, dl, gl, nonmono);
+            for (int i = 0; i < total && i < 4; i++) {
+                HAL_WARNING("v4_iq",
+                    "AE route-ex node[%d]={t=%u again=%u dgain=%u ispd=%u}\n",
+                    i,
+                    (unsigned)route.astRouteExNode[i].u32IntTime,
+                    (unsigned)route.astRouteExNode[i].u32Again,
+                    (unsigned)route.astRouteExNode[i].u32Dgain,
+                    (unsigned)route.astRouteExNode[i].u32IspDgain);
+            }
+            if (total > 4) {
+                int i = total - 1;
+                HAL_WARNING("v4_iq",
+                    "AE route-ex node[last=%d]={t=%u again=%u dgain=%u ispd=%u}\n",
+                    i,
+                    (unsigned)route.astRouteExNode[i].u32IntTime,
+                    (unsigned)route.astRouteExNode[i].u32Again,
+                    (unsigned)route.astRouteExNode[i].u32Dgain,
+                    (unsigned)route.astRouteExNode[i].u32IspDgain);
+            }
+        }
+
+        // Some SDKs require strictly increasing exposure time and valid gain ranges.
+        // Build a sanitized table and retry once.
+        // We already built a sanitized table as `clean` above; just retry once more
+        // to keep previous behavior/logs consistent.
+        if ((int)clean.u32TotalNum >= 2) {
+            HAL_INFO("v4_iq", "AE route-ex: retry with sanitized table (%u nodes, from %d)\n",
+                (unsigned)clean.u32TotalNum, total);
             int ret2 = v4_isp.fnSetAERouteAttrEx(pipe, &clean);
             if (!ret2) {
                 route = clean;
                 ret = 0;
             } else {
                 HAL_WARNING("v4_iq", "HI_MPI_ISP_SetAERouteAttrEx retry failed with %#x\n", ret2);
+                {
+                    int outN2 = (int)clean.u32TotalNum;
+                    unsigned int t0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32IntTime : 0;
+                    unsigned int a0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32Again : 0;
+                    unsigned int d0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32Dgain : 0;
+                    unsigned int g0 = (outN2 > 0) ? (unsigned)clean.astRouteExNode[0].u32IspDgain : 0;
+                    unsigned int tl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32IntTime : 0;
+                    unsigned int al = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32Again : 0;
+                    unsigned int dl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32Dgain : 0;
+                    unsigned int gl = (outN2 > 0) ? (unsigned)clean.astRouteExNode[outN2 - 1].u32IspDgain : 0;
+                    HAL_WARNING("v4_iq",
+                        "AE route-ex reject dump (sanitized): outN=%d exp=[%u..%u] first={t=%u again=%u dgain=%u ispd=%u} last={t=%u again=%u dgain=%u ispd=%u}\n",
+                        outN2, (unsigned)exp_min, (unsigned)exp_max, t0, a0, d0, g0, tl, al, dl, gl);
+                }
                 ret = ret2;
             }
         } else {
             HAL_WARNING("v4_iq", "AE route-ex: not enough valid nodes after sanitize, skipping\n");
             // continue to fallback below
+        }
+
+        // If it still fails, determine whether this SDK supports route tables at all.
+        // Some GK builds export the symbols but always return ILLEGAL_PARAM.
+        if (ret && v4_isp.fnGetAERouteAttrEx && v4_isp.fnSetAERouteAttrEx) {
+            ISP_AE_ROUTE_EX_S cur;
+            memset(&cur, 0, sizeof(cur));
+            int gr = v4_isp.fnGetAERouteAttrEx(pipe, &cur);
+            if (!gr) {
+                int sr = v4_isp.fnSetAERouteAttrEx(pipe, &cur);
+                if (sr) {
+                    pthread_mutex_lock(&_v4_iq_dyn.lock);
+                    if (!_v4_iq_dyn.aerouteex_disabled) {
+                        _v4_iq_dyn.aerouteex_disabled = HI_TRUE;
+                        HAL_WARNING("v4_iq",
+                            "AE route-ex: SDK rejects even noop SetAERouteAttrEx(GetAERouteAttrEx) (%#x); disabling route tables\n",
+                            sr);
+                    }
+                    pthread_mutex_unlock(&_v4_iq_dyn.lock);
+                }
+            }
         }
     } else {
         // Ensure AE is configured to actually use the RouteEx table.
@@ -2760,14 +3907,15 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         memset(&rb, 0, sizeof(rb));
         int gr = v4_isp.fnGetAERouteAttrEx(pipe, &rb);
         if (!gr && rb.u32TotalNum > 0) {
-            HAL_INFO("v4_iq", "AE route-ex: applied (%u nodes) first={t=%u again=%u dgain=%u ispd=%u}\n",
+            HAL_INFO("v4_iq", "AE route-ex: applied (%s %u nodes) first={t=%u again=%u dgain=%u ispd=%u}\n",
+                sec,
                 (unsigned)rb.u32TotalNum,
                 (unsigned)rb.astRouteExNode[0].u32IntTime,
                 (unsigned)rb.astRouteExNode[0].u32Again,
                 (unsigned)rb.astRouteExNode[0].u32Dgain,
                 (unsigned)rb.astRouteExNode[0].u32IspDgain);
         } else {
-            HAL_INFO("v4_iq", "AE route-ex: applied (%d nodes)\n", total);
+            HAL_INFO("v4_iq", "AE route-ex: applied (%s %d nodes)\n", sec, total);
         }
     }
 
@@ -2777,18 +3925,72 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
         memset(&r, 0, sizeof(r));
         int outN = 0;
         HI_U32 prevT = 0;
+        HI_U32 prevSG = 0;
+        ISP_IRIS_F_NO_E prevFno = ISP_IRIS_F_NO_1_0;
+        HI_U32 prevFnoLin = 0x400;
+        HI_BOOL havePrev = HI_FALSE;
         for (int i = 0; i < total && i < ISP_AE_ROUTE_EX_MAX_NODES; i++) {
             HI_U32 t = route.astRouteExNode[i].u32IntTime;
             if (t == 0) continue;
-            if (outN > 0 && t <= prevT) continue;
-            prevT = t;
-            r.astRouteNode[outN].u32IntTime = t;
-            r.astRouteNode[outN].u32SysGain = v4_iq_sysgain_from_routeex(
+            if (exp_min && t < exp_min) t = exp_min;
+            if (exp_max && t > exp_max) continue;
+            HI_U32 sg = v4_iq_sysgain_from_routeex(
                 route.astRouteExNode[i].u32Again,
                 route.astRouteExNode[i].u32Dgain,
                 route.astRouteExNode[i].u32IspDgain);
-            outN++;
-            if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            if (sg < 0x400) sg = 0x400;
+            if (sysgain_max >= 0x400 && sg > sysgain_max) sg = sysgain_max;
+
+            ISP_IRIS_F_NO_E fno = route.astRouteExNode[i].enIrisFNO;
+            HI_U32 fnolin = route.astRouteExNode[i].u32IrisFNOLin;
+            if (fnolin < 0x1 || fnolin > 0x400) fnolin = 0x400;
+            if ((int)fno < 0 || (int)fno >= (int)ISP_IRIS_F_NO_BUTT) fno = ISP_IRIS_F_NO_1_0;
+
+            if (!havePrev) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                havePrev = HI_TRUE;
+                prevT = t; prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+                continue;
+            }
+
+            if (t < prevT) continue;
+            const HI_BOOL sg_changed = (sg != prevSG) ? HI_TRUE : HI_FALSE;
+            if (t == prevT && !sg_changed) continue;
+
+            // Axis-aligned rule: don't change IntTime and SysGain simultaneously.
+            if (t > prevT && sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = prevSG;
+                r.astRouteNode[outN].enIrisFNO = prevFno;
+                r.astRouteNode[outN].u32IrisFNOLin = prevFnoLin;
+                outN++;
+                prevT = t;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            } else if (t > prevT && !sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = t;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                prevT = t; prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+                continue;
+            }
+
+            if ((t == prevT) && sg_changed && outN < ISP_AE_ROUTE_MAX_NODES) {
+                r.astRouteNode[outN].u32IntTime = prevT;
+                r.astRouteNode[outN].u32SysGain = sg;
+                r.astRouteNode[outN].enIrisFNO = fno;
+                r.astRouteNode[outN].u32IrisFNOLin = fnolin;
+                outN++;
+                prevSG = sg; prevFno = fno; prevFnoLin = fnolin;
+                if (outN >= ISP_AE_ROUTE_MAX_NODES) break;
+            }
         }
         r.u32TotalNum = (HI_U32)outN;
 
@@ -2808,6 +4010,20 @@ static int v4_iq_apply_static_aerouteex(struct IniConfig *ini, int pipe) {
                 return EXIT_SUCCESS;
             } else {
                 HAL_WARNING("v4_iq", "AE route-ex: fallback HI_MPI_ISP_SetAERouteAttr failed with %#x\n", rret);
+                // Same check for non-Ex route: noop Set(Get()).
+                if (v4_isp.fnGetAERouteAttr) {
+                    ISP_AE_ROUTE_S cur;
+                    memset(&cur, 0, sizeof(cur));
+                    int gr = v4_isp.fnGetAERouteAttr(pipe, &cur);
+                    if (!gr) {
+                        int sr = v4_isp.fnSetAERouteAttr(pipe, &cur);
+                        if (sr) {
+                            HAL_WARNING("v4_iq",
+                                "AE route: SDK rejects even noop SetAERouteAttr(GetAERouteAttr) (%#x); route tables unsupported\n",
+                                sr);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2850,9 +4066,15 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
-    ISP_COLORMATRIX_ATTR_S ccm;
-    memset(&ccm, 0, sizeof(ccm));
-    int ret = v4_isp.fnGetCCMAttr(pipe, &ccm);
+    // We don't know which exact CCM struct layout this GK/SDK expects.
+    // Use a sufficiently large, aligned blob, seed it with GetCCMAttr(),
+    // then try applying using both known layouts (tabbed and H/M/L).
+    union {
+        HI_U64 _align;
+        unsigned char b[1024];
+    } u;
+    memset(&u, 0, sizeof(u));
+    int ret = v4_isp.fnGetCCMAttr(pipe, u.b);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_GetCCMAttr failed with %#x\n", ret);
         pthread_mutex_lock(&_v4_iq_dyn.lock);
@@ -2862,59 +4084,178 @@ static int v4_iq_apply_static_ccm(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
+    // Keep a pristine copy for retries with other layout.
+    unsigned char orig[1024];
+    memcpy(orig, u.b, sizeof(orig));
+
     int val;
+    int requested_op = -1; // -1 = keep current
     if (parse_int(ini, "static_ccm", "CCMOpType", 0, 1, &val) == CONFIG_OK)
-        ccm.enOpType = (ISP_OP_TYPE_E)val;
+        requested_op = val;
+    int isoActEn = -1, tempActEn = -1;
     if (parse_int(ini, "static_ccm", "ISOActEn", 0, 1, &val) == CONFIG_OK)
-        ccm.stAuto.bISOActEn = (HI_BOOL)val;
+        isoActEn = val;
     if (parse_int(ini, "static_ccm", "TempActEn", 0, 1, &val) == CONFIG_OK)
-        ccm.stAuto.bTempActEn = (HI_BOOL)val;
+        tempActEn = val;
 
     // Manual CCM (optional)
     char buf[1024];
-    if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK)
-        v4_iq_parse_csv_u16(buf, ccm.stManual.au16CCM, CCM_MATRIX_SIZE);
+    HI_BOOL have_manual = HI_FALSE;
+    HI_U16 manual_ccm[CCM_MATRIX_SIZE] = {0};
+    if (parse_param_value(ini, "static_ccm", "ManualCCMTable", buf) == CONFIG_OK) {
+        v4_iq_parse_csv_u16(buf, manual_ccm, CCM_MATRIX_SIZE);
+        have_manual = HI_TRUE;
+    }
 
-    // Auto CCM tables
+    // Auto CCM tables as provided by IQ (tabbed form).
     int total = 0;
-    if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK) {
-        ccm.stAuto.u16CCMTabNum = (HI_U16)total;
-
+    HI_BOOL have_auto = HI_FALSE;
+    HI_U32 temps_u32[CCM_MATRIX_NUM] = {0};
+    HI_U16 auto_ccm[CCM_MATRIX_NUM][CCM_MATRIX_SIZE];
+    memset(auto_ccm, 0, sizeof(auto_ccm));
+    int ntemps = 0;
+    if (parse_int(ini, "static_ccm", "TotalNum", 0, CCM_MATRIX_NUM, &total) == CONFIG_OK && total > 0) {
         if (parse_param_value(ini, "static_ccm", "AutoColorTemp", buf) == CONFIG_OK) {
-            HI_U32 temps[CCM_MATRIX_NUM] = {0};
-            int n = v4_iq_parse_csv_u32(buf, temps, CCM_MATRIX_NUM);
-            for (int i = 0; i < n && i < total; i++)
-                ccm.stAuto.astCCMTab[i].u16ColorTemp = (HI_U16)temps[i];
+            ntemps = v4_iq_parse_csv_u32(buf, temps_u32, CCM_MATRIX_NUM);
         }
-
         for (int i = 0; i < total && i < CCM_MATRIX_NUM; i++) {
             char key[32];
             snprintf(key, sizeof(key), "AutoCCMTable_%d", i);
-            if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK)
-                v4_iq_parse_csv_u16(buf, ccm.stAuto.astCCMTab[i].au16CCM, CCM_MATRIX_SIZE);
+            if (parse_param_value(ini, "static_ccm", key, buf) == CONFIG_OK) {
+                v4_iq_parse_csv_u16(buf, auto_ccm[i], CCM_MATRIX_SIZE);
+                have_auto = HI_TRUE;
+            }
         }
+        if (ntemps > 0) have_auto = HI_TRUE;
     }
 
-    ret = v4_isp.fnSetCCMAttr(pipe, &ccm);
+    // Apply opType logic.
+    // IQ files commonly use: 0=Auto, 1=Manual. Some SDKs reverse it.
+    // - In Manual mode, keep only stManual matrix and disable auto activation fields/tables.
+    // - In Auto mode, keep auto tables; stManual can still be present as fallback.
+    HI_BOOL want_manual = HI_FALSE;
+    if (requested_op == 1) want_manual = HI_TRUE;
+    else if (requested_op == 0) want_manual = HI_FALSE;
+    else {
+        // Default to current mode by reading tabbed layout header (safe if wrong too).
+        ISP_COLORMATRIX_ATTR_S *cur = (ISP_COLORMATRIX_ATTR_S *)(void *)u.b;
+        want_manual = (cur->enOpType == OP_TYPE_MANUAL) ? HI_TRUE : HI_FALSE;
+    }
+
+    // If user asked for manual but no manual table provided, don't force manual.
+    if (want_manual && !have_manual) want_manual = HI_FALSE;
+    // If user asked for auto but no auto tables provided, don't force auto.
+    if (!want_manual && !have_auto) want_manual = HI_TRUE;
+
+    // Try TABBED then HML (most GK builds seem to accept HML, but not sure).
+    // Attempt 1: tabbed layout
+    {
+        ISP_COLORMATRIX_ATTR_S *a = (ISP_COLORMATRIX_ATTR_S *)(void *)u.b;
+        if (want_manual) {
+            a->enOpType = OP_TYPE_MANUAL;
+            a->stManual.bSatEn = HI_FALSE;
+            if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+            // Keep stAuto as-is (as returned by GetCCMAttr). Some GK SDK builds
+            // validate u16CCMTabNum even in manual mode and warn if we zero it.
+        } else {
+            a->enOpType = OP_TYPE_AUTO;
+            if (isoActEn >= 0) a->stAuto.bISOActEn = (HI_BOOL)isoActEn;
+            if (tempActEn >= 0) a->stAuto.bTempActEn = (HI_BOOL)tempActEn;
+            int n = total;
+            if (n < 3) n = 3;
+            if (n > CCM_MATRIX_NUM) n = CCM_MATRIX_NUM;
+            a->stAuto.u16CCMTabNum = (HI_U16)n;
+            for (int i = 0; i < n && i < CCM_MATRIX_NUM; i++) {
+                HI_U16 ct = (HI_U16)((i < ntemps) ? temps_u32[i] : 6500);
+                a->stAuto.astCCMTab[i].u16ColorTemp = ct;
+                memcpy(a->stAuto.astCCMTab[i].au16CCM, auto_ccm[i], CCM_MATRIX_SIZE * sizeof(HI_U16));
+            }
+            if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+        }
+        ret = v4_isp.fnSetCCMAttr(pipe, u.b);
+    }
+    const char *used = "TAB";
     if (ret) {
-        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x\n", ret);
+        memcpy(u.b, orig, sizeof(orig));
+        // Attempt 2: H/M/L layout
+        {
+            ISP_COLORMATRIX_ATTR_HML_S *a = (ISP_COLORMATRIX_ATTR_HML_S *)(void *)u.b;
+            if (want_manual) {
+                a->enOpType = OP_TYPE_MANUAL;
+                a->stManual.bSatEn = HI_FALSE;
+                if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+                a->stAuto.bISOActEn = HI_FALSE;
+                a->stAuto.bTempActEn = HI_FALSE;
+            } else {
+                a->enOpType = OP_TYPE_AUTO;
+                if (isoActEn >= 0) a->stAuto.bISOActEn = (HI_BOOL)isoActEn;
+                if (tempActEn >= 0) a->stAuto.bTempActEn = (HI_BOOL)tempActEn;
+
+                // Map up to 3 provided tables into Low/Mid/High.
+                struct Node { HI_U16 t; const HI_U16 *m; } nodes[3];
+                int n = 0;
+                for (int i = 0; i < total && i < 3; i++) {
+                    HI_U16 t = (HI_U16)((i < ntemps) ? temps_u32[i] : (i == 0 ? 4500 : (i == 1 ? 6500 : 8000)));
+                    nodes[n].t = t;
+                    nodes[n].m = auto_ccm[i];
+                    n++;
+                }
+                while (n < 3) {
+                    HI_U16 t = (n == 0 ? 4500 : (n == 1 ? 6500 : 8000));
+                    nodes[n].t = t;
+                    nodes[n].m = auto_ccm[n - 1];
+                    n++;
+                }
+                // sort ascending by t
+                for (int i = 0; i < 3; i++) for (int j = i + 1; j < 3; j++)
+                    if (nodes[j].t < nodes[i].t) { struct Node tmp = nodes[i]; nodes[i] = nodes[j]; nodes[j] = tmp; }
+
+                HI_U16 lowT = nodes[0].t;
+                HI_U16 midT = nodes[1].t;
+                HI_U16 highT = nodes[2].t;
+                if (lowT < 2000) lowT = 2000;
+                if (midT + 400 > highT) midT = (highT > 400) ? (highT - 400) : highT;
+                if (lowT + 400 > midT) lowT = (midT > 400) ? (midT - 400) : lowT;
+
+                a->stAuto.u16LowColorTemp = lowT;
+                a->stAuto.u16MidColorTemp = midT;
+                a->stAuto.u16HighColorTemp = highT;
+                memcpy(a->stAuto.au16LowCCM, nodes[0].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+                memcpy(a->stAuto.au16MidCCM, nodes[1].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+                memcpy(a->stAuto.au16HighCCM, nodes[2].m, CCM_MATRIX_SIZE * sizeof(HI_U16));
+
+                if (have_manual) memcpy(a->stManual.au16CCM, manual_ccm, sizeof(manual_ccm));
+            }
+            ret = v4_isp.fnSetCCMAttr(pipe, u.b);
+        }
+        used = "HML";
+    }
+    if (ret) {
+        // As a sanity check: can we Set() exactly what Get() returned?
+        memcpy(u.b, orig, sizeof(orig));
+        int roundtrip = v4_isp.fnSetCCMAttr(pipe, u.b);
+        HAL_WARNING("v4_iq", "HI_MPI_ISP_SetCCMAttr failed with %#x (other layout failed too). roundtrip_set=%#x\n", ret, roundtrip);
+
         pthread_mutex_lock(&_v4_iq_dyn.lock);
         _v4_iq_dyn.ccm_disabled = HI_TRUE;
         pthread_mutex_unlock(&_v4_iq_dyn.lock);
         HAL_WARNING("v4_iq", "CCM: skipping (SDK rejected), continuing\n");
+        return EXIT_SUCCESS;
+    }
+
+    // Read-back (best-effort)
+    union { HI_U64 _a; unsigned char b[1024]; } rb;
+    memset(&rb, 0, sizeof(rb));
+    int gr = v4_isp.fnGetCCMAttr(pipe, rb.b);
+    if (!gr) {
+        ISP_COLORMATRIX_ATTR_S *rbt = (ISP_COLORMATRIX_ATTR_S *)(void *)rb.b;
+        HAL_INFO("v4_iq", "CCM: applied (%s opType=%d manualCCM[0..2]=%u,%u,%u)\n",
+            used, (int)rbt->enOpType,
+            (unsigned)rbt->stManual.au16CCM[0],
+            (unsigned)rbt->stManual.au16CCM[1],
+            (unsigned)rbt->stManual.au16CCM[2]);
     } else {
-        ISP_COLORMATRIX_ATTR_S rb;
-        memset(&rb, 0, sizeof(rb));
-        int gr = v4_isp.fnGetCCMAttr(pipe, &rb);
-        if (!gr) {
-            HAL_INFO("v4_iq", "CCM: applied (opType=%d manualCCM[0..2]=%u,%u,%u)\n",
-                (int)rb.enOpType,
-                (unsigned)rb.stManual.au16CCM[0],
-                (unsigned)rb.stManual.au16CCM[1],
-                (unsigned)rb.stManual.au16CCM[2]);
-        } else {
-            HAL_INFO("v4_iq", "CCM: applied\n");
-        }
+        HAL_INFO("v4_iq", "CCM: applied (%s)\n", used);
     }
     // Don't fail full IQ apply because CCM isn't accepted on this SDK/build.
     return EXIT_SUCCESS;
@@ -2963,8 +4304,11 @@ static int v4_iq_apply_static_aeweight(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "AE weight: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_aeweight";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_aeweight", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_aeweight", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_aeweight";
+    } else if (section_pos(ini, "static_aeweight", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "AE weight: no [static_aeweight] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -2984,7 +4328,7 @@ static int v4_iq_apply_static_aeweight(struct IniConfig *ini, int pipe) {
     for (int r = 0; r < AE_ZONE_ROW; r++) {
         char key[32];
         snprintf(key, sizeof(key), "ExpWeight_%d", r);
-        if (parse_param_value(ini, "static_aeweight", key, buf) != CONFIG_OK)
+        if (parse_param_value(ini, sec, key, buf) != CONFIG_OK)
             continue;
         memset(row, 0, sizeof(row));
         int n = v4_iq_parse_csv_u32(buf, row, AE_ZONE_COLUMN);
@@ -3297,8 +4641,11 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "NR: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_nr";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_nr", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_nr", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_nr";
+    } else if (section_pos(ini, "static_nr", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "NR: no [static_nr] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -3312,25 +4659,48 @@ static int v4_iq_apply_static_nr(struct IniConfig *ini, int pipe) {
     }
 
     int val;
-    if (parse_int(ini, "static_nr", "Enable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "Enable", 0, 1, &val) == CONFIG_OK)
         nr.bEnable = (HI_BOOL)val;
     nr.enOpType = OP_TYPE_AUTO;
 
     char buf[512];
-    if (parse_param_value(ini, "static_nr", "FineStr", buf) == CONFIG_OK)
+    if (parse_param_value(ini, sec, "FineStr", buf) == CONFIG_OK)
         v4_iq_parse_csv_u8(buf, nr.stAuto.au8FineStr, ISP_AUTO_ISO_STRENGTH_NUM);
     {
         HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
-        if (parse_param_value(ini, "static_nr", "CoringWgt", buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, "CoringWgt", buf) == CONFIG_OK) {
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int i = 0; i < n; i++)
                 nr.stAuto.au16CoringWgt[i] = (HI_U16)tmp[i];
         }
     }
 
+    // Safety clamp: some SDKs reject out-of-range values with HI_ERR_ISP_ILLEGAL_PARAM.
+    // Ranges from hi_comm_isp.h:
+    // - FineStr:   [0x0, 0x80]
+    // - CoringWgt: [0x0, 0xc80]
+    for (int i = 0; i < ISP_AUTO_ISO_STRENGTH_NUM; i++) {
+        if (nr.stAuto.au8FineStr[i] > 0x80)
+            nr.stAuto.au8FineStr[i] = 0x80;
+        if (nr.stAuto.au16CoringWgt[i] > 0x0C80)
+            nr.stAuto.au16CoringWgt[i] = 0x0C80;
+    }
+
     ret = v4_isp.fnSetNRAttr(pipe, &nr);
     if (ret) {
         HAL_WARNING("v4_iq", "HI_MPI_ISP_SetNRAttr failed with %#x\n", ret);
+        // Dump a compact view of what we attempted to apply.
+        HAL_WARNING("v4_iq",
+            "NR reject dump: sec=%s en=%d opType=%d fine[0..3]=%u,%u,%u,%u coring[0..3]=%u,%u,%u,%u\n",
+            sec, (int)nr.bEnable, (int)nr.enOpType,
+            (unsigned)nr.stAuto.au8FineStr[0],
+            (unsigned)nr.stAuto.au8FineStr[1],
+            (unsigned)nr.stAuto.au8FineStr[2],
+            (unsigned)nr.stAuto.au8FineStr[3],
+            (unsigned)nr.stAuto.au16CoringWgt[0],
+            (unsigned)nr.stAuto.au16CoringWgt[1],
+            (unsigned)nr.stAuto.au16CoringWgt[2],
+            (unsigned)nr.stAuto.au16CoringWgt[3]);
     } else {
         ISP_NR_ATTR_S rb;
         memset(&rb, 0, sizeof(rb));
@@ -3353,6 +4723,14 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
         return EXIT_SUCCESS;
     }
 
+    // Allow disabling custom gamma from IQ.
+    // Some scenes (e.g. snowy dawn) are extremely sensitive to tone curve choice.
+    int en = 1;
+    if (parse_int(ini, "dynamic_gamma", "Enable", 0, 1, &en) == CONFIG_OK && en == 0) {
+        HAL_INFO("v4_iq", "Gamma: disabled by dynamic_gamma/Enable=0\n");
+        return EXIT_SUCCESS;
+    }
+
     ISP_GAMMA_ATTR_S gamma;
     memset(&gamma, 0, sizeof(gamma));
     int ret = v4_isp.fnGetGammaAttr(pipe, &gamma);
@@ -3361,10 +4739,20 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
         return ret;
     }
 
-    // This IQ format uses [dynamic_gamma] with Table_0..; apply Table_0 as a user-defined gamma curve at init.
+    // This IQ format uses [dynamic_gamma] with Table_0..; apply a user-defined gamma curve at init.
+    // We support selecting which table to use via dynamic_gamma/UseTable (0..2).
     HI_U32 tmp[GAMMA_NODE_NUM];
     memset(tmp, 0, sizeof(tmp));
-    int n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", "Table_0", tmp, GAMMA_NODE_NUM);
+    int use_table = 0;
+    (void)parse_int(ini, "dynamic_gamma", "UseTable", 0, 2, &use_table);
+    char key[32];
+    snprintf(key, sizeof(key), "Table_%d", use_table);
+
+    int n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", key, tmp, GAMMA_NODE_NUM);
+    if (n <= 0 && use_table != 0) {
+        // Backward compatible fallback
+        n = v4_iq_parse_multiline_u32(ini, "dynamic_gamma", "Table_0", tmp, GAMMA_NODE_NUM);
+    }
     if (n <= 0) {
         // Some IQ files may have a static section.
         n = v4_iq_parse_multiline_u32(ini, "static_gamma", "Table", tmp, GAMMA_NODE_NUM);
@@ -3385,12 +4773,13 @@ static int v4_iq_apply_gamma(struct IniConfig *ini, int pipe) {
             memset(&rb, 0, sizeof(rb));
             int gr = v4_isp.fnGetGammaAttr(pipe, &rb);
             if (!gr) {
-                HAL_INFO("v4_iq", "Gamma: applied (type=%d node0=%u nodeLast=%u)\n",
+                HAL_INFO("v4_iq", "Gamma: applied (table=%d type=%d node0=%u nodeLast=%u)\n",
+                    use_table,
                     (int)rb.enCurveType,
                     (unsigned)rb.u16Table[0],
                     (unsigned)rb.u16Table[GAMMA_NODE_NUM - 1]);
             } else {
-                HAL_INFO("v4_iq", "Gamma: applied (%d nodes)\n", n);
+                HAL_INFO("v4_iq", "Gamma: applied (table=%d %d nodes)\n", use_table, n);
             }
         }
         return ret;
@@ -3405,8 +4794,11 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
         HAL_INFO("v4_iq", "Sharpen: API not available, skipping\n");
         return EXIT_SUCCESS;
     }
+    const char *sec = "static_sharpen";
     int sec_s = 0, sec_e = 0;
-    if (section_pos(ini, "static_sharpen", &sec_s, &sec_e) != CONFIG_OK) {
+    if (night_mode_on() && section_pos(ini, "ir_static_sharpen", &sec_s, &sec_e) == CONFIG_OK) {
+        sec = "ir_static_sharpen";
+    } else if (section_pos(ini, "static_sharpen", &sec_s, &sec_e) != CONFIG_OK) {
         HAL_INFO("v4_iq", "Sharpen: no [static_sharpen] section, skipping\n");
         return EXIT_SUCCESS;
     }
@@ -3420,7 +4812,7 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     }
 
     int val;
-    if (parse_int(ini, "static_sharpen", "Enable", 0, 1, &val) == CONFIG_OK)
+    if (parse_int(ini, sec, "Enable", 0, 1, &val) == CONFIG_OK)
         shp.bEnable = (HI_BOOL)val;
     shp.enOpType = OP_TYPE_AUTO;
 
@@ -3429,7 +4821,7 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     for (int i = 0; i < ISP_SHARPEN_LUMA_NUM; i++) {
         char key[32];
         snprintf(key, sizeof(key), "AutoLumaWgt_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK)
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK)
             v4_iq_parse_csv_u8(buf, shp.stAuto.au8LumaWgt[i], ISP_AUTO_ISO_STRENGTH_NUM);
     }
 
@@ -3437,14 +4829,14 @@ static int v4_iq_apply_static_sharpen(struct IniConfig *ini, int pipe) {
     for (int i = 0; i < ISP_SHARPEN_GAIN_NUM; i++) {
         char key[32];
         snprintf(key, sizeof(key), "AutoTextureStr_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK) {
             HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int j = 0; j < n; j++)
                 shp.stAuto.au16TextureStr[i][j] = (HI_U16)tmp[j];
         }
         snprintf(key, sizeof(key), "AutoEdgeStr_%d", i);
-        if (parse_param_value(ini, "static_sharpen", key, buf) == CONFIG_OK) {
+        if (parse_param_value(ini, sec, key, buf) == CONFIG_OK) {
             HI_U32 tmp[ISP_AUTO_ISO_STRENGTH_NUM];
             int n = v4_iq_parse_csv_u32(buf, tmp, ISP_AUTO_ISO_STRENGTH_NUM);
             for (int j = 0; j < n; j++)
@@ -3783,6 +5175,12 @@ void v4_pipeline_destroy(void)
 
 int v4_region_create(char handle, hal_rect rect, short opacity)
 {
+    // Backwards compatible wrapper: no background alpha.
+    return v4_region_create_ex(handle, rect, opacity, 0);
+}
+
+int v4_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity)
+{
     int ret;
 
     v4_sys_bind dest = { .module = V4_SYS_MOD_VENC, .device = _v4_venc_dev, .channel = 0 };
@@ -3833,8 +5231,8 @@ int v4_region_create(char handle, hal_rect rect, short opacity)
     memset(&attrib, 0, sizeof(attrib));
     attrib.show = 1;
     attrib.type = V4_RGN_TYPE_OVERLAY;
-    attrib.overlay.bgAlpha = 0;
-    attrib.overlay.fgAlpha = opacity >> 1;
+    attrib.overlay.bgAlpha = bg_opacity >> 1;
+    attrib.overlay.fgAlpha = fg_opacity >> 1;
     attrib.overlay.point.x = rect.x;
     attrib.overlay.point.y = rect.y;
     attrib.overlay.layer = 7;
@@ -4041,8 +5439,8 @@ int v4_video_create(char index, hal_vidconfig *config)
                     .dstFps = config->framerate, .maxBitrate = config->bitrate }; break;
             case HAL_VIDMODE_VBR:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGVBR;
-                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1,
-                    .srcFps = config->framerate, .dstFps = config->framerate,
+                channel.rate.mjpgVbr = (v4_venc_rate_mjpgbr){ .statTime = 1, 
+                    .srcFps = config->framerate, .dstFps = config->framerate, 
                     .maxBitrate = MAX(config->bitrate, config->maxBitrate) }; break;
             case HAL_VIDMODE_QP:
                 channel.rate.mode = V4_VENC_RATEMODE_MJPGQP;
@@ -4121,7 +5519,7 @@ int v4_video_create(char index, hal_vidconfig *config)
     if (channel.attrib.codec == V4_VENC_CODEC_MJPG || channel.attrib.codec == V4_VENC_CODEC_JPEG)
         channel.attrib.bufSize = ALIGN_UP(config->height, 16) * ALIGN_UP(config->width, 16);
     else
-        channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
+    channel.attrib.bufSize = ALIGN_UP(config->height * config->width * 3 / 4, 64);
     if (channel.attrib.codec == V4_VENC_CODEC_H264)
         channel.attrib.profile = MAX(config->profile, 2);
     channel.attrib.byFrame = 1;

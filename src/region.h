@@ -20,7 +20,15 @@
 #define DEF_POSX 16
 #define DEF_POSY 16
 #define DEF_SIZE 32.0f
-#define DEF_THICK 0.0f
+// Default outline thickness in pixels. Non-zero greatly improves readability on bright scenes.
+#define DEF_THICK 2.0f
+// Background box (behind text). 0 = disabled; otherwise ARGB1555 color.
+// Minimal "premium" look is a semi-transparent black box with small padding.
+// NOTE: For HiSilicon v4 (ARGB1555 overlays), bgAlpha and fgAlpha can be set separately.
+// We treat bg_opal=0 as "disabled".
+#define DEF_BG 0x0000         // RGB555 color (0..0x7FFF); 0 is black
+#define DEF_BGOPAL 144        // 0..255; (~56% opacity) for background box
+#define DEF_PAD 6
 #define DEF_TIMEFMT "%Y/%m/%d %H:%M:%S"
 #define MAX_OSD 10
 
@@ -64,11 +72,19 @@ typedef struct {
     int hand, color;
     short opal, posx, posy;
     char updt;
-    char font[32];
+    // Persist this region into config when saving (divinus.yaml).
+    // Auto-generated runtime overlays (e.g. isp_debug) set this to 0.
+    unsigned char persist;
+    // Font name (legacy) or full font file path (preferred).
+    // Keep this large enough to hold absolute paths.
+    char font[256];
     char text[80];
     char img[64];
     int outl;
     double thick;
+    int bg;        // RGB555 background color (0..0x7FFF). Enable via bgopal>0.
+    short bgopal;  // background opacity (0..255). 0 disables background box.
+    short pad;     // padding (px) around text when background box is enabled
 } osd;
 
 extern osd osds[MAX_OSD];

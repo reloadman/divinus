@@ -34,12 +34,26 @@ int m6_config_load(char *path);
 
 int m6_pipeline_create(char sensor, short width, short height, char mirror, char flip, char framerate);
 void m6_pipeline_destroy(void);
+// Best-effort runtime orientation update (platform support dependent).
+// Returns 0 on success.
+int m6_set_orientation(char mirror, char flip);
 
 int m6_region_create(char handle, hal_rect rect, short opacity);
+// Extended: allow separate alpha for background (alpha-bit 0) and foreground (alpha-bit 1).
+int m6_region_create_ex(char handle, hal_rect rect, short fg_opacity, short bg_opacity);
 void m6_region_deinit(void);
 void m6_region_destroy(char handle);
 void m6_region_init(void);
 int m6_region_setbitmap(int handle, hal_bitmap *bitmap);
+
+// Best-effort exposure readback for ISP debug OSD.
+// Values are derived from MI_SNR_GetPlaneInfo (shutter/sensor gain/comp gain).
+// Units:
+// - exp_time: microseconds
+// - again/dgain/ispdgain: fixed-point (x1024) as reported by MI_SNR
+int m6_get_isp_exposure_info(unsigned int *iso, unsigned int *exp_time,
+    unsigned int *again, unsigned int *dgain, unsigned int *ispdgain,
+    int *exposure_is_max);
 
 int m6_video_create(char index, hal_vidconfig *config);
 int m6_video_destroy(char index);

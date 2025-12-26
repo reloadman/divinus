@@ -1,0 +1,126 @@
+system:
+  sensor_config: /etc/sensors/os02g10.bin
+  web_port: 8080
+  web_enable_auth: false
+  web_auth_user: admin
+  web_auth_pass: 12345
+  web_auth_skiplocal: true
+  web_enable_static: false
+  isp_thread_stack_size: 16384
+  venc_stream_thread_stack_size: 16384
+  web_server_thread_stack_size: 65536
+  time_format: "%d.%m.%Y %H:%M:%S"
+  watchdog: 0
+night_mode:
+  enable: true
+  manual: false
+  grayscale: true
+  ir_sensor_pin: 999
+  check_interval_s: 3
+  ir_cut_pin1: 61
+  ir_cut_pin2: 79
+  isp_iso_low: 1100
+  isp_iso_hi: 1500
+  isp_exptime_low: 15000
+  isp_switch_lockout_s: 15
+  ir_led_pin: 4
+  white_led_pin: 4
+  pin_switch_delay_us: 150
+  adc_device: ""
+  adc_threshold: 128
+isp:
+  sensor_mirror: false
+  sensor_flip: false
+  mirror: false
+  flip: false
+  antiflicker: 50
+mdns:
+  enable: false
+onvif:
+  enable: false
+  enable_auth: false
+  auth_user: ""
+  auth_pass: ""
+rtsp:
+  enable: true
+  port: 554
+  enable_auth: false
+  auth_user: admin
+  auth_pass: 12345
+record:
+  enable: false
+  continuous: false
+  path: /mnt/sdcard/recordings
+  filename: ""
+  segment_duration: 0
+  segment_size: 0
+stream:
+  enable: false
+  udp_srcport: 0
+audio:
+  enable: true
+  mute: false
+  codec: AAC
+  bitrate: 48
+  gain: 90
+  srate: 48000
+  channels: 1
+  aac_quantqual: 40
+  aac_bandwidth: 10000
+  aac_tns: true
+  speex_enable: true
+  speex_denoise: true
+  speex_agc: true
+  speex_vad: false
+  speex_dereverb: false
+  speex_frame_size: 0
+  speex_noise_suppress_db: -30
+  speex_agc_level: 26000
+  speex_agc_increment: 12
+  speex_agc_decrement: 25
+  speex_agc_max_gain_db: 50
+  speex_vad_prob_start: 0
+  speex_vad_prob_continue: 0
+mp4:
+  enable: true
+  codec: "H.264+"
+  mode: 4
+  width: 1920
+  height: 1080
+  fps: 25
+  gop: 50
+  profile: 2
+  bitrate: 2000
+osd:
+  enable: true
+  isp_debug: true
+  reg0_text: $t
+  reg0_font: InterTime
+  reg0_opal: 255
+  reg0_posx: 10
+  reg0_posy: 10
+  reg0_bg: 0x0000
+  reg0_bgopal: 140      # background opacity (0..255). Works on hisi/v4 and star/i6/i6c/m6.
+  reg0_pad: 4
+  reg0_size: 28
+  reg0_thick: 0.0
+  reg0_outl: 0x8000
+  reg0_color: 0xffff     # white (ARGB1555)
+jpeg:
+  enable: true
+  osd_enable: false
+  mode: 2
+  width: 512
+  height: 288
+  fps: 5
+  qfactor: 80
+http_post:
+  enable: false
+  host: ""
+  url: ""
+  login: ""
+  password: ""
+  width: 0
+  height: 0
+  interval: 0
+  qfactor: 0

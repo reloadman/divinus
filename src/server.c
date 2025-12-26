@@ -12,7 +12,6 @@ enum StreamType {
     STREAM_H26X,
     STREAM_JPEG,
     STREAM_MJPEG,
-    STREAM_MP3,
     STREAM_MP4,
     STREAM_PCM
 };
@@ -56,8 +55,10 @@ pthread_mutex_t client_fds_mutex;
 
 // Count active HTTP streaming clients by type (best-effort).
 // Used to avoid blocking audio/video pipelines when nobody is subscribed.
-volatile int server_mp3_clients = 0;
 volatile int server_pcm_clients = 0;
+volatile int server_h26x_clients = 0;
+volatile int server_mp4_clients = 0;
+volatile int server_mjpeg_clients = 0;
 
 static bool is_local_address(const char *client_ip) {
     if (!client_ip) return false;
@@ -75,6 +76,22 @@ static bool is_local_address(const char *client_ip) {
     return false;
 }
 
+// Decode a configured GPIO pin value for logging. Mirrors night.c decoding:
+// - 999: disabled
+// - N (0..95): GPIO N
+// - any negative value: treated as disabled
+static bool decode_cfg_pin_for_log(int cfg, int *pin_out) {
+    if (pin_out) *pin_out = 0;
+    if (cfg == 999)
+        return false;
+    if (cfg < 0)
+        return false;
+    if (cfg > 95)
+        return false;
+    if (pin_out) *pin_out = cfg;
+    return true;
+}
+
 static void close_socket_fd(int sockFd) {
     shutdown(sockFd, SHUT_RDWR);
     close(sockFd);
@@ -85,10 +102,14 @@ void free_client(int i) {
 
     close_socket_fd(client_fds[i].sockFd);
     client_fds[i].sockFd = -1;
-    if (client_fds[i].type == STREAM_MP3) {
-        if (server_mp3_clients > 0) server_mp3_clients--;
-    } else if (client_fds[i].type == STREAM_PCM) {
+    if (client_fds[i].type == STREAM_PCM) {
         if (server_pcm_clients > 0) server_pcm_clients--;
+    } else if (client_fds[i].type == STREAM_H26X) {
+        if (server_h26x_clients > 0) server_h26x_clients--;
+    } else if (client_fds[i].type == STREAM_MP4) {
+        if (server_mp4_clients > 0) server_mp4_clients--;
+    } else if (client_fds[i].type == STREAM_MJPEG) {
+        if (server_mjpeg_clients > 0) server_mjpeg_clients--;
     }
     client_fds[i].type = -1;
 }
@@ -152,6 +173,8 @@ void send_http_error(int fd, int code) {
 }
 
 void send_h26x_to_client(char index, hal_vidstream *stream) {
+    if (server_h26x_clients <= 0)
+        return;
     for (unsigned int i = 0; i < stream->count; ++i) {
         hal_vidpack *pack = &stream->pack[i];
         unsigned int pack_len = pack->length - pack->offset;
@@ -195,6 +218,8 @@ void send_h26x_to_client(char index, hal_vidstream *stream) {
 }
 
 void send_mp4_to_client(char index, hal_vidstream *stream, char isH265) {
+    if (server_mp4_clients <= 0)
+        return;
 
     for (unsigned int i = 0; i < stream->count; ++i) {
         hal_vidpack *pack = &stream->pack[i];
@@ -278,26 +303,6 @@ void send_mp4_to_client(char index, hal_vidstream *stream, char isH265) {
     }
 }
 
-void send_mp3_to_client(char *buf, ssize_t size) {
-    if (server_mp3_clients <= 0)
-        return;
-    pthread_mutex_lock(&client_fds_mutex);
-    for (unsigned int i = 0; i < MAX_CLIENTS; ++i) {
-        if (client_fds[i].sockFd < 0) continue;
-        if (client_fds[i].type != STREAM_MP3) continue;
-
-        static char len_buf[50];
-        ssize_t len_size = sprintf(len_buf, "%zX\r\n", size);
-        if (send_to_client(i, len_buf, len_size) < 0)
-            continue; // send <SIZE>\r\n
-        if (send_to_client(i, buf, size) < 0)
-            continue; // send <DATA>
-        if (send_to_client(i, "\r\n", 2) < 0)
-            continue; // send \r\n
-    }
-    pthread_mutex_unlock(&client_fds_mutex);
-}
-
 void send_pcm_to_client(hal_audframe *frame) {
     if (server_pcm_clients <= 0)
         return;
@@ -319,6 +324,8 @@ void send_pcm_to_client(hal_audframe *frame) {
 }
 
 void send_mjpeg_to_client(char index, char *buf, ssize_t size) {
+    if (server_mjpeg_clients <= 0)
+        return;
     static char prefix_buf[128];
     ssize_t prefix_size = sprintf(prefix_buf,
         "--boundarydonotcross\r\n"
@@ -727,25 +734,6 @@ void respond_request(http_request_t *req) {
         return;
     }
 
-    if (app_config.audio_enable && EQUALS(req->uri, "/audio.mp3")) {
-        respLen = sprintf(response,
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: audio/mpeg\r\n"
-            "Transfer-Encoding: chunked\r\n"
-            "Connection: keep-alive\r\n\r\n");
-        send_to_fd(req->clntFd, response, respLen);
-        pthread_mutex_lock(&client_fds_mutex);
-        for (uint32_t i = 0; i < MAX_CLIENTS; ++i)
-            if (client_fds[i].sockFd < 0) {
-                client_fds[i].sockFd = req->clntFd;
-                client_fds[i].type = STREAM_MP3;
-                server_mp3_clients++;
-                break;
-            }
-        pthread_mutex_unlock(&client_fds_mutex);
-        return;
-    }
-
     if (app_config.audio_enable && EQUALS(req->uri, "/audio.pcm")) {
         int respLen = sprintf(response,
             "HTTP/1.1 200 OK\r\n"
@@ -780,6 +768,7 @@ void respond_request(http_request_t *req) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_H26X;
                 client_fds[i].nalCnt = 0;
+                server_h26x_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -800,6 +789,7 @@ void respond_request(http_request_t *req) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_MP4;
                 client_fds[i].mp4.header_sent = false;
+                server_mp4_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -819,6 +809,7 @@ void respond_request(http_request_t *req) {
             if (client_fds[i].sockFd < 0) {
                 client_fds[i].sockFd = req->clntFd;
                 client_fds[i].type = STREAM_MJPEG;
+                server_mjpeg_clients++;
                 break;
             }
         pthread_mutex_unlock(&client_fds_mutex);
@@ -883,6 +874,12 @@ void respond_request(http_request_t *req) {
     }
 
     if (EQUALS(req->uri, "/api/audio")) {
+        const int prev_bitrate = (int)app_config.audio_bitrate;
+        const int prev_gain = (int)app_config.audio_gain;
+        const int prev_srate = (int)app_config.audio_srate;
+        const int prev_mute = media_get_audio_mute();
+        int mute_req = -1; // -1 = unchanged, 0 = unmute, 1 = mute
+
         if (!EMPTY(req->query)) {
             char *remain;
             while (req->query) {
@@ -893,13 +890,25 @@ void respond_request(http_request_t *req) {
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "bitrate")) {
                     short result = strtol(value, &remain, 10);
-                    if (remain != value)
+                    if (remain != value) {
+                        if (result < 8) result = 8;
+                        if (result > 320) result = 320;
                         app_config.audio_bitrate = result;
+                    }
                 } else if (EQUALS(key, "enable")) {
-                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
+                    // Backwards compatible: "enable=false" means "mute" (keep RTSP audio track alive).
+                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1")) {
                         app_config.audio_enable = 1;
+                        mute_req = 0;
+                    } else if (EQUALS_CASE(value, "false") || EQUALS(value, "0")) {
+                        app_config.audio_enable = 1; // do NOT disable audio pipeline; keep it alive
+                        mute_req = 1;
+                    }
+                } else if (EQUALS(key, "mute")) {
+                    if (EQUALS_CASE(value, "true") || EQUALS(value, "1"))
+                        mute_req = 1;
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
-                        app_config.audio_enable = 0;
+                        mute_req = 0;
                 } else if (EQUALS(key, "gain")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -910,9 +919,41 @@ void respond_request(http_request_t *req) {
                         app_config.audio_srate = result;
                 }
             }
+        }
 
+        // Muting requires the audio pipeline to be active (we generate silence by zeroing PCM).
+        if (mute_req == 1)
+            app_config.audio_enable = 1;
+
+        // Ensure audio pipeline is running when requested (mute requires encoder to keep producing frames).
+        if (app_config.audio_enable && !audioOn) {
+            enable_audio();
+        }
+
+        // Apply runtime mute toggle if provided and persist immediately.
+        if (mute_req != -1) {
+            app_config.audio_mute = (mute_req == 1);
+            int sr = save_app_config();
+            if (sr != 0)
+                HAL_WARNING("server", "Failed to save config after audio mute change (ret=%d)\n", sr);
+            media_set_audio_mute(mute_req);
+        }
+
+        // Apply bitrate change without restarting audio (best-effort).
+        if ((int)app_config.audio_bitrate != prev_bitrate) {
+            media_set_audio_bitrate_kbps(app_config.audio_bitrate);
+        }
+
+        // Some changes still require a full audio restart (HAL + encoder).
+        // NOTE: this can cause a short gap in RTP audio.
+        if ((int)app_config.audio_srate != prev_srate || (int)app_config.audio_gain != prev_gain) {
+            const int want_mute = (mute_req != -1) ? mute_req : prev_mute;
             disable_audio();
-            if (app_config.audio_enable) enable_audio();
+            if (app_config.audio_enable) {
+                enable_audio();
+                if (want_mute)
+                    media_set_audio_mute(1);
+            }
         }
 
         int respLen = sprintf(response,
@@ -920,8 +961,9 @@ void respond_request(http_request_t *req) {
             "Content-Type: application/json;charset=UTF-8\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "{\"enable\":%s,\"bitrate\":%d,\"gain\":%d,\"srate\":%d}",
+            "{\"enable\":%s,\"mute\":%s,\"bitrate\":%d,\"gain\":%d,\"srate\":%d}",
             app_config.audio_enable ? "true" : "false",
+            media_get_audio_mute() ? "true" : "false",
             app_config.audio_bitrate, app_config.audio_gain, app_config.audio_srate);
         send_and_close(req->clntFd, response, respLen);
         return;
@@ -1147,9 +1189,10 @@ void respond_request(http_request_t *req) {
             const int old_isp_iso_low = app_config.isp_iso_low;
             const int old_isp_iso_hi = app_config.isp_iso_hi;
             const int old_isp_exptime_low = app_config.isp_exptime_low;
-            const unsigned int old_ir_sensor_pin = app_config.ir_sensor_pin;
+            const int old_ir_sensor_pin = app_config.ir_sensor_pin;
             char old_adc_device[sizeof(app_config.adc_device)];
-            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device));
+            strncpy(old_adc_device, app_config.adc_device, sizeof(old_adc_device) - 1);
+            old_adc_device[sizeof(old_adc_device) - 1] = '\0';
 
             bool enable_seen = false;
             bool enable_value = app_config.night_mode_enable;
@@ -1157,8 +1200,8 @@ void respond_request(http_request_t *req) {
             bool manual_seen = false;
             bool manual_value = night_manual_on();
 
-            bool set_grayscale = false, set_ircut = false, set_irled = false;
-            bool grayscale_value = false, ircut_value = false, irled_value = false;
+            bool set_grayscale = false, set_ircut = false, set_irled = false, set_whiteled = false;
+            bool grayscale_value = false, ircut_value = false, irled_value = false, whiteled_value = false;
 
             char *remain;
             while (req->query) {
@@ -1174,7 +1217,8 @@ void respond_request(http_request_t *req) {
                     else if (EQUALS_CASE(value, "false") || EQUALS(value, "0"))
                         app_config.night_mode_enable = enable_value = 0;
                 } else if (EQUALS(key, "adc_device")) {
-                    strncpy(app_config.adc_device, value, sizeof(app_config.adc_device));
+                    strncpy(app_config.adc_device, value, sizeof(app_config.adc_device) - 1);
+                    app_config.adc_device[sizeof(app_config.adc_device) - 1] = '\0';
                 } else if (EQUALS(key, "adc_threshold")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1233,10 +1277,23 @@ void respond_request(http_request_t *req) {
                 } else if (EQUALS(key, "irled")) {
                     set_irled = true;
                     irled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "whiteled")) {
+                    set_whiteled = true;
+                    // Prefer on/off (new API), keep backward compatibility with true/false/1/0.
+                    if (EQUALS_CASE(value, "on"))
+                        whiteled_value = true;
+                    else if (EQUALS_CASE(value, "off"))
+                        whiteled_value = false;
+                    else
+                        whiteled_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                    HAL_INFO("server", "Night API: whiteled=%s (parsed=%d)\n", value, whiteled_value ? 1 : 0);
                 } else if (EQUALS(key, "irled_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         app_config.ir_led_pin = result;
+                } else if (EQUALS(key, "whiteled_pin") || EQUALS(key, "white_led_pin")) {
+                    // Intentionally ignored: `whiteled` is a manual action and must not
+                    // mutate config (pins are configured via divinus.yaml).
                 } else if (EQUALS(key, "irsense_pin")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
@@ -1245,6 +1302,7 @@ void respond_request(http_request_t *req) {
                     manual_seen = true;
                     manual_value = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
                     night_manual(manual_value ? 1 : 0);
+                    app_config.night_mode_manual = manual_value;
                 }
             }
 
@@ -1280,9 +1338,33 @@ void respond_request(http_request_t *req) {
                 if (app_config.night_mode_enable)
                     enable_night();
             } else if (!(enable_seen && !enable_value)) {
+                // If user enables manual mode without explicit hardware params, treat it as
+                // "manual night": switch to IR mode immediately and keep automatics disabled.
+                if (manual_seen && manual_value && !set_ircut && !set_irled && !set_grayscale)
+                    night_mode(true);
                 if (set_ircut) night_ircut(ircut_value);
                 if (set_irled) night_irled(irled_value);
+                if (set_whiteled) {
+                    int pin = 0;
+                    bool ok = decode_cfg_pin_for_log(app_config.white_led_pin, &pin);
+                    if (ok) {
+                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> pin=%d)\n",
+                            whiteled_value ? 1 : 0, app_config.white_led_pin, pin);
+                    } else {
+                        HAL_INFO("server", "Night API: apply whiteled=%d (pin_cfg=%d -> disabled/invalid)\n",
+                            whiteled_value ? 1 : 0, app_config.white_led_pin);
+                    }
+                    night_whiteled(whiteled_value);
+                }
                 if (set_grayscale) night_grayscale(grayscale_value);
+            }
+
+            // Persist manual toggle (and any other changed fields in app_config).
+            // Best-effort: ignore failures to keep API responsive.
+            if (manual_seen) {
+                int sr = save_app_config();
+                if (sr != 0)
+                    HAL_WARNING("server", "Failed to save config after night manual change (ret=%d)\n", sr);
             }
         }
 
@@ -1312,7 +1394,8 @@ void respond_request(http_request_t *req) {
             "Connection: close\r\n"
             "\r\n"
             "{\"active\":%s,\"manual\":%s,\"grayscale\":%s,\"ircut\":%s,\"ircut_pin1\":%d,\"ircut_pin2\":%d,"
-            "\"irled\":%s,\"irled_pin\":%d,\"irsense_pin\":%d,\"adc_device\":\"%s\",\"adc_threshold\":%d,"
+            "\"irled\":%s,\"irled_pin\":%d,\"whiteled\":%s,\"whiteled_pin\":%d,\"irsense_pin\":%d,"
+            "\"adc_device\":\"%s\",\"adc_threshold\":%d,"
             "\"isp_lum\":%d,\"isp_lum_low\":%d,\"isp_lum_hi\":%d,"
             "\"isp_iso_low\":%d,\"isp_iso_hi\":%d,\"isp_exptime_low\":%d,\"isp_switch_lockout_s\":%u,"
             "\"isp_iso\":%d,\"isp_exptime\":%d,\"isp_again\":%d,\"isp_dgain\":%d,\"isp_ispdgain\":%d,"
@@ -1320,11 +1403,130 @@ void respond_request(http_request_t *req) {
             app_config.night_mode_enable ? "true" : "false", night_manual_on() ? "true" : "false", 
             night_grayscale_on() ? "true" : "false",
             night_ircut_on() ? "true" : "false", app_config.ir_cut_pin1, app_config.ir_cut_pin2,
-            night_irled_on() ? "true" : "false", app_config.ir_led_pin, app_config.ir_sensor_pin,
+            night_irled_on() ? "true" : "false", app_config.ir_led_pin,
+            night_whiteled_on() ? "true" : "false", app_config.white_led_pin,
+            app_config.ir_sensor_pin,
             app_config.adc_device, app_config.adc_threshold, isp_lum,
             app_config.isp_lum_low, app_config.isp_lum_hi,
             app_config.isp_iso_low, app_config.isp_iso_hi, app_config.isp_exptime_low, app_config.isp_switch_lockout_s,
             isp_iso, isp_exptime, isp_again, isp_dgain, isp_ispdgain, isp_exposure_is_max);
+        send_and_close(req->clntFd, response, respLen);
+        return;
+    }
+
+    // ISP orientation controls (persisted): mirror / flip (+ optional antiflicker).
+    // NOTE: These settings are applied at SDK/pipeline creation time on most platforms.
+    // This endpoint persists changes to divinus.yaml; runtime application may require a process restart.
+    if (EQUALS(req->uri, "/api/isp")) {
+        bool changed = false;
+        bool changed_orient = false;
+        bool changed_antiflicker = false;
+        int save_rc = 0;
+        bool saved = false;
+        int apply_rc = 0;
+        bool applied = true;
+
+        if (!EMPTY(req->query)) {
+            bool mirror_seen = false, flip_seen = false, antiflicker_seen = false;
+            bool sensor_mirror_seen = false, sensor_flip_seen = false;
+            bool mirror_val = app_config.mirror;
+            bool flip_val = app_config.flip;
+            bool sensor_mirror_val = app_config.sensor_mirror;
+            bool sensor_flip_val = app_config.sensor_flip;
+            int antiflicker_val = app_config.antiflicker;
+
+            char *remain;
+            while (req->query) {
+                char *value = split(&req->query, "&");
+                if (!value || !*value) continue;
+                unescape_uri(value);
+                char *key = split(&value, "=");
+                if (!key || !*key || !value || !*value) continue;
+
+                if (EQUALS(key, "mirror")) {
+                    mirror_seen = true;
+                    mirror_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "flip")) {
+                    flip_seen = true;
+                    flip_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "sensor_mirror")) {
+                    sensor_mirror_seen = true;
+                    sensor_mirror_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "sensor_flip")) {
+                    sensor_flip_seen = true;
+                    sensor_flip_val = (EQUALS_CASE(value, "true") || EQUALS(value, "1"));
+                } else if (EQUALS(key, "antiflicker")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        antiflicker_seen = true;
+                        antiflicker_val = (int)result;
+                    }
+                }
+            }
+
+            if (mirror_seen && (app_config.mirror != mirror_val)) {
+                app_config.mirror = mirror_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (flip_seen && (app_config.flip != flip_val)) {
+                app_config.flip = flip_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (sensor_mirror_seen && (app_config.sensor_mirror != sensor_mirror_val)) {
+                app_config.sensor_mirror = sensor_mirror_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (sensor_flip_seen && (app_config.sensor_flip != sensor_flip_val)) {
+                app_config.sensor_flip = sensor_flip_val;
+                changed = true;
+                changed_orient = true;
+            }
+            if (antiflicker_seen && (app_config.antiflicker != antiflicker_val)) {
+                app_config.antiflicker = antiflicker_val;
+                changed = true;
+                changed_antiflicker = true;
+            }
+
+            if (changed) {
+                save_rc = save_app_config();
+                saved = (save_rc == 0);
+                if (!saved)
+                    HAL_WARNING("server", "Failed to save config after isp change (ret=%d)\n", save_rc);
+
+                // Best-effort runtime apply (platform-dependent).
+                // Antiflicker is typically applied at pipeline creation time; we don't attempt runtime update here.
+                if (changed_orient) {
+                    apply_rc = media_set_isp_orientation(app_config.mirror, app_config.flip);
+                    applied = (apply_rc == 0);
+                }
+            }
+        }
+
+        bool needs_restart = changed_antiflicker || (changed_orient && !applied);
+        int respLen = sprintf(response,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json;charset=UTF-8\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{\"sensor_mirror\":%s,\"sensor_flip\":%s,"
+            "\"mirror\":%s,\"flip\":%s,\"antiflicker\":%d,"
+            "\"changed\":%s,\"saved\":%s,\"save_code\":%d,"
+            "\"applied\":%s,\"apply_code\":%d,"
+            "\"needs_restart\":%s}",
+            app_config.sensor_mirror ? "true" : "false",
+            app_config.sensor_flip ? "true" : "false",
+            app_config.mirror ? "true" : "false",
+            app_config.flip ? "true" : "false",
+            app_config.antiflicker,
+            changed ? "true" : "false",
+            saved ? "true" : "false",
+            save_rc,
+            applied ? "true" : "false",
+            apply_rc,
+            needs_restart ? "true" : "false");
         send_and_close(req->clntFd, response, respLen);
         return;
     }
@@ -1362,6 +1564,7 @@ void respond_request(http_request_t *req) {
                 fclose(img);
 
                 strcpy(osds[id].text, "");
+                osds[id].persist = 1;
                 osds[id].updt = 1;
             } else {
                 respLen = sprintf(response,
@@ -1390,32 +1593,39 @@ void respond_request(http_request_t *req) {
                 else if (EQUALS(key, "font"))
                     strncpy(osds[id].font, !EMPTY(value) ? value : DEF_FONT,
                         sizeof(osds[id].font) - 1);
-                else if (EQUALS(key, "text"))
+                else if (EQUALS(key, "text")) {
                     strncpy(osds[id].text, value,
                         sizeof(osds[id].text) - 1);
+                    osds[id].persist = 1;
+                }
                 else if (EQUALS(key, "size")) {
                     double result = strtod(value, &remain);
                     if (remain == value) continue;
                     osds[id].size = (result != 0 ? result : DEF_SIZE);
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "color")) {
                     int result = color_parse(value);
                     osds[id].color = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "opal")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].opal = result & 0xFF;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "posx")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].posx = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "posy")) {
                     short result = strtol(value, &remain, 10);
                     if (remain != value)
                         osds[id].posy = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "pos")) {
                     int x, y;
@@ -1423,15 +1633,42 @@ void respond_request(http_request_t *req) {
                         osds[id].posx = x;
                         osds[id].posy = y;
                     }
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "outl")) {
                     int result = color_parse(value);
                     osds[id].outl = result;
+                    osds[id].persist = 1;
                 }
                 else if (EQUALS(key, "thick")) {
                     double result = strtod(value, &remain);
                     if (remain == value) continue;
                         osds[id].thick = result;
+                    osds[id].persist = 1;
+                }
+                else if (EQUALS(key, "bg")) {
+                    int result = color_parse(value);
+                    // bg is RGB555 (alpha ignored). Use bgopal to enable/disable.
+                    osds[id].bg = result & 0x7FFF;
+                    osds[id].persist = 1;
+                }
+                else if (EQUALS(key, "bgopal")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) result = 0;
+                        if (result > 255) result = 255;
+                        osds[id].bgopal = (short)result;
+                    }
+                    osds[id].persist = 1;
+                }
+                else if (EQUALS(key, "pad")) {
+                    long result = strtol(value, &remain, 10);
+                    if (remain != value) {
+                        if (result < 0) result = 0;
+                        if (result > 64) result = 64;
+                        osds[id].pad = (short)result;
+                    }
+                    osds[id].persist = 1;
                 }
             }
             osds[id].updt = 1;
@@ -1446,10 +1683,10 @@ void respond_request(http_request_t *req) {
             "\r\n"
             "{\"id\":%d,\"color\":\"#%x\",\"opal\":%d,\"pos\":[%d,%d],"
             "\"font\":\"%s\",\"size\":%.1f,\"text\":\"%s\",\"img\":\"%s\","
-            "\"outl\":\"#%x\",\"thick\":%.1f}",
+            "\"outl\":\"#%x\",\"thick\":%.1f,\"bg\":\"#%x\",\"bgopal\":%d,\"pad\":%d}",
             id, color, osds[id].opal, osds[id].posx, osds[id].posy,
             osds[id].font, osds[id].size, osds[id].text, osds[id].img,
-            osds[id].outl, osds[id].thick);
+            osds[id].outl, osds[id].thick, osds[id].bg, osds[id].bgopal, osds[id].pad);
         send_and_close(req->clntFd, response, respLen);
         return;
     }
@@ -1553,7 +1790,8 @@ void respond_request(http_request_t *req) {
                 char *key = split(&value, "=");
                 if (!key || !*key || !value || !*value) continue;
                 if (EQUALS(key, "fmt")) {
-                    strncpy(timefmt, value, 32);
+                    // Sanitize and update both runtime and canonical copies.
+                    timefmt_set(value);
                 } else if (EQUALS(key, "ts")) {
                     short result = strtol(value, &remain, 10);
                     if (remain == value) continue;
@@ -1592,6 +1830,14 @@ void *server_thread(void *vargp) {
         .sin_port = htons(app_config.web_port),
         .sin_addr.s_addr = htonl(INADDR_ANY)
     };
+    if (!EMPTY(app_config.web_bind)) {
+        struct in_addr bind_addr = {0};
+        if (inet_aton(app_config.web_bind, &bind_addr)) {
+            server.sin_addr = bind_addr;
+        } else {
+            HAL_WARNING("server", "Invalid web_bind '%s', falling back to 0.0.0.0\n", app_config.web_bind);
+        }
+    }
     if (ret = bind(server_fd, (struct sockaddr *)&server, sizeof(server))) {
         HAL_DANGER("server", "%s (%d)\n", strerror(errno), errno);
         keepRunning = 0;
@@ -1620,8 +1866,10 @@ void *server_thread(void *vargp) {
 }
 
 int start_server() {
-    server_mp3_clients = 0;
     server_pcm_clients = 0;
+    server_h26x_clients = 0;
+    server_mp4_clients = 0;
+    server_mjpeg_clients = 0;
     for (unsigned int i = 0; i < MAX_CLIENTS; i++) {
         client_fds[i].sockFd = -1;
         client_fds[i].type = -1;

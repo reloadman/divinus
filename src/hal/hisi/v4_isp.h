@@ -201,20 +201,22 @@ loaded:
     void *handles_awb[] = { isp_lib->handleMpi, isp_lib->handle, isp_lib->handleAwb, isp_lib->handleGokeAwb, NULL };
 
     // Exposure / AE route
+    // On some Goke/GK SDKs, HI_MPI_* symbols exist but are stubs for parts of AE.
+    // Prefer GK_API_* when available, fallback to HI_MPI_*/MPI_*.
     isp_lib->fnGetExposureAttr = (int(*)(int, void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_GetExposureAttr", "MPI_ISP_GetExposureAttr", "GK_API_ISP_GetExposureAttr", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_GetExposureAttr", "HI_MPI_ISP_GetExposureAttr", "MPI_ISP_GetExposureAttr", NULL });
     isp_lib->fnSetExposureAttr = (int(*)(int, const void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_SetExposureAttr", "MPI_ISP_SetExposureAttr", "GK_API_ISP_SetExposureAttr", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_SetExposureAttr", "HI_MPI_ISP_SetExposureAttr", "MPI_ISP_SetExposureAttr", NULL });
     isp_lib->fnQueryExposureInfo = (int(*)(int, void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_QueryExposureInfo", "MPI_ISP_QueryExposureInfo", "GK_API_ISP_QueryExposureInfo", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_QueryExposureInfo", "HI_MPI_ISP_QueryExposureInfo", "MPI_ISP_QueryExposureInfo", NULL });
     isp_lib->fnGetAERouteAttrEx = (int(*)(int, void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttrEx", "MPI_ISP_GetAERouteAttrEx", "GK_API_ISP_GetAERouteAttrEx", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_GetAERouteAttrEx", "HI_MPI_ISP_GetAERouteAttrEx", "MPI_ISP_GetAERouteAttrEx", NULL });
     isp_lib->fnSetAERouteAttrEx = (int(*)(int, const void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttrEx", "MPI_ISP_SetAERouteAttrEx", "GK_API_ISP_SetAERouteAttrEx", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_SetAERouteAttrEx", "HI_MPI_ISP_SetAERouteAttrEx", "MPI_ISP_SetAERouteAttrEx", NULL });
     isp_lib->fnGetAERouteAttr = (int(*)(int, void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_GetAERouteAttr", "MPI_ISP_GetAERouteAttr", "GK_API_ISP_GetAERouteAttr", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_GetAERouteAttr", "HI_MPI_ISP_GetAERouteAttr", "MPI_ISP_GetAERouteAttr", NULL });
     isp_lib->fnSetAERouteAttr = (int(*)(int, const void*))v4_dlsym_multi(
-        handles_ae, (const char*[]){ "HI_MPI_ISP_SetAERouteAttr", "MPI_ISP_SetAERouteAttr", "GK_API_ISP_SetAERouteAttr", NULL });
+        handles_ae, (const char*[]){ "GK_API_ISP_SetAERouteAttr", "HI_MPI_ISP_SetAERouteAttr", "MPI_ISP_SetAERouteAttr", NULL });
 
     // Statistics config (used for AE weight table)
     isp_lib->fnGetStatisticsConfig = (int(*)(int, void*))v4_dlsym_multi(

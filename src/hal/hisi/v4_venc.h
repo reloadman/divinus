@@ -431,6 +431,29 @@ static int v4_venc_load(v4_venc_impl *venc_lib) {
         hal_symbol_load("v4_venc", venc_lib->handle, "HI_MPI_VENC_SetChnParam")))
         return EXIT_FAILURE;
 
+    // Optional: some SDKs provide a direct "color -> gray" toggle that is safer than
+    // Get/SetChnParam on MJPEG/JPEG channels (some firmwares crash on GetChnParam).
+    // Try a few common symbol variants; if not found, keep it NULL.
+    {
+        const char *names[] = {
+            "HI_MPI_VENC_SetColor2Grey",
+            "HI_MPI_VENC_SetColor2Gray",
+            "HI_MPI_VENC_SetColorToGray",
+            "HI_MPI_VENC_SetColorToGrey",
+            "HI_MPI_VENC_SetColor2GreyEx",
+            "HI_MPI_VENC_SetColor2GrayEx",
+            "HI_MPI_VENC_SetColorToGrayEx",
+            "HI_MPI_VENC_SetColorToGreyEx",
+            NULL
+        };
+        void *sym = NULL;
+        for (int n = 0; !sym && names[n]; n++) {
+            if (venc_lib->handle) sym = dlsym(venc_lib->handle, names[n]);
+            if (!sym && venc_lib->handleGoke) sym = dlsym(venc_lib->handleGoke, names[n]);
+        }
+        venc_lib->fnSetColorToGray = (int(*)(int, int*))sym;
+    }
+
     if (!(venc_lib->fnFreeDescriptor = (int(*)(int channel))
         hal_symbol_load("v4_venc", venc_lib->handle, "HI_MPI_VENC_CloseFd")))
         return EXIT_FAILURE;

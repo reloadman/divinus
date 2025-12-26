@@ -5,8 +5,9 @@ This document describes the fields that can be found within a configuration file
 ## System section
 
 - **sensor_config**: Path to the sensor calibration or configuration file, if applicable (e.g., `/etc/sensors/imx415.bin`).
-- **iq_config**: Optional path to an ISP/IQ profile INI file (platform-specific; used on some HiSilicon/Goke v4 builds).
+- **iq_config**: Optional path to an ISP/IQ profile (INI on HiSilicon/Goke v4, BIN on Sigmastar i6/i6c/m6). When provided and the file exists, it is applied at startup instead of the SDK default `/etc/firmware/iqfile0.bin`.
 - **web_port**: Port number for the web server (default: `80`).
+- **web_bind**: IPv4 address to bind the web/API server to (default: all interfaces).
 - **web_whitelist**: Array of up to 4 IP addresses or domains allowed to access the web server.
 - **web_enable_auth**: Boolean to enable authentication on the API, live stream and WebUI endpoints (default: `false`).
 - **web_auth_user**: Username for basic authentication (default: `admin`).
@@ -15,16 +16,19 @@ This document describes the fields that can be found within a configuration file
 - **isp_thread_stack_size**: Stack size for ISP thread, if applicable (default: `16384`).
 - **venc_stream_thread_stack_size**: Stack size for video encoding stream thread (default: `16384`).
 - **web_server_thread_stack_size**: Stack size for web server thread (default: `65536`).
+- **night_thread_stack_size**: Stack size for night mode worker thread (default: `65536`). Increase this if the device crashes on day/night switch (notably on some **hisi/v4** SDK builds where IQ reload is stack-hungry).
 - **time_format**: Format for displaying time, refer to strftime() modifiers for exact parameters (e.g., `"%Y-%m-%d %H:%M:%S"`).
 - **watchdog**: Watchdog timer in seconds, where 0 means disabled (default: `30`).
 
 ## Night mode section
 
 - **enable**: Boolean to activate night mode support.
+- **manual**: Boolean to persist manual mode (disables automatic switching when true).
 - **grayscale**: Boolean to enable encoder grayscale when switching to night (IR) mode.
 - **ir_cut_pin1**: GPIO number for IR cut filter control (normal state pin).
 - **ir_cut_pin2**: GPIO number for IR cut filter control (inverted state pin).
 - **ir_led_pin**: GPIO number for IR LED control.
+- **white_led_pin**: GPIO number for white LED control (manual; optional).
 - **ir_sensor_pin**: GPIO number for PIR motion sensor or similar digital toggle.
 - **check_interval_s**: Interval in seconds to check night mode conditions.
 - **pin_switch_delay_us**: Delay in microseconds before switching GPIO pins, must be used to protect cut filter coils from burning.
@@ -39,6 +43,8 @@ This document describes the fields that can be found within a configuration file
 
 ## ISP section
 
+- **sensor_mirror**: Factory/default mirror applied at boot (before user mirror). Set per hardware variant (default: `false`).
+- **sensor_flip**: Factory/default flip applied at boot (before user flip). Set per hardware variant (default: `false`).
 - **mirror**: Boolean to turn on image mirroring (default: `false`).
 - **flip**: Boolean to turn on image flipping (default: `false`).
 - **antiflicker**: Antiflicker setting in Hz (default: `60`).
@@ -61,6 +67,7 @@ This document describes the fields that can be found within a configuration file
 - **auth_user**: Username for RTSP authentication (default: `admin`).
 - **auth_pass**: Password for RTSP authentication (default: `12345`).
 - **port**: Port number for RTSP server (default: `554`).
+- **bind**: IPv4 address to bind the RTSP server to (default: all interfaces).
 
 ## Record section
 
@@ -80,6 +87,7 @@ This document describes the fields that can be found within a configuration file
 ## Audio section
 
 - **enable**: Boolean to activate or deactivate audio functionality.
+- **mute**: Boolean to mute audio while keeping the RTSP/audio track alive. When `true`, Divinus sends digital silence to the encoder (no track removal).
 - **codec**: Audio codec, `MP3` (default) or `AAC` (AAC-LC).
 - **bitrate**: Audio bitrate in kbps (e.g., `128`).
 - **gain**: Audio input level.
@@ -127,7 +135,7 @@ This document describes the fields that can be found within a configuration file
 - **enable**: Boolean to turn on On-Screen Display regions globally, used to reduce resource usage or let another app manage the functionality (default: `true`).
 - **regX_img**: Path to the image for OSD region X.
 - **regX_text**: Text displayed in OSD region X.
-- **regX_font**: Font used for text in OSD region X.
+- **regX_font**: Font used for text in OSD region X. Prefer a **full path** to a font file (e.g. `/oem/usr/share/UbuntuMono-Regular.ttf`). For backward compatibility you can still use a font name (e.g. `UbuntuMono-Regular`) and Divinus will try to locate it in common font directories.
 - **regX_opal**: Opacity of OSD region X.
 - **regX_posx**: X position of OSD region X.
 - **regX_posy**: Y position of OSD region X.
@@ -135,6 +143,13 @@ This document describes the fields that can be found within a configuration file
 - **regX_color**: Color of the text or image in OSD region X.
 - **regX_outl**: Outline color of the text in OSD region X.
 - **regX_thick**: Thickness of the text outline in OSD region X.
+- **regX_bg**: Background box color behind the text (RGB555, `0..0x7FFF`). Used only when `regX_bgopal > 0`.
+- **regX_bgopal**: Background box opacity (`0..255`). When `0` (default), background box is disabled.
+- **regX_pad**: Padding in pixels around the text when `regX_bgopal > 0` (default: `6`).
+
+Notes:
+- If you only set `regX_text` (and omit styling fields), Divinus uses built-in defaults for
+  **color/position/font/outline** so the OSD stays readable on bright backgrounds.
 
 ## JPEG section
 
@@ -143,6 +158,7 @@ The snapshot endpoint (`/image.jpg`) returns the **last MJPEG frame** (no separa
 
 - **enable**: Boolean to activate MJPEG output.
 - **osd_enable**: Boolean to enable/disable OSD for the JPEG/MJPEG stream only (default: `true`).
+- **grayscale_night**: If `true`, the MJPEG/JPEG encoder channel follows `night_mode.grayscale` toggles (default: `true`).
 - **mode**: Encoding mode (kept for compatibility; MJPEG uses `QP` internally).
 - **width**: Video width in pixels.
 - **height**: Video height in pixels.

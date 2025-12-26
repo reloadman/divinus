@@ -8,6 +8,14 @@ static int add_rtp_header(unsigned char *packet, int pay_size,
     unsigned short seq, unsigned int tstamp,
     unsigned int ssrc, int marker, int pay_type);
 
+int udp_stream_has_clients(void) {
+    if (!g_udp_ctx) return 0;
+    pthread_mutex_lock(&g_udp_ctx->mutex);
+    const int has = (g_udp_ctx->is_mcast || g_udp_ctx->client_count > 0) ? 1 : 0;
+    pthread_mutex_unlock(&g_udp_ctx->mutex);
+    return has;
+}
+
 /**
  * Initializes the UDP streaming module
  * @param port UDP port to be used (0 = prefer the default value)

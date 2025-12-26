@@ -15,12 +15,14 @@
 bool night_grayscale_on(void);
 bool night_ircut_on(void);
 bool night_irled_on(void);
+bool night_whiteled_on(void);
 bool night_manual_on(void);
 bool night_mode_on(void);
 
 void night_grayscale(bool enable);
 void night_ircut(bool enable);
 void night_irled(bool enable);
+void night_whiteled(bool enable);
 void night_manual(bool enable);
 void night_mode(bool enable);
 
